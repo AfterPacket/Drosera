@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Live feed{% endblock %}
+{% block heading %}Live feed{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>Tracked source addresses <span class="muted" id="refreshed"></span></h2>
+  {% if rows %}
+  <table>
+    <thead>
+      <tr><th>IP</th><th>First seen</th><th>Last seen</th><th>Score</th>
+          <th>Services</th><th>Tool</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td class="mono">
+          {% if row.ip and row.ip != 'unknown' %}
+            <a href="{{ url_for('ip_detail', ip=row.ip) }}">{{ row.ip }}</a>
+          {% else %}<span class="muted">unresolved</span>{% endif %}
+        </td>
+        <td class="mono">{{ row.first_seen[:19] }}</td>
+        <td class="mono">{{ row.last_seen[:19] }}</td>
+        <td class="mono">{{ row.score }}</td>
+        <td>{{ row.services or '-' }}</td>
+        <td>{{ row.tool }}</td>
+        <td><span class="pill {{ row.status }}">{{ row.status }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No source addresses recorded yet.</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Recent events</h2>
+  <table>
+    <thead><tr><th>Time</th><th>IP</th><th>Service</th><th>Event</th><th>Score</th><th>Detail</th></tr></thead>
+    <tbody id="events"><tr><td colspan="6" class="muted">Loading&hellip;</td></tr></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='feed.js') }}" defer></script>
+{% endblock %}

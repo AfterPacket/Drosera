@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two-factor &middot; Drosera</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<form class="auth" method="post" action="{{ url_for('login_totp') }}">
+  <h1>Two-factor code</h1>
+  <p class="sub">Step 2 of 2 &mdash; authenticator app</p>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <label for="code">6-digit code</label>
+  <input type="text" id="code" name="code" class="code-input" maxlength="6"
+         inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"
+         required autofocus>
+  <button type="submit">Verify</button>
+</form>
+</body>
+</html>

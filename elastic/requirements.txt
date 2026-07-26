@@ -1,0 +1,3 @@
+# Optional: only used when a MaxMind GeoLite2 database is mounted at GEOIP_DB.
+# The shipper degrades to Cloudflare's country header without it.
+maxminddb==2.6.2

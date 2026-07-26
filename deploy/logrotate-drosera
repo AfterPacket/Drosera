@@ -1,0 +1,53 @@
+# Drosera log rotation. Installed to /etc/logrotate.d/drosera by
+# deploy/bootstrap.sh, which substitutes __REPO__ for the checkout path.
+#
+# Retention here is the data-protection control referenced in AUTHORIZATION.md.
+# 90 days is the recommended default; shorten it if your policy requires.
+
+__REPO__/storage/logs/*.jsonl {
+    daily
+    rotate 90
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su 1000 1000
+    create 0640 1000 1000
+    maxsize 100M
+}
+
+# fail2ban tails this file. copytruncate keeps the inode stable so the jail
+# does not need restarting after a rotation.
+__REPO__/storage/evidence/fail2ban.log {
+    weekly
+    rotate 26
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su 1000 1000
+    create 0640 1000 1000
+    maxsize 64M
+}
+
+__REPO__/admin-dashboard/admin-logs/audit.jsonl {
+    monthly
+    rotate 24
+    missingok
+    notifempty
+    compress
+    copytruncate
+    su 1000 1000
+    create 0600 1000 1000
+}
+
+/var/log/drosera-watchdog.log {
+    weekly
+    rotate 8
+    missingok
+    notifempty
+    compress
+    create 0640 root root
+}

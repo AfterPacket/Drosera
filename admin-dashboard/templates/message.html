@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} &middot; Drosera</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<div class="auth">
+  <h1>{{ title }}</h1>
+  <p class="sub">{{ message }}</p>
+  <p><a href="{{ url_for('dashboard') }}">&larr; Back to dashboard</a></p>
+</div>
+</body>
+</html>

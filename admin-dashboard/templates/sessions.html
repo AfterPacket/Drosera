@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Sessions{% endblock %}
+{% block heading %}Session recordings{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/asciinema-player/3.6.3/asciinema-player.min.css">
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>{{ sessions | length }} recording(s)</h2>
+  {% if sessions %}
+  <table>
+    <thead><tr>
+      <th>IP</th><th>Recorded</th><th>Duration</th><th>Size</th><th>Camera</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for item in sessions %}
+      <tr>
+        <td class="mono"><a href="{{ url_for('ip_detail', ip=item.ip) }}">{{ item.ip }}</a></td>
+        <td class="mono">{{ item.modified[:19] }}</td>
+        <td class="mono">{{ item.duration }}s</td>
+        <td class="mono">{{ item.size }}</td>
+        <td>
+          <span class="pill {{ item.cam_status }}">{{ item.cam_status | upper }}</span>
+          {% if item.cam_detail %}<div class="mono" style="color:var(--muted);font-size:.72rem">{{ item.cam_detail }}</div>{% endif %}
+        </td>
+        <td>
+          <button class="act" data-play="{{ url_for('session_raw', name=item.name) }}">Play</button>
+          {% if item.clip %}
+          <button class="act" data-clip="{{ url_for('session_clip', name=item.clip) }}"
+                  data-clip-kind="{{ 'video' if item.clip.endswith('.mp4') else 'image' }}">Clip</button>
+          <a class="act" href="{{ url_for('session_clip', name=item.clip, download='1') }}">Download</a>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><td colspan="6">
+        <div class="player-slot" id="slot-{{ loop.index }}"></div>
+        <div class="clip-slot"></div>
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    No recordings yet. SSH, telnet, FTP, SMTP, MySQL and web-shell sessions are
+    recorded automatically; session-cam renders and delivers the ones that clear
+    the score threshold.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/asciinema-player/3.6.3/asciinema-player.min.js"></script>
+<script src="{{ url_for('static', filename='sessions.js') }}" defer></script>
+{% endblock %}

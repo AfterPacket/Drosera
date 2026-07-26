@@ -1,0 +1,78 @@
+# Tightened resource ceilings for a small VPS (2-4 GB).
+#
+# The defaults in docker-compose.yml are generous: each mem_limit is a ceiling,
+# not a reservation, and steady-state usage across the whole base profile is
+# under a gigabyte. But the ceilings sum to ~4.4 GB, so on a 4 GB box a clip
+# render landing during a scan flood can push the host into OOM.
+#
+# This file lowers every ceiling to something that fits, and trims the two knobs
+# that drive peak usage: Redis's cache size and the renderer's frame count.
+#
+# Usage -- the override must come second so its values win:
+#
+#   docker compose -f docker-compose.yml -f deploy/compose.small.yml up -d
+#
+# To avoid repeating that on every command, export it once per shell:
+#
+#   export COMPOSE_FILE=docker-compose.yml:deploy/compose.small.yml
+#
+# Not for use with --profile elastic. Elasticsearch needs its own headroom; if
+# you want the search stack on a small box, run it elsewhere and point the
+# shipper at logs copied down instead.
+
+services:
+
+  redis-honeypot:
+    # Paired with REDIS_MAXMEMORY=128mb in .env. Identities are evicted LRU, so
+    # a smaller cache costs you history on long-idle IPs, nothing more.
+    command: >
+      redis-server --appendonly yes
+      --maxmemory ${REDIS_MAXMEMORY:-128mb}
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+    mem_limit: 256m
+
+  redis-admin:
+    mem_limit: 128m
+
+  web:
+    mem_limit: 320m
+    # Fewer concurrent tarpits: each one pins a PHP-FPM worker, and workers are
+    # the scarcest resource on a small box.
+    environment:
+      TARPIT_MAX_CONCURRENT: ${TARPIT_MAX_CONCURRENT:-8}
+
+  ssh-honey:
+    mem_limit: 256m
+    environment:
+      SSH_MAX_CONNECTIONS: ${SSH_MAX_CONNECTIONS:-60}
+
+  ftp-honey:
+    mem_limit: 160m
+
+  telnet-honey:
+    mem_limit: 160m
+
+  smtp-honey:
+    mem_limit: 160m
+
+  mysql-honey:
+    mem_limit: 160m
+
+  smb-honey:
+    mem_limit: 160m
+
+  rdp-honey:
+    mem_limit: 160m
+
+  session-cam:
+    # Renders hold every quantised frame in memory at once, so frame count is
+    # the direct lever on peak usage. 200 frames still reads clearly; it just
+    # samples a long session more coarsely.
+    mem_limit: 384m
+    environment:
+      CAM_MAX_FRAMES: ${CAM_MAX_FRAMES:-200}
+      CAM_MAX_PER_CYCLE: ${CAM_MAX_PER_CYCLE:-5}
+
+  admin-dashboard:
+    mem_limit: 256m

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block heading %}Settings{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>Alert channels</h2>
+  <table>
+    <thead><tr><th>Channel</th><th>Status</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>JSONL log</td>
+          <td><span class="pill on">ENABLED</span></td>
+          <td class="muted">Always on. Written to storage/logs/YYYY-MM-DD.jsonl</td></tr>
+      <tr><td>fail2ban</td>
+          <td><span class="pill {{ 'on' if channels.fail2ban else 'off' }}">{{ 'ACTIVE' if channels.fail2ban else 'NO EVENTS' }}</span></td>
+          <td class="muted">{{ settings.fail2ban_log }}</td></tr>
+      <tr><td>Webhook</td>
+          <td><span class="pill {{ 'on' if channels.webhook else 'off' }}">{{ 'ENABLED' if channels.webhook else 'DISABLED' }}</span></td>
+          <td class="muted">Set ALERT_WEBHOOK_URL. Requires honeypot network egress.</td></tr>
+      <tr><td>Telegram</td>
+          <td><span class="pill {{ 'on' if channels.telegram else 'off' }}">{{ 'ENABLED' if channels.telegram else 'DISABLED' }}</span></td>
+          <td class="muted">Set ALERT_TELEGRAM_BOT_TOKEN and ALERT_TELEGRAM_CHAT_ID.</td></tr>
+      <tr><td>Syslog (RFC 5424)</td>
+          <td><span class="pill {{ 'on' if channels.syslog else 'off' }}">{{ 'ENABLED' if channels.syslog else 'DISABLED' }}</span></td>
+          <td class="muted">Set ALERT_SYSLOG_HOST / ALERT_SYSLOG_PORT.</td></tr>
+      <tr><td>Elasticsearch</td>
+          <td><span class="pill {{ 'on' if kibana_url else 'off' }}">{{ 'LINKED' if kibana_url else 'NOT SET' }}</span></td>
+          <td class="muted">Events are shipped from <span class="mono">storage/logs/*.jsonl</span>
+            by <span class="mono">elastic-shipper</span>. Kibana runs on its own internal
+            network and is reached over your SSH tunnel, not through this app.</td></tr>
+      <tr><td>Session camera</td>
+          <td><span class="pill {{ 'on' if channels.session_cam else 'off' }}">{{ 'ENABLED' if channels.session_cam else 'DISABLED' }}</span></td>
+          <td class="muted">Renders sessions to video and delivers them. Runs in its
+            own container on the only network with egress; the honeypot itself stays
+            sealed. Per-session delivery status is on the Sessions page.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Thresholds and limits</h2>
+  <table>
+    <tr><th>Ban threshold</th><td class="mono">{{ settings.ban_threshold }} points</td></tr>
+    <tr><th>Tarpit threshold</th><td class="mono">{{ settings.tarpit_threshold }} points</td></tr>
+    <tr><th>HTTP rate limit</th><td class="mono">{{ settings.rate_limit_rpm }} req/min per IP</td></tr>
+    <tr><th>Ban duration</th><td class="mono">{{ settings.ban_ttl_days }} days</td></tr>
+    <tr><th>Admin session lifetime</th><td class="mono">{{ settings.session_ttl_hours }} hours</td></tr>
+    <tr><th>Storage directory</th><td class="mono">{{ settings.storage_dir }}</td></tr>
+    <tr><th>Storage cap</th><td class="mono">{{ settings.max_storage_mb }} MB</td></tr>
+    <tr><th>Dashboard allowed IPs</th><td class="mono">{{ settings.allowed_ips }}</td></tr>
+    <tr><th>Camera score floor</th><td class="mono">{{ settings.cam_min_score }} points</td></tr>
+    <tr><th>Camera clip format</th><td class="mono">{{ settings.cam_format }}</td></tr>
+    <tr><th>Camera retention</th><td class="mono">{{ settings.cam_retention_days }} days</td></tr>
+    <tr><th>Clips stored</th><td class="mono">{{ settings.clips_stored }}</td></tr>
+  </table>
+  <p class="muted" style="margin-top:.8rem">
+    Thresholds come from the environment. Edit <span class="mono">.env</span> and
+    run <span class="mono">docker compose up -d</span> to change them. No secrets are shown here.
+  </p>
+</div>
+{% endblock %}

@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}{{ ip }}{% endblock %}
+{% block heading %}Attacker profile &mdash; <span class="mono">{{ ip }}</span>{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/asciinema-player/3.6.3/asciinema-player.min.css">
+{% endblock %}
+
+{% block content %}
+<div class="tiles">
+  <div class="tile"><div class="label">Score</div><div class="value">{{ identity.score }}</div></div>
+  <div class="tile"><div class="label">Status</div>
+    <div class="value" style="font-size:1.1rem"><span class="pill {{ status }}">{{ status }}</span></div></div>
+  <div class="tile"><div class="label">Country</div><div class="value" style="font-size:1.4rem">{{ country or '—' }}</div></div>
+  <div class="tile"><div class="label">Tool</div><div class="value" style="font-size:1.1rem">{{ identity.tool_detected or '—' }}</div></div>
+  <div class="tile"><div class="label">Fake host shown</div><div class="value" style="font-size:1.1rem">{{ identity.fake_hostname }}</div></div>
+</div>
+
+<div class="card">
+  <h2>Summary</h2>
+  <table>
+    <tr><th>First seen</th><td class="mono">{{ identity.first_seen }}</td></tr>
+    <tr><th>Last seen</th><td class="mono">{{ identity.last_seen }}</td></tr>
+    <tr><th>Services touched</th><td>{{ (identity.services_touched or []) | join(', ') or '—' }}</td></tr>
+    <tr><th>Fake identity</th><td class="mono">{{ identity.fake_os }} / {{ identity.fake_kernel }} / {{ identity.fake_lan_ip }}</td></tr>
+  </table>
+  <div class="actions">
+    <button class="act danger" data-action="ban" data-ip="{{ ip }}">Ban this IP</button>
+    <button class="act" data-action="unban" data-ip="{{ ip }}">Unban</button>
+    <a class="act" href="{{ url_for('api_export', ip=ip) }}">Export evidence (ZIP)</a>
+    <span id="action-status" class="muted"></span>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Score breakdown</h2>
+    {% if breakdown %}
+    <table>
+      <thead><tr><th>Event type</th><th>Count</th><th>Points</th></tr></thead>
+      <tbody>
+        {% for name, data in breakdown %}
+        <tr><td>{{ name }}</td><td class="mono">{{ data.count }}</td><td class="mono">{{ '%.0f' % data.points }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="empty">No scored events.</div>{% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Service timeline</h2>
+    {% if timeline %}
+    <div class="timeline">
+      {% for event in timeline %}
+      <span class="tick" title="{{ event.timestamp }} — {{ event.reason }}">{{ event.service or 'web' }}:{{ event.event_type }}</span>
+      {% endfor %}
+    </div>
+    {% else %}<div class="empty">No timeline data.</div>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>Credentials attempted</h2>
+  {% if credentials %}
+  <table>
+    <thead><tr><th>When</th><th>Service</th><th>Username</th><th>Password / hash</th></tr></thead>
+    <tbody>
+      {% for cred in credentials | reverse %}
+      <tr>
+        <td class="mono">{{ cred.timestamp[:19] }}</td>
+        <td>{{ cred.service }}</td>
+        <td class="mono">{{ cred.username }}</td>
+        <td class="mono wrap">{{ cred.password }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No credentials submitted.</div>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Commands issued</h2>
+  {% if commands %}
+  <pre class="log">{% for event in commands %}[{{ event.timestamp[:19] }}] {{ event.payload }}
+{% endfor %}</pre>
+  {% else %}<div class="empty">No commands issued.</div>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Payloads submitted</h2>
+  {% if payloads %}
+  <table>
+    <thead><tr><th>When</th><th>Type</th><th>Payload</th></tr></thead>
+    <tbody>
+      {% for event in payloads | reverse %}
+      <tr>
+        <td class="mono">{{ event.timestamp[:19] }}</td>
+        <td>{{ event.event_type }}</td>
+        <td class="mono wrap">{{ event.payload }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">No payloads recorded.</div>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Session recordings</h2>
+  {% if sessions %}
+    {% for item in sessions %}
+    <div class="asciinema">
+      <p class="mono muted">
+        {{ item.name }} &middot; {{ item.duration }}s &middot; {{ item.size }} bytes
+        &middot; camera <span class="pill {{ item.cam_status }}">{{ item.cam_status | upper }}</span>
+        {% if item.cam_detail %}<span class="mono">({{ item.cam_detail }})</span>{% endif %}
+        {% if item.clip %}
+        &middot; <a href="{{ url_for('session_clip', name=item.clip, download='1') }}">download clip</a>
+        {% endif %}
+      </p>
+      <div class="player" data-src="{{ url_for('session_raw', name=item.name) }}"></div>
+      {% if item.clip %}
+        {% if item.clip.endswith('.mp4') %}
+        <video class="clip-preview" src="{{ url_for('session_clip', name=item.clip) }}"
+               controls loop muted preload="none"></video>
+        {% else %}
+        <img class="clip-preview" src="{{ url_for('session_clip', name=item.clip) }}"
+             alt="Session clip" loading="lazy">
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}<div class="empty">No session recordings for this IP.</div>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Event log</h2>
+  {% if events %}
+  <table>
+    <thead><tr><th>Time</th><th>Service</th><th>Event</th><th>Score</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td class="mono">{{ event.timestamp[:19] }}</td>
+        <td>{{ event.service or '-' }}</td>
+        <td>{{ event.event_type }}</td>
+        <td class="mono">{{ event.cumulative_score if event.cumulative_score is defined else '-' }}</td>
+        <td class="mono wrap">{{ event.payload_excerpt or event.reason or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="pager">
+    {% if page > 1 %}<a href="{{ url_for('ip_detail', ip=ip, page=page-1) }}">&larr; Previous</a>{% endif %}
+    <span class="muted">Page {{ page }} of {{ total_pages }}</span>
+    {% if page < total_pages %}<a href="{{ url_for('ip_detail', ip=ip, page=page+1) }}">Next &rarr;</a>{% endif %}
+  </div>
+  {% else %}<div class="empty">No events logged.</div>{% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/asciinema-player/3.6.3/asciinema-player.min.js"></script>
+<script src="{{ url_for('static', filename='detail.js') }}" defer></script>
+{% endblock %}

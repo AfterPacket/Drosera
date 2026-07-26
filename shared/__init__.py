@@ -1,0 +1,66 @@
+"""Shared honeypot utilities: identity state, scoring, alerting, fake shell."""
+
+from .alerting import (
+    SessionRecorder,
+    alert_event,
+    log_ban_event,
+    log_session_end,
+    log_session_start,
+)
+from .identity import (
+    IdentityManager,
+    activate_tarpit,
+    ban,
+    detect_spray,
+    get_or_create_identity,
+    hash_ip,
+    is_banned,
+    is_tarpitted,
+    record_credential,
+    score_event,
+    score_named_event,
+    touch_service,
+    unban,
+    update_identity,
+)
+from .scoring import (
+    BAN_THRESHOLD,
+    SCORES,
+    TARPIT_THRESHOLD,
+    get_score,
+    is_bannable,
+    should_tarpit,
+)
+from .tarpit import deadline, drip, log_hold, stall
+
+__all__ = [
+    "SessionRecorder",
+    "alert_event",
+    "log_ban_event",
+    "log_session_end",
+    "log_session_start",
+    "IdentityManager",
+    "activate_tarpit",
+    "ban",
+    "detect_spray",
+    "get_or_create_identity",
+    "hash_ip",
+    "is_banned",
+    "is_tarpitted",
+    "record_credential",
+    "score_event",
+    "score_named_event",
+    "touch_service",
+    "unban",
+    "update_identity",
+    "BAN_THRESHOLD",
+    "SCORES",
+    "TARPIT_THRESHOLD",
+    "get_score",
+    "is_bannable",
+    "should_tarpit",
+    "deadline",
+    "drip",
+    "log_hold",
+    "stall",
+]

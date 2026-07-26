@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Audit{% endblock %}
+{% block heading %}Admin audit log{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>Last {{ records | length }} entries (newest first)</h2>
+  {% if records %}
+  <table>
+    <thead><tr><th>Time</th><th>Event</th><th>User</th><th>From</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for record in records %}
+      <tr>
+        <td class="mono">{{ record.timestamp[:19] }}</td>
+        <td>{{ record.event }}</td>
+        <td class="mono">{{ record.user or '—' }}</td>
+        <td class="mono">{{ record.remote_addr or '—' }}</td>
+        <td class="mono wrap">
+          {%- for key, value in record.items() -%}
+            {%- if key not in ('timestamp', 'event', 'user', 'remote_addr') -%}
+              {{ key }}={{ value }}{{ " " }}
+            {%- endif -%}
+          {%- endfor -%}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No audit entries yet.</div>
+  {% endif %}
+</div>
+{% endblock %}

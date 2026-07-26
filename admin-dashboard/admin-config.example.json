@@ -1,0 +1,7 @@
+{
+  "_comment": "Template only. Never edit by hand -- run setup.py, which generates a real bcrypt hash and TOTP secret and writes the file with mode 0600.",
+  "username": "admin",
+  "password_hash": "$2b$12$REPLACE_ME_WITH_A_REAL_BCRYPT_HASH_FROM_SETUP_PY",
+  "totp_secret": "REPLACEMEWITHAREALBASE32SECRET",
+  "allowed_ips": ["127.0.0.1"]
+}

@@ -1,0 +1,106 @@
+:root{
+  --bg:#0d1117; --card:#161b22; --line:#30363d; --text:#f0f6fc;
+  --muted:#8b949e; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:14px;line-height:1.5}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ---- auth screens ---- */
+.auth{max-width:380px;margin:12vh auto;background:var(--card);border:1px solid var(--line);
+  border-radius:8px;padding:2rem}
+.auth h1{font-size:1.25rem;margin-bottom:.35rem}
+.auth p.sub{color:var(--muted);font-size:.85rem;margin-bottom:1.5rem}
+.auth label{display:block;margin:.9rem 0 .3rem;font-size:.85rem;color:var(--muted)}
+.auth input{width:100%;padding:.6rem .7rem;background:var(--bg);color:var(--text);
+  border:1px solid var(--line);border-radius:6px;font-size:.95rem}
+.auth input:focus{outline:none;border-color:var(--accent)}
+.auth button{width:100%;margin-top:1.4rem;padding:.65rem;background:var(--accent);
+  color:#04121f;border:0;border-radius:6px;font-weight:600;font-size:.95rem;cursor:pointer}
+.auth button:hover{filter:brightness(1.1)}
+.err{background:rgba(248,81,73,.12);border:1px solid var(--bad);color:#ffb3ae;
+  padding:.6rem .8rem;border-radius:6px;font-size:.85rem;margin-bottom:1rem}
+.code-input{letter-spacing:.4em;text-align:center;font-family:var(--mono);font-size:1.3rem!important}
+
+/* ---- layout ---- */
+.layout{display:flex;min-height:100vh}
+.sidebar{width:190px;flex:0 0 190px;background:var(--card);border-right:1px solid var(--line);
+  padding:1.25rem 0;display:flex;flex-direction:column}
+.brand{font-size:1.15rem;font-weight:700;padding:0 1.25rem 1.25rem;letter-spacing:-.3px}
+.brand span{color:var(--accent)}
+.sidebar a{display:block;padding:.55rem 1.25rem;color:var(--muted);font-size:.9rem;
+  border-left:3px solid transparent}
+.sidebar a:hover{color:var(--text);background:rgba(255,255,255,.03);text-decoration:none}
+.sidebar a.on{color:var(--text);border-left-color:var(--accent);background:rgba(88,166,255,.08)}
+.logout{margin-top:auto;padding:1rem 1.25rem 0}
+.logout button{width:100%;padding:.45rem;background:transparent;color:var(--muted);
+  border:1px solid var(--line);border-radius:6px;cursor:pointer;font-size:.85rem}
+.logout button:hover{color:var(--bad);border-color:var(--bad)}
+
+.content{flex:1;padding:1.5rem 2rem;min-width:0}
+.topbar{display:flex;justify-content:space-between;align-items:baseline;
+  border-bottom:1px solid var(--line);padding-bottom:.9rem;margin-bottom:1.5rem}
+.topbar h1{font-size:1.25rem;font-weight:600}
+.who{color:var(--muted);font-size:.85rem;font-family:var(--mono)}
+
+/* ---- cards & tiles ---- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem;margin-bottom:1.5rem}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem 1.1rem}
+.tile .label{color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.5px}
+.tile .value{font-size:1.9rem;font-weight:700;margin-top:.3rem;font-variant-numeric:tabular-nums}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1.2rem;margin-bottom:1.5rem}
+.card h2{font-size:1rem;margin-bottom:.9rem;font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+@media(max-width:1100px){.grid2{grid-template-columns:1fr}}
+
+/* ---- tables ---- */
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th,td{text-align:left;padding:.5rem .7rem;border-bottom:1px solid var(--line);
+  vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;
+  letter-spacing:.4px;white-space:nowrap}
+tbody tr:hover{background:rgba(255,255,255,.025)}
+td.mono,.mono{font-family:var(--mono);font-size:.82rem}
+.wrap{word-break:break-word;max-width:520px}
+
+.pill{display:inline-block;padding:.12rem .5rem;border-radius:99px;font-size:.72rem;
+  font-weight:600;letter-spacing:.3px}
+.pill.ACTIVE{background:rgba(63,185,80,.15);color:var(--ok)}
+.pill.TARPITTED{background:rgba(210,153,34,.15);color:var(--warn)}
+.pill.BANNED{background:rgba(248,81,73,.15);color:var(--bad)}
+.pill.on{background:rgba(63,185,80,.15);color:var(--ok)}
+.pill.off{background:rgba(139,148,158,.15);color:var(--muted)}
+.pill.sent{background:rgba(63,185,80,.15);color:var(--ok)}
+.pill.rendered{background:rgba(210,153,34,.15);color:var(--warn)}
+.pill.pending{background:rgba(139,148,158,.15);color:var(--muted)}
+.pill.skipped{background:rgba(139,148,158,.15);color:var(--muted)}
+.pill.unknown{background:rgba(139,148,158,.15);color:var(--muted)}
+.pill.failed,.pill.error{background:rgba(248,81,73,.15);color:var(--bad)}
+
+/* Clip previews. Capped so a wide session does not blow out the table row. */
+.clip-preview{max-width:100%;width:720px;border:1px solid var(--line);border-radius:6px;
+  display:block;margin:.6rem 0}
+
+pre.log{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:.9rem;
+  font-family:var(--mono);font-size:.8rem;white-space:pre-wrap;word-break:break-all;
+  max-height:620px;overflow:auto}
+
+button.act,a.act{display:inline-block;padding:.4rem .9rem;border-radius:6px;font-size:.82rem;
+  border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer;
+  margin-right:.5rem}
+button.act:hover,a.act:hover{border-color:var(--accent);text-decoration:none}
+button.act.danger:hover{border-color:var(--bad);color:var(--bad)}
+.actions{margin:.5rem 0 1rem}
+.muted{color:var(--muted)}
+.pager{margin-top:1rem;font-size:.85rem}
+.pager a{margin-right:.8rem}
+.empty{color:var(--muted);padding:1.5rem;text-align:center;font-size:.9rem}
+.timeline{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.6rem}
+.tick{font-family:var(--mono);font-size:.7rem;padding:.15rem .45rem;border-radius:4px;
+  background:rgba(88,166,255,.1);border:1px solid var(--line);color:var(--muted)}
+canvas{max-height:280px}
+.asciinema{margin:.6rem 0 1.2rem}

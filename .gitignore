@@ -1,0 +1,60 @@
+# Author's working notes and original brief. Kept locally, never published:
+# personal drafting rather than documentation, and the repo's own docs supersede
+# it. IMPLEMENTATION_SUMMARY.md is excluded for the same reason plus one more --
+# it asserts a completeness that has never been verified by running anything.
+intial.md
+IMPLEMENTATION_SUMMARY.md
+
+# Agent tooling config. Local to whoever is working on the checkout, and not
+# something a public clone should inherit.
+.claude/
+
+# Secrets and local config
+.env
+.env.local
+.env.*.local
+admin-dashboard/config/
+admin-dashboard/admin-logs/
+docker-compose.override.yml
+
+# TLS material -- the Cloudflare origin key must never be committed
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Captured attacker data. Contains third-party credentials; keep it off git.
+storage/
+
+# MaxMind GeoLite2 databases: large binaries under their own licence terms.
+elastic/geoip/*.mmdb
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+.venv/
+venv/
+
+# Redis persistence
+dump.rdb
+appendonly.aof
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

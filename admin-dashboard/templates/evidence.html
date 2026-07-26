@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Evidence{% endblock %}
+{% block heading %}Ban evidence log{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>storage/evidence/fail2ban.log</h2>
+  <div class="actions">
+    <button class="act" id="copy-all">Copy all</button>
+    <a class="act" href="{{ url_for('evidence_download') }}">Download</a>
+    <span id="copy-status" class="muted"></span>
+  </div>
+  {% if content %}
+  <pre class="log" id="evidence-body">{{ content }}</pre>
+  {% else %}
+  <div class="empty">No ban events recorded yet.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='evidence.js') }}" defer></script>
+{% endblock %}

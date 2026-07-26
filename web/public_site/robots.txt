@@ -1,0 +1,13 @@
+User-agent: *
+Disallow: /wp-admin/
+Disallow: /wp-content/plugins/
+Disallow: /wp-content/uploads/private/
+Disallow: /config/
+Disallow: /backup/
+Disallow: /.env
+Disallow: /admin/
+Disallow: /.git/
+Disallow: /phpinfo.php
+Disallow: /phpmyadmin/
+Disallow: /.aws/
+Sitemap: /sitemap.xml

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Drosera{% endblock %} &middot; Drosera</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="icon" href="data:,">
+{% block head %}{% endblock %}
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="brand">Dro<span>sera</span></div>
+    <a href="{{ url_for('dashboard') }}" {% if request.endpoint == 'dashboard' %}class="on"{% endif %}>Live feed</a>
+    <a href="{{ url_for('sessions') }}" {% if request.endpoint == 'sessions' %}class="on"{% endif %}>Sessions</a>
+    <a href="{{ url_for('evidence') }}" {% if request.endpoint == 'evidence' %}class="on"{% endif %}>Evidence</a>
+    <a href="{{ url_for('stats') }}" {% if request.endpoint == 'stats' %}class="on"{% endif %}>Stats</a>
+    {% if kibana_url %}
+    <a href="{{ kibana_url }}" target="_blank" rel="noopener noreferrer">Kibana &#8599;</a>
+    {% endif %}
+    <a href="{{ url_for('admin_audit') }}" {% if request.endpoint == 'admin_audit' %}class="on"{% endif %}>Audit</a>
+    <a href="{{ url_for('admin_settings') }}" {% if request.endpoint == 'admin_settings' %}class="on"{% endif %}>Settings</a>
+    <form method="post" action="{{ url_for('logout') }}" class="logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Log out</button>
+    </form>
+  </nav>
+  <main class="content">
+    <header class="topbar">
+      <h1>{% block heading %}{% endblock %}</h1>
+      <span class="who">{{ g.admin_user }}</span>
+    </header>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% block scripts %}{% endblock %}
+</body>
+</html>

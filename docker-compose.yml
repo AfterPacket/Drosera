@@ -1,0 +1,535 @@
+# Drosera honeypot appliance.
+#
+# CONTAINMENT MODEL
+#   - honeypot-internal, admin-internal and elastic-internal are all
+#     `internal: true`: no container on them can reach the internet. Published
+#     ports still work (Docker DNATs those on the host), so inbound traffic
+#     arrives normally while outbound is impossible. This is what stops the box
+#     being usable as a pivot or a relay.
+#   - cam-egress is the single exception and has exactly one member,
+#     session-cam, which is on no other network. Recordings reach it over the
+#     storage volume, so it can deliver clips out without giving anything on
+#     the honeypot side a path to the internet.
+#   - Every container: non-root (UID 1000), read-only root filesystem, all
+#     capabilities dropped, no-new-privileges, pids and memory capped.
+#   - Services bind unprivileged ports inside the container; the host maps the
+#     real port onto them, so nothing needs CAP_NET_BIND_SERVICE.
+#   - Container logs are size-capped so a scan flood cannot fill the disk.
+#
+# Enabling webhook/Telegram/syslog alerting requires egress. See
+# deploy/README.md -- do it deliberately, not by default.
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-honeypot-env: &honeypot-env
+  REDIS_HOST: redis-honeypot
+  REDIS_PORT: "6379"
+  STORAGE_DIR: /var/honeypot/storage
+  HONEYPOT_BAN_THRESHOLD: ${HONEYPOT_BAN_THRESHOLD:-35}
+  HONEYPOT_TARPIT_THRESHOLD: ${HONEYPOT_TARPIT_THRESHOLD:-5}
+  HONEYPOT_BAN_TTL: ${HONEYPOT_BAN_TTL:-604800}
+  HONEYPOT_MAX_STORAGE_MB: ${HONEYPOT_MAX_STORAGE_MB:-4096}
+  ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+  ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+  ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+  ALERT_SYSLOG_HOST: ${ALERT_SYSLOG_HOST:-}
+  ALERT_SYSLOG_PORT: ${ALERT_SYSLOG_PORT:-514}
+  # Read by shared/tarpit.py in the asyncio services.
+  TARPIT_BYTE_DELAY: ${TARPIT_BYTE_DELAY:-1.5}
+  TARPIT_MAX_BYTE_GAP: ${TARPIT_MAX_BYTE_GAP:-10}
+  TARPIT_STALL_MIN: ${TARPIT_STALL_MIN:-4}
+  TARPIT_STALL_MAX: ${TARPIT_STALL_MAX:-15}
+
+# Flattened rather than merging *hardening in: nested YAML merge keys inside an
+# anchor that is itself merged are handled inconsistently across parsers.
+x-python-service: &python-service
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  depends_on:
+    redis-honeypot:
+      condition: service_healthy
+  volumes:
+    - ./shared:/app/shared:ro
+    - ./storage:/var/honeypot/storage
+  tmpfs:
+    # noexec,nosuid,nodev: with a read-only rootfs, /tmp is the only writable
+    # path in the container. Leaving it executable would hand an attacker who
+    # achieved code execution the one place to stage a binary or a local
+    # privilege-escalation exploit.
+    - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+  networks: [honeypot-internal]
+  mem_limit: 256m
+  pids_limit: 256
+  cpus: 0.50
+  # Only nofile here. RLIMIT_NPROC is counted per host UID, and every container
+  # runs as UID 1000, so an nproc ulimit would be shared across all of them.
+  # Per-container process capping is pids_limit above, which is cgroup-based.
+  ulimits:
+    nofile: { soft: 4096, hard: 8192 }
+
+services:
+
+  # ---------------------------------------------------------------- datastores
+
+  redis-honeypot:
+    image: redis:7-alpine
+    container_name: hp-redis-honeypot
+    # Bounded memory with LRU eviction: an attacker generating millions of
+    # identities can never OOM the host.
+    command: >
+      redis-server --appendonly yes
+      --maxmemory ${REDIS_MAXMEMORY:-512mb}
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+    user: "999:1000"
+    volumes:
+      - redis-honeypot-data:/data
+    networks: [honeypot-internal]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=8m,noexec,nosuid,nodev
+    mem_limit: 768m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "2" }
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  redis-admin:
+    image: redis:7-alpine
+    container_name: hp-redis-admin
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction
+    user: "999:1000"
+    volumes:
+      - redis-admin-data:/data
+    networks: [admin-internal]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=8m,noexec,nosuid,nodev
+    mem_limit: 192m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "2" }
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # -------------------------------------------------------------- web frontend
+
+  web:
+    build: { context: ./web, dockerfile: Dockerfile }
+    container_name: hp-web
+    <<: *hardening
+    depends_on:
+      redis-honeypot:
+        condition: service_healthy
+    environment:
+      <<: *honeypot-env
+      STORAGE_PATH: /var/honeypot/storage
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-60}
+      TARPIT_MAX_CONCURRENT: ${TARPIT_MAX_CONCURRENT:-24}
+      TARPIT_MAX_SECONDS: ${TARPIT_MAX_SECONDS:-900}
+      CAM_WEB_IDLE_SECONDS: ${CAM_WEB_IDLE_SECONDS:-900}
+      RICKROLL_URL: ${RICKROLL_URL:-https://www.youtube.com/watch?v=dQw4w9WgXcQ}
+      SERVER_NAME: ${DOMAIN:-localhost}
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - ./web:/var/www/html:ro
+      - ./nginx/honeypot.conf:/etc/nginx/conf.d/honeypot.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./storage:/var/honeypot/storage
+    tmpfs:
+      # nginx and php-fpm scratch space. noexec matters most here: this is the
+      # internet-facing container and the only writable path it has.
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+      - /run:size=8m,noexec,nosuid,nodev
+    # NOT on admin-internal: the internet-facing container must never be able to
+    # reach redis-admin or the dashboard.
+    networks: [honeypot-internal]
+    mem_limit: 512m
+    pids_limit: 512
+    cpus: 1.5
+
+  # --------------------------------------------------------- protocol honeypots
+
+  ssh-honey:
+    build: { context: ./ssh-honey, dockerfile: Dockerfile }
+    container_name: hp-ssh-honey
+    <<: *python-service
+    environment:
+      <<: *honeypot-env
+      LISTEN_PORT: "2222"
+      SSH_HOST_KEY: /app/state/ssh_host_key
+      SSH_MAX_CONNECTIONS: ${SSH_MAX_CONNECTIONS:-200}
+      SSH_TARPIT_MAX_SECONDS: ${SSH_TARPIT_MAX_SECONDS:-1800}
+    ports:
+      - "22:2222"
+    volumes:
+      - ./shared:/app/shared:ro
+      - ./storage:/var/honeypot/storage
+      # Persisted so the host key fingerprint stays stable across restarts --
+      # a changing fingerprint is an obvious tell.
+      - ssh-host-key:/app/state
+    mem_limit: 384m
+    pids_limit: 512
+
+  ftp-honey:
+    build: { context: ./ftp-honey, dockerfile: Dockerfile }
+    container_name: hp-ftp-honey
+    <<: *python-service
+    environment:
+      <<: *honeypot-env
+      LISTEN_PORT: "2121"
+      FTP_PASV_MIN: "30000"
+      FTP_PASV_MAX: "30019"
+      FTP_PASV_ADDRESS: ${FTP_PASV_ADDRESS:-}
+    ports:
+      - "21:2121"
+      - "30000-30019:30000-30019"
+
+  telnet-honey:
+    build: { context: ./telnet-honey, dockerfile: Dockerfile }
+    container_name: hp-telnet-honey
+    <<: *python-service
+    environment:
+      <<: *honeypot-env
+      LISTEN_PORT: "2323"
+    ports:
+      - "23:2323"
+
+  smtp-honey:
+    build: { context: ./smtp-honey, dockerfile: Dockerfile }
+    container_name: hp-smtp-honey
+    <<: *python-service
+    environment:
+      <<: *honeypot-env
+      LISTEN_PORT: "2525"
+    ports:
+      - "25:2525"
+
+  mysql-honey:
+    build: { context: ./mysql-honey, dockerfile: Dockerfile }
+    container_name: hp-mysql-honey
+    <<: *python-service
+    environment:
+      <<: *honeypot-env
+      LISTEN_PORT: "33306"
+    ports:
+      - "3306:33306"
+
+  smb-honey:
+    build: { context: ./smb-honey, dockerfile: Dockerfile }
+    container_name: hp-smb-honey
+    <<: *python-service
+    environment:
+      <<: *honeypot-env
+      LISTEN_PORT_SMB: "4445"
+      LISTEN_PORT_NBT: "4139"
+      SMB_TARPIT_MAX_SECONDS: ${SMB_TARPIT_MAX_SECONDS:-600}
+    ports:
+      - "445:4445"
+      - "139:4139"
+
+  rdp-honey:
+    build: { context: ./rdp-honey, dockerfile: Dockerfile }
+    container_name: hp-rdp-honey
+    <<: *python-service
+    environment:
+      <<: *honeypot-env
+      LISTEN_PORT: "33389"
+      RDP_TARPIT_MAX_SECONDS: ${RDP_TARPIT_MAX_SECONDS:-600}
+    ports:
+      - "3389:33389"
+
+  # ------------------------------------------------------------ session camera
+
+  # Renders finished attacker sessions to video and delivers them.
+  #
+  # This is the ONLY container with internet access, and it is deliberately not
+  # on honeypot-internal. Recordings reach it through the storage bind mount --
+  # a filesystem handoff, not a network one. That asymmetry is the whole point:
+  # a compromised honeypot still has no route out through this container, and a
+  # compromised camera still has no route into the honeypot network.
+  session-cam:
+    build: { context: ./session-cam, dockerfile: Dockerfile }
+    container_name: hp-session-cam
+    <<: *hardening
+    environment:
+      STORAGE_DIR: /var/honeypot/storage
+      CAM_ENABLED: ${CAM_ENABLED:-true}
+      CAM_FORMAT: ${CAM_FORMAT:-gif}
+      CAM_MIN_SCORE: ${CAM_MIN_SCORE:-5}
+      CAM_MIN_DURATION: ${CAM_MIN_DURATION:-2}
+      CAM_POLL_SECONDS: ${CAM_POLL_SECONDS:-15}
+      CAM_RETENTION_DAYS: ${CAM_RETENTION_DAYS:-14}
+      CAM_MAX_CLIP_MB: ${CAM_MAX_CLIP_MB:-45}
+      CAM_MAX_CLIPS_TOTAL_MB: ${CAM_MAX_CLIPS_TOTAL_MB:-1024}
+      CAM_MAX_FRAMES: ${CAM_MAX_FRAMES:-420}
+      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      CAM_SMTP_HOST: ${CAM_SMTP_HOST:-}
+      CAM_SMTP_PORT: ${CAM_SMTP_PORT:-587}
+      CAM_SMTP_USER: ${CAM_SMTP_USER:-}
+      CAM_SMTP_PASSWORD: ${CAM_SMTP_PASSWORD:-}
+      CAM_SMTP_SECURITY: ${CAM_SMTP_SECURITY:-starttls}
+      CAM_MAIL_FROM: ${CAM_MAIL_FROM:-}
+      CAM_MAIL_TO: ${CAM_MAIL_TO:-}
+    volumes:
+      # Read-write: it writes clips into storage/clips and per-session markers
+      # next to the recordings. It never opens a socket to the honeypot.
+      - ./storage:/var/honeypot/storage
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    networks: [cam-egress]
+    # Rendering holds a few hundred quantised frames in memory at once.
+    mem_limit: 768m
+    pids_limit: 128
+    cpus: 1.0
+
+  # -------------------------------------------------------------- search stack
+
+  # T-Pot-style analytics. Elasticsearch and Kibana sit on their own internal
+  # network: the honeypot containers are not on it and cannot reach them, and
+  # events arrive via the elastic-shipper reading the storage volume rather than
+  # over any network path from the honeypot side.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: hp-elasticsearch
+    restart: unless-stopped
+    # Opt-in: this stack wants ~2.5GB of RAM, which is more than the whole
+    # honeypot. Start it with `docker compose --profile elastic up -d`.
+    profiles: [elastic]
+    environment:
+      discovery.type: single-node
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      xpack.security.enabled: "true"
+      # Plain HTTP inside an internal-only Docker network. Enabling transport
+      # TLS here would mean managing a CA for traffic that never leaves the
+      # host's bridge; the boundary being relied on is the network, plus the
+      # fact that Kibana is published to 127.0.0.1 only.
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      # No egress on this network, so the GeoIP auto-updater would retry
+      # forever. Mount a MaxMind DB for the shipper instead -- see .env.example.
+      ingest.geoip.downloader.enabled: "false"
+      xpack.ml.enabled: "false"
+      ES_JAVA_OPTS: -Xms${ELASTIC_HEAP:-512m} -Xmx${ELASTIC_HEAP:-512m}
+      bootstrap.memory_lock: "false"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks: [elastic-internal]
+    mem_limit: ${ELASTIC_MEM_LIMIT:-1536m}
+    pids_limit: 512
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "2" }
+    healthcheck:
+      test: ["CMD-SHELL",
+             "curl -fsS -u elastic:$$ELASTIC_PASSWORD http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      start_period: 90s
+      retries: 10
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.3
+    container_name: hp-kibana
+    restart: unless-stopped
+    profiles: [elastic]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: kibana_system
+      # elastic-shipper sets this password on kibana_system at startup; Kibana
+      # retries until it matches, so the ordering does not need enforcing.
+      ELASTICSEARCH_PASSWORD: ${KIBANA_PASSWORD:-}
+      SERVER_PUBLICBASEURL: http://127.0.0.1:${KIBANA_PORT:-5601}
+      TELEMETRY_ENABLED: "false"
+      TELEMETRY_OPTIN: "false"
+    ports:
+      # Loopback only, same access model as the dashboard:
+      #   ssh -N -L 5601:127.0.0.1:5601 -p 2222 you@vps
+      - "127.0.0.1:${KIBANA_PORT:-5601}:5601"
+    networks: [elastic-internal]
+    mem_limit: ${KIBANA_MEM_LIMIT:-1024m}
+    pids_limit: 512
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "2" }
+
+  elastic-shipper:
+    build: { context: ./elastic, dockerfile: Dockerfile }
+    container_name: hp-elastic-shipper
+    <<: *hardening
+    profiles: [elastic]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      STORAGE_DIR: /var/honeypot/storage
+      ELASTIC_URL: http://elasticsearch:9200
+      ELASTIC_USERNAME: elastic
+      # Empty rather than a compose-level hard requirement: interpolation runs
+      # over the whole file regardless of profiles, so `:?` here would stop the
+      # honeypot booting for anyone not using Elasticsearch. The shipper checks
+      # for it at startup and exits with a clear message instead.
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      KIBANA_URL: http://kibana:5601
+      KIBANA_PASSWORD: ${KIBANA_PASSWORD:-}
+      ELASTIC_INDEX_PREFIX: ${ELASTIC_INDEX_PREFIX:-drosera}
+      ELASTIC_RETENTION_DAYS: ${ELASTIC_RETENTION_DAYS:-90}
+      ELASTIC_POLL_SECONDS: ${ELASTIC_POLL_SECONDS:-15}
+      GEOIP_DB: /geoip/GeoLite2-City.mmdb
+    volumes:
+      # Read-write only because the offset checkpoint lives beside the logs.
+      # It never writes into logs/ itself.
+      - ./storage:/var/honeypot/storage
+      - ./elastic/geoip:/geoip:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    # NOT on honeypot-internal: it reads events off the volume, so it needs no
+    # path to the honeypot, and this keeps the search stack unreachable from it.
+    networks: [elastic-internal]
+    mem_limit: 256m
+    pids_limit: 128
+    cpus: 0.50
+
+  # ------------------------------------------------------------ operator panel
+
+  admin-dashboard:
+    build: { context: ./admin-dashboard, dockerfile: Dockerfile }
+    container_name: hp-admin-dashboard
+    <<: *hardening
+    depends_on:
+      redis-admin:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis-admin
+      REDIS_PORT: "6379"
+      REDIS_HONEYPOT_HOST: redis-honeypot
+      REDIS_HONEYPOT_PORT: "6379"
+      STORAGE_DIR: /var/honeypot/storage
+      ADMIN_CONFIG: /app/config/admin-config.json
+      AUDIT_LOG: /app/admin-logs/audit.jsonl
+      ADMIN_SESSION_TTL: ${ADMIN_SESSION_TTL:-28800}
+      # Reached over an SSH tunnel as plain http on 127.0.0.1, so the Secure
+      # cookie flag would prevent the cookie being stored. Set to true if you
+      # front the dashboard with TLS.
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-false}
+      HONEYPOT_BAN_THRESHOLD: ${HONEYPOT_BAN_THRESHOLD:-35}
+      HONEYPOT_TARPIT_THRESHOLD: ${HONEYPOT_TARPIT_THRESHOLD:-5}
+      HONEYPOT_BAN_TTL: ${HONEYPOT_BAN_TTL:-604800}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-60}
+      HONEYPOT_MAX_STORAGE_MB: ${HONEYPOT_MAX_STORAGE_MB:-4096}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+      ALERT_SYSLOG_HOST: ${ALERT_SYSLOG_HOST:-}
+      # Informational only, so the settings page can describe the camera. The
+      # SMTP credentials are deliberately not passed here -- only session-cam
+      # needs them.
+      CAM_ENABLED: ${CAM_ENABLED:-true}
+      CAM_FORMAT: ${CAM_FORMAT:-gif}
+      CAM_MIN_SCORE: ${CAM_MIN_SCORE:-5}
+      CAM_RETENTION_DAYS: ${CAM_RETENTION_DAYS:-14}
+      # A link target for the operator's browser only -- this container is not
+      # on elastic-internal and never connects to Kibana itself. Empty by
+      # default, so no dead link appears unless the elastic profile is in use.
+      KIBANA_PUBLIC_URL: ${KIBANA_PUBLIC_URL:-}
+    ports:
+      # Loopback only. Reach it with:
+      #   ssh -N -L 8443:127.0.0.1:8443 -p 2222 you@vps
+      - "127.0.0.1:8443:8443"
+    volumes:
+      # A directory, not a file: bind-mounting a file that does not exist yet
+      # makes Docker create a directory and setup.py then fails confusingly.
+      - ./admin-dashboard/config:/app/config
+      - ./admin-dashboard/admin-logs:/app/admin-logs
+      - ./storage:/var/honeypot/storage:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    networks: [admin-internal, honeypot-internal]
+    mem_limit: 384m
+    pids_limit: 256
+    cpus: 0.75
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8443/healthz',timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+networks:
+  honeypot-internal:
+    driver: bridge
+    internal: true          # no egress: the honeypot cannot phone home or pivot
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+  admin-internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.26.0.0/16
+  # The one network in the appliance with egress. session-cam is its only
+  # member, and session-cam is on no other network -- so this grants the
+  # ability to deliver clips without granting the honeypot a way out.
+  cam-egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.27.0.0/16
+  # Elasticsearch, Kibana and the shipper only. No honeypot container is a
+  # member, so nothing an attacker reaches can talk to the search stack.
+  elastic-internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  redis-honeypot-data:
+  redis-admin-data:
+  ssh-host-key:
+  elasticsearch-data:
