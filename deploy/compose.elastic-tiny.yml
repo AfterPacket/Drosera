@@ -1,0 +1,66 @@
+# Elasticsearch + Kibana squeezed onto a 4 GB box. Layer on top of
+# compose.small.yml, which handles the honeypot side:
+#
+#   docker compose -f docker-compose.yml \
+#                  -f deploy/compose.small.yml \
+#                  -f deploy/compose.elastic-tiny.yml \
+#                  --profile elastic up -d
+#
+# READ THIS FIRST. Even with these limits the full stack on 4 GB is tight, and
+# it is tight in the worst way: containers get cgroup-killed individually and
+# restart-loop while the rest of the stack looks healthy, so the failure is
+# quiet rather than obvious.
+#
+# Add swap before using this. VPS Ubuntu images ship with none, so there is no
+# cushion at all when Kibana peaks during startup:
+#
+#   fallocate -l 4G /swapfile && chmod 600 /swapfile
+#   mkswap /swapfile && swapon /swapfile
+#   echo '/swapfile none swap sw 0 0' >> /etc/fstab
+#   sysctl -w vm.swappiness=10
+#
+# If it still thrashes, the honest fix is to stop running Kibana here. Copy
+# storage/logs/ to a machine with spare RAM and run the search stack there --
+# the shipper reads events off the filesystem and never talks to the honeypot,
+# so it does not care where it runs.
+
+services:
+
+  elasticsearch:
+    environment:
+      # 384m heap. Below ~256m ES struggles to start at all; above ~512m there
+      # is nothing left for Kibana. Off-heap usage roughly doubles this figure,
+      # which is why mem_limit is not simply heap + a little.
+      ES_JAVA_OPTS: -Xms384m -Xmx384m
+      # Single node, one shard, no replicas, no ML, no monitoring collection --
+      # every feature that allocates in the background is worth disabling here.
+      xpack.monitoring.collection.enabled: "false"
+      xpack.watcher.enabled: "false"
+      xpack.ml.enabled: "false"
+      # Fewer, smaller merges: less transient allocation during indexing.
+      indices.memory.index_buffer_size: "8%"
+    mem_limit: 1024m
+    cpus: 1.0
+
+  kibana:
+    environment:
+      # Cap the V8 old-space explicitly. Without this Node sizes its heap from
+      # total host RAM and will happily grow past the cgroup limit, which shows
+      # up as an OOM kill during startup rather than a clean error.
+      NODE_OPTIONS: --max-old-space-size=512
+      # Startup does less work when these are off.
+      TELEMETRY_ENABLED: "false"
+      XPACK_REPORTING_ENABLED: "false"
+      XPACK_APM_UI_ENABLED: "false"
+      MONITORING_UI_ENABLED: "false"
+    mem_limit: 896m
+    cpus: 1.0
+
+  elastic-shipper:
+    environment:
+      # Smaller bulk batches mean smaller request bodies held in memory, and a
+      # gentler load on an Elasticsearch that has little room to spare.
+      ELASTIC_BATCH_LINES: ${ELASTIC_BATCH_LINES:-200}
+      ELASTIC_POLL_SECONDS: ${ELASTIC_POLL_SECONDS:-30}
+    mem_limit: 160m
+    cpus: 0.25
