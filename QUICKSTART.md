@@ -44,6 +44,9 @@ Cloudflare → SSL/TLS → **Origin Server** → Create Certificate. Then:
 ```bash
 sudo nano /opt/drosera/certs/origin.pem     # paste certificate
 sudo nano /opt/drosera/certs/origin.key     # paste private key
+# UID 1000 is the web container's user -- without this nginx cannot read the key
+sudo chown 1000:1000 /opt/drosera/certs/origin.pem /opt/drosera/certs/origin.key
+sudo chmod 644 /opt/drosera/certs/origin.pem
 sudo chmod 600 /opt/drosera/certs/origin.key
 ```
 

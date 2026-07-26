@@ -36,17 +36,40 @@ if [[ "${1:-}" == "--confirm" ]]; then
     [[ -f "$PIDFILE" ]] || die "no cutover is pending (nothing to confirm)"
 
     # Refuse to confirm from the session that would be rolled back anyway.
-    peer_port=""
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        peer_port=$(awk '{print $4}' <<<"$SSH_CONNECTION")
+    #
+    # sudo resets the environment, so SSH_CONNECTION is absent here even when we
+    # are on an SSH session -- which used to make this check pass without
+    # checking anything, defeating the whole point of the deadman switch. Walk up
+    # to the owning sshd and read it out of that process instead.
+    conn="${SSH_CONNECTION:-}"
+    if [[ -z "$conn" ]]; then
+        pid=$PPID
+        while [[ "$pid" -gt 1 ]]; do
+            if [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" == "sshd" ]]; then
+                conn=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+                       | sed -n 's/^SSH_CONNECTION=//p' | head -1)
+                [[ -n "$conn" ]] && break
+            fi
+            pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null) || break
+            [[ -n "$pid" ]] || break
+        done
     fi
-    if [[ -n "$peer_port" && "$peer_port" != "$NEW_PORT" ]]; then
+
+    peer_port=""
+    [[ -n "$conn" ]] && peer_port=$(awk '{print $4}' <<<"$conn")
+
+    if [[ -z "$peer_port" ]]; then
+        die "cannot determine which port this session is on.
+  Confirming blind would defeat the deadman switch, so this is a hard stop.
+  Re-run preserving the environment:   sudo -E $0 --confirm"
+    fi
+    if [[ "$peer_port" != "$NEW_PORT" ]]; then
         die "you are connected on port ${peer_port}, not ${NEW_PORT}. Open a new session on ${NEW_PORT} first."
     fi
 
     kill "$(cat "$PIDFILE")" 2>/dev/null || true
     rm -f "$PIDFILE"
-    log "CONFIRMED on port ${NEW_PORT} from ${SSH_CLIENT%% *}. Rollback cancelled."
+    log "CONFIRMED on port ${NEW_PORT} from ${conn%% *}. Rollback cancelled."
     log "RESULT: SUCCESS -- real SSH is now on ${NEW_PORT}, port ${OLD_PORT} is free for the honeypot."
     echo
     echo "  Cutover complete. Remaining steps:"

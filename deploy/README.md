@@ -104,8 +104,30 @@ The real containment boundary is the Docker configuration: both networks are
 Run the bootstrap script. It is idempotent — safe to re-run.
 
 ```bash
-sudo ADMIN_IP=$(curl -s ifconfig.me) ./deploy/bootstrap.sh
+# Run ON THE VPS, but ADMIN_IP must be YOUR address, not the VPS's.
+sudo ADMIN_IP=203.0.113.10 ./deploy/bootstrap.sh
 ```
+
+**Do not use `ADMIN_IP=$(curl -s ifconfig.me)` here.** Executed on the VPS that
+resolves to the *VPS's own* public address, so ufw ends up allowing port 2222
+only from the box itself — and you discover this later as a connection timing
+out from your laptop with no obvious cause.
+
+Get the right value from the machine you administer from:
+
+```bash
+curl -s ifconfig.me            # run this on YOUR laptop, not the VPS
+```
+
+Or read it off the connection you are already using, on the VPS:
+
+```bash
+echo "${SSH_CLIENT%% *}"
+```
+
+If your home address is dynamic, prefer your ISP's prefix
+(`ADMIN_IP=203.0.113.0/24`) or a VPN exit you control. Getting this wrong is the
+single most common way to lock yourself out.
 
 `ADMIN_IP` should be the address **you** administer from. If it is dynamic, use
 your ISP's CIDR, or omit it and rely on key-only auth.
@@ -173,14 +195,35 @@ In the Cloudflare dashboard for your zone:
    **Minimum TLS Version: 1.2**.
 4. **Speed** → Optimization → **Rocket Loader: Off**. It rewrites your HTML and
    breaks the deliberate WordPress tells.
-5. **Security** → Bots → **Bot Fight Mode: On**.
-6. **Security** → WAF → set custom rules to **Log** rather than Block. Blocking
+5. **Security** → Bots → **Bot Fight Mode: OFF**. This is counter-intuitive if
+   you are used to hardening real sites. Bot Fight Mode issues JS challenges to
+   automated clients, so a scanner receives a Cloudflare interstitial instead of
+   your fake WordPress login — the honeypot records nothing, and the attacker
+   learns the origin is behind Cloudflare rather than that it found a soft
+   target. Every bot it "protects" you from is a bot you wanted.
+6. **Security** → Settings → **Security Level: Essentially Off**, for the same
+   reason. Challenges filter exactly the traffic this box exists to capture.
+7. **Security** → WAF → set custom rules to **Log** rather than Block. Blocking
    at the edge means the honeypot never sees the attack, which defeats the point.
-7. **Caching** → Configuration → **Caching Level: Standard**. Do not enable
+8. **Caching** → Configuration → **Caching Level: Standard**. Do not enable
    "Cache Everything" — cached tarpit responses would be served by Cloudflare
    instead of dripping from your origin.
 
 DNS propagation is usually under a minute on Cloudflare.
+
+**Optional: an `MX` record.** Pointing mail at the box feeds the SMTP honeypot
+on port 25 with spam probes and open-relay tests, which are good captures. Skip
+it if you would rather the domain not look like a mail domain, and never point
+an MX record at a domain you receive real mail on.
+
+**What the proxy does and does not hide.** Cloudflare conceals the origin IP for
+HTTP only. SSH, FTP, telnet, SMTP, MySQL, SMB and RDP are all published on the
+raw VPS address, so the IP is discoverable by scanning or via Shodan — and once
+known, 80/443 can be reached directly, bypassing Cloudflare entirely. Treat the
+proxy as TLS termination and a plausible front, never as a containment boundary.
+The engine already accounts for this: it trusts `CF-Connecting-IP` only when the
+peer is inside a Cloudflare range, and falls back to the socket address
+otherwise, so direct-to-IP visitors are still attributed correctly.
 
 ---
 
@@ -196,9 +239,20 @@ only by Cloudflare, which is exactly right for an origin.
 ```bash
 sudo nano /opt/drosera/certs/origin.pem    # paste the certificate
 sudo nano /opt/drosera/certs/origin.key    # paste the private key
-sudo chmod 600 /opt/drosera/certs/origin.key
+
+# Ownership matters as much as the mode here. The web container runs as UID
+# 1000 and reads the key directly; created with sudo these land as root:root,
+# and 0600 then makes them unreadable to nginx.
+sudo chown 1000:1000 /opt/drosera/certs/origin.pem /opt/drosera/certs/origin.key
 sudo chmod 644 /opt/drosera/certs/origin.pem
+sudo chmod 600 /opt/drosera/certs/origin.key
 ```
+
+If you skip the `chown`, the failure is deliberately confusing: the entrypoint's
+`-s` test only stats the file, so it succeeds and logs "using Cloudflare origin
+certificate", then nginx fails to load the key and the container restart-loops.
+Check `docker logs hp-web` for `cannot load certificate key ... Permission
+denied`.
 
 4. Switch Cloudflare SSL/TLS mode to **Full (Strict)**.
 
