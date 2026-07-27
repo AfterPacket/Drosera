@@ -115,17 +115,28 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         writer.write(f"\r\n{ident.get('fake_os', 'Ubuntu 22.04.3 LTS')}\r\n".encode())
         await writer.drain()
 
+        # Opened before the login loop, not after it. Most telnet bots submit
+        # one credential and disconnect without ever reaching a shell, so
+        # starting the recording after authentication meant the only thing they
+        # did was the one thing never captured.
+        recorder = alerting.SessionRecorder(ip, SERVICE, title=f"telnet from {ip}")
+
         username = ""
         for _ in range(3):
-            writer.write(f"{hostname} login: ".encode())
+            prompt = f"{hostname} login: "
+            writer.write(prompt.encode())
             await writer.drain()
             username = (await read_line(reader, writer)).strip()
+            recorder.write_output(prompt + username + "\r\n")
 
             writer.write(b"Password: ")
             await writer.drain()
             password = (await read_line(reader, writer, echo=False)).strip()
             writer.write(b"\r\n")
             await writer.drain()
+            # Shown in the clear where the wire masks it: this is evidence, not
+            # the attacker's terminal, and the credential is the capture.
+            recorder.write_output(f"Password: {password}\r\n")
 
             identity.record_credential(ip, username, password, SERVICE)
             identity.score_named_event(
@@ -139,11 +150,11 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             if identity.is_banned(ip):
                 writer.write(b"Login incorrect\r\n")
                 await writer.drain()
+                recorder.write_output("Login incorrect\r\n")
                 return
             break
 
         username = username or "root"
-        recorder = alerting.SessionRecorder(ip, SERVICE, title=f"telnet {username}@{hostname}")
 
         motd = (f"Welcome to {ident.get('fake_os', 'Ubuntu 22.04.3 LTS')} "
                 f"(GNU/Linux {ident.get('fake_kernel', '5.15.0-86-generic')} x86_64)\r\n\r\n"
