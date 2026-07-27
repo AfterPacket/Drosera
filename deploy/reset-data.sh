@@ -62,6 +62,19 @@ else
     echo "  WARNING: could not reach redis-honeypot; state may persist"
 fi
 
+# The dashboard caches its aggregates in redis-admin. Not a FLUSHALL: that
+# instance also holds the operator's login session, and logging you out in the
+# middle of a reset is a poor trade for clearing a 30-second cache.
+if docker ps --format '{{.Names}}' | grep -q '^hp-redis-admin$'; then
+    cached=$(docker exec hp-redis-admin redis-cli --scan --pattern 'admin:stats:*' 2>/dev/null)
+    if [ -n "$cached" ]; then
+        printf '%s\n' "$cached" | while read -r key; do
+            [ -n "$key" ] && docker exec hp-redis-admin redis-cli DEL "$key" >/dev/null 2>&1
+        done
+        echo "  dashboard stats cache cleared"
+    fi
+fi
+
 step "Clearing captured data"
 rm -f  storage/logs/*.jsonl storage/logs/*.jsonl.* 2>/dev/null
 rm -f  storage/sessions/*.cast storage/sessions/*.meta.json \
