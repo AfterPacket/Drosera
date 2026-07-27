@@ -12,8 +12,10 @@ SSL_CONF="${NGINX_TMP}/ssl.conf"
 mkdir -p "${NGINX_TMP}/client_body" "${NGINX_TMP}/proxy" "${NGINX_TMP}/fastcgi" \
          "${NGINX_TMP}/uwsgi" "${NGINX_TMP}/scgi"
 # /run is a tmpfs at runtime, which replaces whatever the image had there, so
-# php-fpm's directory has to be recreated on every start.
-mkdir -p /run/php
+# php-fpm's directory has to be recreated on every start. Non-fatal under
+# `set -e`: with --nodaemonize php-fpm writes no pid file, so a failure here
+# should not take the container down.
+mkdir -p /run/php 2>/dev/null || true
 mkdir -p /var/honeypot/storage/logs /var/honeypot/storage/sessions \
          /var/honeypot/storage/evidence /var/honeypot/storage/upload-tmp
 

@@ -175,7 +175,9 @@ services:
       # nginx and php-fpm scratch space. noexec matters most here: this is the
       # internet-facing container and the only writable path it has.
       - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
-      - /run:size=8m,noexec,nosuid,nodev
+      # mode=1777 is not optional: without it the tmpfs mounts root-owned 0755
+      # and php-fpm, running as UID 1000, cannot create its runtime directory.
+      - /run:size=8m,mode=1777,noexec,nosuid,nodev
     # NOT on admin-internal: the internet-facing container must never be able to
     # reach redis-admin or the dashboard.
     networks: [honeypot-internal]
