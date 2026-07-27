@@ -12,6 +12,7 @@ import random
 import re
 import shlex
 import time
+import zlib
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -63,6 +64,8 @@ def split_stages(line: str):
     buffer = ""
     operator = ""
     quote = None
+    depth = 0          # inside $( ) or ( )
+    backtick = False
     index = 0
 
     while index < len(line):
@@ -77,6 +80,33 @@ def split_stages(line: str):
 
         if char in "\"'":
             quote = char
+            buffer += char
+            index += 1
+            continue
+
+        # A separator inside a command substitution belongs to the inner
+        # command, not to us. Fingerprinting scripts lean on this constantly:
+        #   uname=$(uname -m || busybox uname -m || echo "")
+        # Splitting that on || produces three nonsense fragments.
+        if char == "`":
+            backtick = not backtick
+            buffer += char
+            index += 1
+            continue
+
+        if char == "(":
+            depth += 1
+            buffer += char
+            index += 1
+            continue
+
+        if char == ")" and depth > 0:
+            depth -= 1
+            buffer += char
+            index += 1
+            continue
+
+        if depth or backtick:
             buffer += char
             index += 1
             continue
@@ -119,6 +149,10 @@ class FakeShell:
         self.history: List[str] = list(SEEDED_HISTORY)
         self.exit_requested = False
         self._scored_once: set = set()
+        # Shell variables the attacker sets. Profiling scripts assign the output
+        # of a probe to a variable and echo it back later, so without this the
+        # whole exchange returns empty and reads as obviously fake.
+        self.env: Dict[str, str] = {}
 
     # ---------------------------------------------------------------- helpers
 
@@ -223,13 +257,6 @@ class FakeShell:
         if REVERSE_SHELL_PATTERNS.search(line):
             return self._reverse_shell(line)
 
-        # Running something they believe they dropped: `chmod +x x && ./x`.
-        dropped = DROPPED_BINARY_RE.search(line)
-        if dropped:
-            self._score_always("REVERSE_SHELL", payload=line[:300])
-            self._sleep(0.5)
-            return f"bash: {dropped.group(1)}: cannot execute binary file: Exec format error"
-
         # Bots chain relentlessly -- `cd ~; chattr -ia .ssh; lockr -ia .ssh` is a
         # single line to them. Treating that as one command produced
         # "bash: cd: ~;: No such file or directory", which is both an obvious
@@ -250,8 +277,74 @@ class FakeShell:
                 outputs.append(result)
         return "\n".join(outputs)
 
-    def _run_stage(self, stage: str) -> str:
+    _ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
+    _REDIRECT_RE = re.compile(r"\s*\d?>>?\s*\S+|\s*\d?>&\d")
+    _SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+    _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+    def _expand(self, text: str, depth: int = 0) -> str:
+        """Resolve $(...), `...` and $VAR, innermost first.
+
+        Depth-limited: an attacker can nest substitutions arbitrarily, and this
+        runs inside their connection, so it must not become a way to spend our
+        CPU. Anything deeper than a handful of levels resolves to empty, which
+        is also what a failing command would produce.
+        """
+        if depth > 4:
+            return ""
+
+        def substitute(match):
+            inner = match.group(1) if match.group(1) is not None else match.group(2)
+            # Substitutions commonly contain their own || fallback chain.
+            result = ""
+            failed = False
+            for operator, stage in split_stages(self._expand(inner, depth + 1)):
+                if operator == "&&" and failed:
+                    continue
+                if operator == "||" and not failed:
+                    continue
+                result = self._run_stage(stage, depth + 1)
+                failed = result.startswith("bash:")
+                if not failed and result:
+                    break
+            return "" if failed else result.strip()
+
+        previous = None
+        while previous != text and depth <= 4:
+            previous = text
+            text = self._SUBST_RE.sub(substitute, text)
+
+        return self._VAR_RE.sub(
+            lambda m: self.env.get(m.group(1) or m.group(2), ""), text)
+
+    def _run_stage(self, stage: str, depth: int = 0) -> str:
         """Dispatch a single command, with pipes left as arguments to it."""
+        stage = self._REDIRECT_RE.sub("", stage).strip()
+        if not stage:
+            return ""
+
+        # `VAR=$(probe)` -- store it and stay silent, exactly as a shell does.
+        assignment = self._ASSIGNMENT_RE.match(stage)
+        if assignment and " " not in assignment.group(1):
+            self.env[assignment.group(1)] = self._expand(
+                assignment.group(2).strip().strip("\"'"), depth)
+            return ""
+
+        stage = self._expand(stage, depth)
+        if not stage.strip():
+            return ""
+
+        # Per stage, not per line: `printf ... > filter && ./filter` used to
+        # match on the whole line and return one error for everything, so a
+        # profiling script got a single "Exec format error" where it expected
+        # a dozen answers.
+        dropped = DROPPED_BINARY_RE.search(stage)
+        if dropped:
+            self._score_always("REVERSE_SHELL", payload=stage[:300])
+            self._sleep(0.5)
+            return (f"bash: {dropped.group(1)}: cannot execute binary file: "
+                    "Exec format error")
+
         try:
             tokens = shlex.split(stage)
         except ValueError:
@@ -259,8 +352,11 @@ class FakeShell:
         if not tokens:
             return ""
 
-        command = tokens[0]
+        command = tokens[0].rsplit("/", 1)[-1]   # /bin/uname -> uname
         args = tokens[1:]
+        if command == "busybox" and args:        # busybox uname -m -> uname -m
+            command, args = args[0], args[1:]
+
         handler = self._HANDLERS.get(command)
         if handler is None:
             return f"bash: {command}: command not found"
@@ -710,7 +806,84 @@ class FakeShell:
     _HANDLERS: Dict[str, Callable[["FakeShell", List[str], str], str]] = {}
 
 
+def _cmd_nproc(self, _args, _line):
+    return str(self._cpu_count())
+
+
+def _cmd_lscpu(self, _args, _line):
+    self._score_once("PROCESS_ENUM")
+    cores = self._cpu_count()
+    return (
+        "Architecture:            x86_64\n"
+        "  CPU op-mode(s):        32-bit, 64-bit\n"
+        "  Address sizes:         46 bits physical, 48 bits virtual\n"
+        "  Byte Order:            Little Endian\n"
+        f"CPU(s):                  {cores}\n"
+        f"  On-line CPU(s) list:   0-{cores - 1}\n"
+        "Vendor ID:               GenuineIntel\n"
+        "  Model name:            Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz\n"
+        "    CPU family:          6\n"
+        "    Model:               79\n"
+        f"    Thread(s) per core:  1\n"
+        f"    Core(s) per socket:  {cores}\n"
+        "    Socket(s):           1\n"
+        "    Stepping:            1\n"
+        "    BogoMIPS:            4800.02\n"
+        "Virtualization features:\n"
+        "  Hypervisor vendor:     KVM\n"
+        "  Virtualization type:   full"
+    )
+
+
+def _cmd_lspci(self, _args, _line):
+    # A KVM guest genuinely has no VGA controller worth reporting; returning
+    # nothing is both accurate and what the probe expects on a VPS.
+    return ""
+
+
+def _cmd_last(self, _args, _line):
+    self._score_once("RECON_LS")
+    host = self.identity.get("fake_lan_ip", "10.0.1.9")
+    return (
+        f"{self.username:<9}pts/0        {host}      Mon Jan 15 08:14   still logged in\n"
+        f"root     pts/0        {host}      Sun Jan 14 22:03 - 23:41  (01:38)\n"
+        f"root     tty1                      Sun Jan 14 19:12 - 19:44  (00:32)\n"
+        "\nwtmp begins Mon Dec  4 06:22:11 2023"
+    )
+
+
+def _cmd_printf(self, args, _line):
+    if not args:
+        return ""
+    # Enough of printf(1) to satisfy the format strings probes actually use.
+    text = args[0].replace("\\n", "\n").replace("\\t", "\t")
+    if "%s" in text:
+        for value in args[1:]:
+            text = text.replace("%s", value, 1)
+    return text
+
+
+FakeShell._cmd_nproc = _cmd_nproc
+FakeShell._cmd_lscpu = _cmd_lscpu
+FakeShell._cmd_lspci = _cmd_lspci
+FakeShell._cmd_last = _cmd_last
+FakeShell._cmd_printf = _cmd_printf
+
+
+def _cpu_count(self) -> int:
+    """Stable per-IP, so repeat visits see the same machine."""
+    return 2 + (zlib.crc32(self.ip.encode()) % 3) * 2
+
+
+FakeShell._cpu_count = _cpu_count
+
+
 FakeShell._HANDLERS = {
+    "nproc": FakeShell._cmd_nproc,
+    "lscpu": FakeShell._cmd_lscpu,
+    "lspci": FakeShell._cmd_lspci,
+    "last": FakeShell._cmd_last, "lastlog": FakeShell._cmd_last,
+    "printf": FakeShell._cmd_printf,
     "ls": FakeShell._cmd_ls, "dir": FakeShell._cmd_ls,
     "cd": FakeShell._cmd_cd,
     "pwd": FakeShell._cmd_pwd,
