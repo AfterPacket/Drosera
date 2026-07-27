@@ -56,10 +56,23 @@ for _ in $(seq 1 20); do
     docker exec hp-redis-honeypot redis-cli PING >/dev/null 2>&1 && break
     sleep 1
 done
-if docker exec hp-redis-honeypot redis-cli FLUSHALL >/dev/null 2>&1; then
-    echo "  redis-honeypot flushed"
+# Counted before and after rather than trusting the exit status: redis-cli
+# returns 0 for plenty of situations that leave the data in place, and a reset
+# that silently does nothing is worse than one that fails loudly.
+before=$(docker exec hp-redis-honeypot redis-cli DBSIZE 2>/dev/null | tr -d '\r')
+docker exec hp-redis-honeypot redis-cli FLUSHALL >/dev/null 2>&1
+# Rewrite the append-only file too. Without this the keys come back on the next
+# restart, because the AOF still replays every write that created them.
+docker exec hp-redis-honeypot redis-cli BGREWRITEAOF >/dev/null 2>&1
+sleep 1
+after=$(docker exec hp-redis-honeypot redis-cli DBSIZE 2>/dev/null | tr -d '\r')
+
+if [ -z "$after" ]; then
+    echo "  WARNING: could not reach redis-honeypot; state persists"
+elif [ "$after" = "0" ]; then
+    echo "  redis-honeypot flushed (${before:-?} keys removed)"
 else
-    echo "  WARNING: could not reach redis-honeypot; state may persist"
+    echo "  WARNING: ${after} keys remain after FLUSHALL -- state NOT cleared"
 fi
 
 # The dashboard caches its aggregates in redis-admin. Not a FLUSHALL: that
