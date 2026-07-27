@@ -74,16 +74,44 @@ def load_host_key() -> paramiko.RSAKey:
 class HoneypotServer(paramiko.ServerInterface):
     """Accepts every credential, but scores and records each attempt."""
 
-    def __init__(self, ip: str):
+    def __init__(self, ip: str, hostname: str = "srv-01"):
         self.ip = ip
+        self.hostname = hostname
         self.username = "root"
         self.event = threading.Event()
+        self.recorder = None
+
+    def rec(self):
+        """The session recorder, created on first authentication attempt.
+
+        Lazily, so a bare TCP probe or a handshake that never authenticates does
+        not leave an empty .cast behind. From the first credential onward the
+        recording covers the whole connection -- login attempts included, and
+        continuing into the shell if they open one -- rather than starting only
+        when a channel appears. Most bots never open a channel at all, and their
+        credential attempts are the entire capture.
+        """
+        if self.recorder is None:
+            self.recorder = alerting.SessionRecorder(
+                self.ip, SERVICE, title=f"ssh from {self.ip}")
+            self.recorder.write_output(SSH_BANNER + "\r\n")
+        return self.recorder
 
     def get_allowed_auths(self, username):
         return "password,publickey"
 
     def check_auth_password(self, username, password):
         self.username = username or "root"
+
+        # Written before the artificial delay so the recording reflects the
+        # attempt even if the client gives up mid-authentication. The password
+        # is shown in the clear where a real client would mask it -- this is
+        # our evidence, not their terminal, and the credential is the point.
+        recorder = self.rec()
+        recorder.write_output(f"login as: {self.username}\r\n")
+        recorder.write_output(
+            f"{self.username}@{self.hostname}'s password: {password or ''}\r\n")
+
         time.sleep(random.uniform(*AUTH_DELAY_RANGE))
 
         identity.record_credential(self.ip, username or "", password or "", SERVICE)
@@ -99,14 +127,21 @@ class HoneypotServer(paramiko.ServerInterface):
             identity.activate_tarpit(self.ip, "SSH credential spray", SERVICE)
 
         if identity.is_banned(self.ip):
+            recorder.write_output("Permission denied, please try again.\r\n")
             return paramiko.AUTH_FAILED
         return paramiko.AUTH_SUCCESSFUL
 
     def check_auth_publickey(self, username, key):
         self.username = username or "root"
+        fingerprint = key.get_fingerprint().hex()
+        recorder = self.rec()
+        recorder.write_output(f"login as: {self.username}\r\n")
+        recorder.write_output(
+            f"Offered public key: {key.get_name()} {fingerprint}\r\n"
+            f"{self.username}@{self.hostname}: Permission denied (publickey).\r\n")
         identity.score_named_event(
             self.ip, "CREDENTIAL_ATTEMPT",
-            payload=f"publickey {key.get_name()} {key.get_fingerprint().hex()}"[:200],
+            payload=f"publickey {key.get_name()} {fingerprint}"[:200],
             service=SERVICE,
         )
         return paramiko.AUTH_FAILED
@@ -213,11 +248,16 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
             pass
 
 
-def interactive_session(channel, ip: str, ident: dict, username: str) -> None:
-    """Line-oriented fake bash over the SSH channel."""
+def interactive_session(channel, ip: str, ident: dict, username: str,
+                        recorder) -> None:
+    """Line-oriented fake bash over the SSH channel.
+
+    The recorder is passed in rather than created here: it was opened at the
+    first authentication attempt, so one .cast covers login and shell as a
+    single session, the way the connection actually happened.
+    """
     shell = FakeShell(ip, ident, score=identity.score_named_event,
                       service=SERVICE, username=username)
-    recorder = alerting.SessionRecorder(ip, SERVICE, title=f"ssh {username}@{shell.hostname}")
 
     motd = (
         f"Welcome to {ident.get('fake_os', 'Ubuntu 22.04.3 LTS')} "
@@ -278,12 +318,11 @@ def interactive_session(channel, ip: str, ident: dict, username: str) -> None:
                 recorder.write_output(payload)
     except (OSError, socket.timeout, EOFError):
         pass
-    finally:
-        recorder.close()
 
 
 def handle_client(sock: socket.socket, addr) -> None:
     ip = addr[0]
+    server = None
     try:
         if identity.is_banned(ip):
             sock.close()
@@ -301,7 +340,7 @@ def handle_client(sock: socket.socket, addr) -> None:
         transport.add_server_key(load_host_key())
         transport.set_subsystem_handler("sftp", paramiko.SFTPServer, SFTPSink)
 
-        server = HoneypotServer(ip)
+        server = HoneypotServer(ip, ident.get("fake_hostname") or "srv-01")
         try:
             transport.start_server(server=server)
         except (paramiko.SSHException, EOFError, OSError):
@@ -327,6 +366,9 @@ def handle_client(sock: socket.socket, addr) -> None:
 
         channel = transport.accept(30)
         if channel is None:
+            # Authenticated and left without opening a channel -- a credential
+            # validator. The recording still holds the login attempt, which is
+            # the whole of what they did.
             transport.close()
             return
 
@@ -340,19 +382,15 @@ def handle_client(sock: socket.socket, addr) -> None:
             # entry and no footage. Non-interactive is not uninteresting.
             shell = FakeShell(ip, ident, score=identity.score_named_event,
                               service=SERVICE, username=server.username)
-            recorder = alerting.SessionRecorder(
-                ip, SERVICE, title=f"ssh exec {server.username}@{shell.hostname}")
-            try:
-                recorder.write_output(shell.prompt() + command + "\r\n")
-                output = shell.run(command)
-                if output:
-                    channel.sendall((output + "\n").encode())
-                    recorder.write_output(output.replace("\n", "\r\n") + "\r\n")
-                channel.send_exit_status(0)
-            finally:
-                recorder.close()
+            recorder = server.rec()
+            recorder.write_output(shell.prompt() + command + "\r\n")
+            output = shell.run(command)
+            if output:
+                channel.sendall((output + "\n").encode())
+                recorder.write_output(output.replace("\n", "\r\n") + "\r\n")
+            channel.send_exit_status(0)
         else:
-            interactive_session(channel, ip, ident, server.username)
+            interactive_session(channel, ip, ident, server.username, server.rec())
 
         try:
             channel.close()
@@ -365,6 +403,11 @@ def handle_client(sock: socket.socket, addr) -> None:
         except OSError:
             pass
     finally:
+        # Closed here, not in the branches: the recording spans the whole
+        # connection, so it ends when the attacker's session does -- however
+        # they leave, and whichever path they took.
+        if server is not None and server.recorder is not None:
+            server.recorder.close()
         _slots.release()
 
 
