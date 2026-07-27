@@ -9,11 +9,12 @@ import asyncio
 import os
 import random
 import sys
+import time
 from datetime import datetime, timezone
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity  # noqa: E402
+from shared import alerting, identity, tarpit  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "2121"))
@@ -48,6 +49,10 @@ class FTPSession:
         self.data_target = None
         self.rest = 0
         self.recorder = None
+        # Accumulated across the whole session rather than logged per reply:
+        # FTP stalls a tarpitted client on every single response, so one event
+        # per stall would bury the log to report the same connection.
+        self.tarpit_seconds = 0.0
 
     def rec(self):
         """Session recorder, created on the first exchange.
@@ -63,7 +68,11 @@ class FTPSession:
 
     async def reply(self, code: int, message: str) -> None:
         if identity.is_tarpitted(self.ip):
-            await asyncio.sleep(TARPIT_DELAY)
+            started = time.monotonic()
+            try:
+                await asyncio.sleep(TARPIT_DELAY)
+            finally:
+                self.tarpit_seconds += time.monotonic() - started
         self.rec().write_output(f"{code} {message}\r\n")
         self.writer.write(f"{code} {message}\r\n".encode())
         await self.writer.drain()
@@ -320,7 +329,11 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
     try:
         if identity.is_tarpitted(ip):
-            await asyncio.sleep(TARPIT_DELAY)
+            started = time.monotonic()
+            try:
+                await asyncio.sleep(TARPIT_DELAY)
+            finally:
+                session.tarpit_seconds += time.monotonic() - started
         banner = ("220 ProFTPD 1.3.5e Server (Debian) "
                   f"[::ffff:{ident.get('fake_lan_ip', '10.0.1.50')}]\r\n")
         writer.write(banner.encode())
@@ -356,6 +369,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     except (OSError, asyncio.IncompleteReadError):
         pass
     finally:
+        tarpit.log_hold(ip, SERVICE, session.tarpit_seconds)
         if session.recorder is not None:
             session.recorder.close()
         await session.close_data()

@@ -8,10 +8,11 @@ scanner rather than a terminal, so we fingerprint that and score it.
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity  # noqa: E402
+from shared import alerting, identity, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -109,7 +110,16 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         if identity.is_tarpitted(ip):
             identity.score_named_event(ip, "TARPIT_ENGAGED",
                                        payload="telnet tarpit", service=SERVICE)
-            await asyncio.sleep(TARPIT_LOGIN_DELAY)
+            started = time.monotonic()
+            try:
+                await asyncio.sleep(TARPIT_LOGIN_DELAY)
+            finally:
+                # Logged even when the client gives up mid-hold, which is the
+                # normal case and the whole point -- the time is spent whether
+                # or not they wait for the end of it. Without this the stall
+                # happened but never appeared in "attacker-minutes wasted",
+                # which counted only SSH, SMB and RDP.
+                tarpit.log_hold(ip, SERVICE, time.monotonic() - started)
 
         hostname = ident.get("fake_hostname", "srv-01")
         writer.write(f"\r\n{ident.get('fake_os', 'Ubuntu 22.04.3 LTS')}\r\n".encode())
