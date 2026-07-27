@@ -48,6 +48,60 @@ HOST_PORT_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9.-]+\.[a-z]{2,})[\s:
 DROPPED_BINARY_RE = re.compile(r"(?:^|&&|;|\|)\s*(\./[\w.\-]+)")
 
 
+def split_stages(line: str):
+    """Split a command line on `;`, `&&`, `||` and newlines.
+
+    Returns [(operator_before_this_stage, stage)], where the operator is "" for
+    the first stage. Separators inside quotes are ignored, so
+    `echo "a; b"` stays one command.
+
+    Pipes are deliberately NOT split: `ps aux | grep x` is a single pipeline,
+    and the handlers already accept the remainder as arguments. Splitting it
+    would produce a bogus second command.
+    """
+    stages = []
+    buffer = ""
+    operator = ""
+    quote = None
+    index = 0
+
+    while index < len(line):
+        char = line[index]
+
+        if quote:
+            buffer += char
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+
+        if char in "\"'":
+            quote = char
+            buffer += char
+            index += 1
+            continue
+
+        if line[index:index + 2] in ("&&", "||"):
+            stages.append((operator, buffer.strip()))
+            operator = line[index:index + 2]
+            buffer = ""
+            index += 2
+            continue
+
+        if char in ";\n":
+            stages.append((operator, buffer.strip()))
+            operator = ";"
+            buffer = ""
+            index += 1
+            continue
+
+        buffer += char
+        index += 1
+
+    stages.append((operator, buffer.strip()))
+    return [(op, stage) for op, stage in stages if stage]
+
+
 class FakeShell:
     """Stateful fake bash for one attacker session."""
 
@@ -176,11 +230,32 @@ class FakeShell:
             self._sleep(0.5)
             return f"bash: {dropped.group(1)}: cannot execute binary file: Exec format error"
 
-        # Only split on the first pipeline stage; the rest is echoed back in errors.
+        # Bots chain relentlessly -- `cd ~; chattr -ia .ssh; lockr -ia .ssh` is a
+        # single line to them. Treating that as one command produced
+        # "bash: cd: ~;: No such file or directory", which is both an obvious
+        # tell and a loss of data: only the first fragment was ever dispatched,
+        # so the interesting part of the payload scored nothing.
+        outputs = []
+        failed = False
+        for operator, stage in split_stages(line):
+            if operator == "&&" and failed:
+                continue
+            if operator == "||" and not failed:
+                continue
+            result = self._run_stage(stage)
+            # No real exit codes here, so approximate: our handlers report
+            # failure the way bash does, by leading with "bash:".
+            failed = result.startswith("bash:")
+            if result:
+                outputs.append(result)
+        return "\n".join(outputs)
+
+    def _run_stage(self, stage: str) -> str:
+        """Dispatch a single command, with pipes left as arguments to it."""
         try:
-            tokens = shlex.split(line)
+            tokens = shlex.split(stage)
         except ValueError:
-            tokens = line.split()
+            tokens = stage.split()
         if not tokens:
             return ""
 
@@ -189,7 +264,7 @@ class FakeShell:
         handler = self._HANDLERS.get(command)
         if handler is None:
             return f"bash: {command}: command not found"
-        return handler(self, args, line)
+        return handler(self, args, stage)
 
     # -------------------------------------------------------------- commands
 
