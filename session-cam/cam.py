@@ -25,6 +25,7 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -36,6 +37,35 @@ from render import CastError, render_gif, render_mp4
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage"))
 SESSION_DIR = STORAGE_DIR / "sessions"
 CLIP_DIR = STORAGE_DIR / "clips"
+LOG_DIR = STORAGE_DIR / "logs"
+EVENT_STATE = STORAGE_DIR / ".cam-events.json"
+
+# Live event alerting.
+#
+# shared/alerting.py can speak Telegram, but the honeypot containers sit on a
+# network with no egress, so every alert they raise is inert by construction.
+# This container is the only one that can reach the internet, so the alerting
+# has to happen here: tail the shared event log and push the events worth
+# interrupting someone for. A clip arrives minutes later, when the session has
+# ended; this is what tells you it is happening now.
+# `or` rather than a getenv default: compose passes an empty string when the
+# variable is unset in .env, and an empty string is not an unset variable --
+# getenv would return "" and silently disable every alert.
+ALERT_EVENTS = {
+    item.strip() for item in (
+        os.getenv("CAM_ALERT_EVENTS", "").strip()
+        or "SESSION_START,REVERSE_SHELL,PHP_EVAL_ATTEMPT,FILE_UPLOAD,SQLI_OOB,"
+           "BAN,TOOL_METASPLOIT,TOOL_SQLMAP"
+    ).split(",") if item.strip()
+}
+# A scan flood must never turn into a hundred notifications. Repeats of the same
+# (ip, event) are suppressed for the dedupe window, and the hourly cap is a hard
+# backstop on top of that.
+ALERT_DEDUPE_SECONDS = int(os.getenv("CAM_ALERT_DEDUPE_SECONDS", "900"))
+ALERT_MAX_PER_HOUR = int(os.getenv("CAM_ALERT_MAX_PER_HOUR", "20"))
+
+_alert_seen: Dict[str, float] = {}
+_alert_times: List[float] = []
 
 ENABLED = os.getenv("CAM_ENABLED", "true").lower() not in ("0", "false", "no")
 POLL_SECONDS = int(os.getenv("CAM_POLL_SECONDS", "15"))
@@ -161,6 +191,123 @@ def send_telegram(clip: Path, meta: Dict[str, Any]) -> Optional[str]:
     except (urllib.error.URLError, OSError) as error:
         return f"network: {error}"
     return None
+
+
+def send_telegram_text(text: str) -> Optional[str]:
+    if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID):
+        return "not configured"
+    body = urllib.parse.urlencode({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text[:4000],
+        "disable_web_page_preview": "true",
+    }).encode()
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(request, timeout=TIMEOUT).close()
+    except (urllib.error.URLError, OSError) as error:
+        return f"network: {error}"
+    return None
+
+
+def alert_text(event: Dict[str, Any]) -> str:
+    kind = event.get("event_type", "EVENT")
+    lines = [
+        "[drosera] " + ("SHELL SESSION OPENED" if kind == "SESSION_START" else kind),
+        f"IP: {event.get('real_ip', 'unknown')}",
+        f"Service: {event.get('service') or 'n/a'}",
+        f"Score: {event.get('cumulative_score', '-')}",
+    ]
+    if event.get("tool_detected"):
+        lines.append(f"Tool: {event['tool_detected']}")
+    if event.get("reason"):
+        lines.append(f"Reason: {str(event['reason'])[:200]}")
+    payload = str(event.get("payload_excerpt") or "").strip()
+    if payload:
+        lines.append(f"Payload: {payload[:300]}")
+    if kind == "SESSION_START":
+        lines.append("\nA clip will follow when the session ends.")
+    return "\n".join(lines)
+
+
+def _rate_limited(event: Dict[str, Any]) -> bool:
+    now = time.time()
+
+    global _alert_times
+    _alert_times = [stamp for stamp in _alert_times if now - stamp < 3600]
+    if len(_alert_times) >= ALERT_MAX_PER_HOUR:
+        return True
+
+    key = f"{event.get('real_ip')}:{event.get('event_type')}"
+    if now - _alert_seen.get(key, 0) < ALERT_DEDUPE_SECONDS:
+        return True
+
+    _alert_seen[key] = now
+    _alert_times.append(now)
+    if len(_alert_seen) > 4000:
+        _alert_seen.clear()
+    return False
+
+
+def watch_events() -> int:
+    """Tail today's event log and alert on anything worth interrupting for."""
+    if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID) or not LOG_DIR.is_dir():
+        return 0
+
+    try:
+        state = json.loads(EVENT_STATE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        state = {}
+
+    sent = 0
+    for path in sorted(LOG_DIR.glob("*.jsonl")):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+
+        # First sight of a file starts at its end. Otherwise enabling alerting
+        # would replay every event ever captured into the operator's phone.
+        offset = state.get(path.name, size if path.name not in state else 0)
+        if size < offset:
+            offset = 0
+        if size == offset:
+            state[path.name] = offset
+            continue
+
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(offset)
+                for raw in handle:
+                    if not raw.endswith(b"\n"):
+                        break
+                    offset = handle.tell()
+                    try:
+                        event = json.loads(raw.decode("utf-8", "replace"))
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    if event.get("event_type") not in ALERT_EVENTS:
+                        continue
+                    if _rate_limited(event):
+                        continue
+                    if send_telegram_text(alert_text(event)) is None:
+                        sent += 1
+        except OSError:
+            continue
+
+        state[path.name] = offset
+
+    try:
+        EVENT_STATE.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        pass
+    return sent
 
 
 def send_email(clip: Path, meta: Dict[str, Any]) -> Optional[str]:
@@ -417,7 +564,8 @@ def describe_config() -> str:
         channels.append("email")
     if WEBHOOK_URL:
         channels.append("webhook")
-    return (f"format={CLIP_FORMAT} min_score={MIN_SCORE} "
+    alerts = "on" if (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID) else "off"
+    return (f"format={CLIP_FORMAT} min_score={MIN_SCORE} live_alerts={alerts} "
             f"channels={','.join(channels) or 'none (dashboard playback only)'}")
 
 
@@ -448,6 +596,9 @@ def main() -> int:
     last_prune = 0.0
     while True:
         try:
+            # Events first: a live session should reach the operator's phone
+            # while it is still live, not after a clip has finished rendering.
+            watch_events()
             cycle()
             if time.time() - last_prune > 3600:
                 prune()

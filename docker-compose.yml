@@ -303,6 +303,12 @@ services:
       CAM_MAX_CLIP_MB: ${CAM_MAX_CLIP_MB:-45}
       CAM_MAX_CLIPS_TOTAL_MB: ${CAM_MAX_CLIPS_TOTAL_MB:-1024}
       CAM_MAX_FRAMES: ${CAM_MAX_FRAMES:-420}
+      CAM_MIN_BYTES: ${CAM_MIN_BYTES:-700}
+      # Live alerting. The honeypot containers have no egress, so this is the
+      # only place an alert can actually leave the box.
+      CAM_ALERT_EVENTS: ${CAM_ALERT_EVENTS:-}
+      CAM_ALERT_DEDUPE_SECONDS: ${CAM_ALERT_DEDUPE_SECONDS:-900}
+      CAM_ALERT_MAX_PER_HOUR: ${CAM_ALERT_MAX_PER_HOUR:-20}
       ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
       ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
