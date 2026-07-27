@@ -27,6 +27,18 @@ IDENTITY_TTL = 7 * 24 * 3600
 BAN_TTL = int(os.getenv("HONEYPOT_BAN_TTL", str(7 * 24 * 3600)))
 MAX_HISTORY = 200
 
+# Addresses that are never scored, tarpitted or banned.
+#
+# Without this the operator's own browsing is indistinguishable from an attack:
+# visiting your own site a few times tarpits you to 3 KB/s, and a few more
+# crosses the ban threshold and writes a ufw deny rule against your address.
+# It also keeps your traffic out of the statistics, which is the other half of
+# the problem -- you are not a threat actor and should not be in the data.
+IGNORE_IPS = {
+    item.strip() for item in os.getenv("HONEYPOT_IGNORE_IPS", "").split(",")
+    if item.strip()
+}
+
 HOSTNAME_POOL = [
     "prod-web-01", "prod-web-02", "prod-db-01", "prod-cache-01",
     "mail-srv-01", "api-gateway-01", "proxy-01", "app-node-03",
@@ -255,6 +267,11 @@ def score_event(ip: str, points: float, event_type: str, reason: str,
                 payload: str = "", tool: str = "", service: str = "") -> Dict[str, Any]:
     """Apply points to an IP, append to history, and auto-ban past the threshold."""
     from . import alerting, scoring
+
+    if ip in IGNORE_IPS:
+        # No identity, no score, no log line. The operator is not a data point.
+        return {"old_score": 0.0, "new_score": 0.0, "event": {}, "banned": False,
+                "tarpitted": False, "identity": {}, "ignored": True}
 
     identity = get_or_create_identity(ip)
     old_score = float(identity.get("score") or 0)

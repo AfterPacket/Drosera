@@ -112,8 +112,22 @@ def main() -> None:
     totp_secret = pyotp.random_base32()
     uri = pyotp.TOTP(totp_secret).provisioning_uri(name=username, issuer_name=ISSUER)
 
-    allowed = input("\n  Allowed source IPs for the dashboard [127.0.0.1]: ").strip()
-    allowed_ips = [item.strip() for item in allowed.split(",") if item.strip()] or ["127.0.0.1"]
+    # 172.* is not optional in the default, however wrong it looks.
+    #
+    # The dashboard port is published as 127.0.0.1:8443 on the *host*, so
+    # docker-proxy forwards each request into the container and rewrites the
+    # source to the bridge gateway. Flask therefore sees 172.x.x.x, never
+    # 127.0.0.1, and a plain 127.0.0.1 allowlist rejects every request with
+    # "Forbidden" -- including the operator's own, over their own SSH tunnel.
+    #
+    # This is not a meaningful loosening: the host binding is loopback-only, so
+    # nothing off-box can reach the port at all. The allowlist is defence in
+    # depth behind the tunnel, not the boundary itself.
+    default_ips = ["127.0.0.1", "172.*"]
+    allowed = input(
+        "\n  Allowed source IPs for the dashboard [127.0.0.1, 172.*]: ").strip()
+    allowed_ips = [item.strip() for item in allowed.split(",") if item.strip()] \
+        or default_ips
 
     config = {
         "username": username,

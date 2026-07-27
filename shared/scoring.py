@@ -20,7 +20,13 @@ SCORES = {
     "CREDENTIAL_ATTEMPT": (2, "Login credential attempt"),
     "CREDENTIAL_SPRAY": (6, "Credential spraying"),
     "RATE_LIMIT_ABUSE": (4, "Rate limit exceeded"),
-    "SMB_ENUM": (5, "SMB share enumeration"),
+    # Deliberately low. One ordinary SMB scan fires this 8+ times -- NEGOTIATE,
+    # SESSION_SETUP, then a TREE_CONNECT per share -- so at 5 points a piece of
+    # pure background noise crossed the ban threshold in about five seconds,
+    # while an operator actually exploring the web shell scores 2 per command.
+    # At 2 points a single scan tarpits but does not ban; a scanner that keeps
+    # coming back still accumulates its way there over three or so sessions.
+    "SMB_ENUM": (2, "SMB share enumeration"),
     "RDP_CONNECT": (3, "RDP connection attempt"),
     "FTP_ANON": (2, "Anonymous FTP attempt"),
     "SMTP_RELAY": (6, "Open relay attempt"),

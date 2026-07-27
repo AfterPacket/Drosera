@@ -39,6 +39,9 @@ x-honeypot-env: &honeypot-env
   HONEYPOT_TARPIT_THRESHOLD: ${HONEYPOT_TARPIT_THRESHOLD:-5}
   HONEYPOT_BAN_TTL: ${HONEYPOT_BAN_TTL:-604800}
   HONEYPOT_MAX_STORAGE_MB: ${HONEYPOT_MAX_STORAGE_MB:-4096}
+  # Comma-separated. Your own address belongs here, or browsing your own site
+  # tarpits you, eventually bans you, and pollutes the statistics.
+  HONEYPOT_IGNORE_IPS: ${HONEYPOT_IGNORE_IPS:-}
   ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
   ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
   ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
