@@ -293,16 +293,27 @@
     opts = opts || {};
     if (!points || !points.length) { return empty(host); }
 
-    var box = surface(host, opts.height || 260);
     var pad = 6;
-    var w = box.w - pad * 2;
-    var h = box.h - pad * 2;
+    var available = Math.max(host.clientWidth || 900, 320) - pad * 2;
 
-    var x = function (lon) { return pad + ((Number(lon) + 180) / 360) * w; };
-    var y = function (lat) { return pad + ((90 - Number(lat)) / 180) * h; };
+    // Equirectangular is 2:1 by definition. Filling a wide card at a fixed
+    // height stretched it about two and a half times horizontally, which does
+    // not just look wrong -- it moves every dot away from the coastline it
+    // belongs to, so placement reads as broken. Size the plot from the width
+    // and letterbox it, capped so the panel stays a panel.
+    var mapW = Math.min(available, 920);
+    var mapH = mapW / 2;
+    var box = surface(host, mapH + pad * 2);
+    var ox = pad + (box.w - pad * 2 - mapW) / 2;
+    var oy = pad;
 
+    var x = function (lon) { return ox + ((Number(lon) + 180) / 360) * mapW; };
+    var y = function (lat) { return oy + ((90 - Number(lat)) / 180) * mapH; };
+
+    var w = mapW;
+    var h = mapH;
     box.svg.appendChild(el("rect", {
-      x: pad, y: pad, width: w, height: h,
+      x: ox, y: oy, width: mapW, height: mapH,
       fill: "#0c0e12", stroke: C.grid, "stroke-width": 1, rx: 4
     }));
 
@@ -320,13 +331,13 @@
     // world.geojson is absent, and is a subtle reference when it is present.
     for (var lon = -150; lon <= 150; lon += 30) {
       box.svg.appendChild(el("line", {
-        x1: x(lon), y1: pad, x2: x(lon), y2: pad + h,
+        x1: x(lon), y1: oy, x2: x(lon), y2: oy + h,
         stroke: C.grid, "stroke-width": 0.5, "stroke-opacity": .35
       }));
     }
     for (var lat = -60; lat <= 60; lat += 30) {
       box.svg.appendChild(el("line", {
-        x1: pad, y1: y(lat), x2: pad + w, y2: y(lat),
+        x1: ox, y1: y(lat), x2: ox + w, y2: y(lat),
         stroke: C.grid, "stroke-width": 0.5, "stroke-opacity": .35
       }));
     }
@@ -338,12 +349,13 @@
     // geographically -- half of Europe lands within twenty pixels -- so
     // "label the top four" produced four labels stacked into illegible mush.
     var placed = [];
+    var seenLabels = {};
     var CHAR_W = 6;    // 10px monospace
     var LINE_H = 11;
     var MAX_LABELS = 8;
 
     function fits(bx, by, bw, bh) {
-      if (bx + bw > pad + w) { return false; }   // would run off the edge
+      if (bx + bw > ox + w) { return false; }   // would run off the edge
       for (var i = 0; i < placed.length; i++) {
         var p = placed[i];
         if (bx < p.x + p.w && bx + bw > p.x &&
@@ -358,7 +370,7 @@
       .forEach(function (point) {
         if (point.lat === null || point.lon === null ||
             point.lat === undefined || point.lon === undefined) { return; }
-        var radius = 2.5 + Math.sqrt(point.count / max) * 9;
+        var radius = 2 + Math.sqrt(point.count / max) * 6;
         var cx = x(point.lon);
         var cy = y(point.lat);
 
@@ -374,7 +386,13 @@
         hoverable(hit, label);
         box.svg.appendChild(hit);
 
+        // One label per distinct name. GeoLite2 has no city for most
+        // datacentre ranges, so several unrelated hosts come back as bare
+        // "United States" -- repeating it says nothing and crowds the plot.
         if (placed.length >= MAX_LABELS || !point.label) { return; }
+        if (seenLabels[point.label]) { return; }
+        seenLabels[point.label] = true;
+
         var bw = point.label.length * CHAR_W;
         var bx = cx + radius + 4;
         var by = cy - LINE_H / 2;
