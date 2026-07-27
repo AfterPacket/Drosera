@@ -137,6 +137,100 @@ ssh-real/         SSH port cutover with deadman-switch rollback
 
 See [`MANIFEST.md`](MANIFEST.md) for a file-by-file description.
 
+## Running it
+
+```bash
+docker compose up -d --build            # honeypot, dashboard, session camera
+docker compose ps
+./deploy/preflight.sh                   # static checks, safe any time
+./deploy/smoke-test.sh                  # ports, render, containment
+```
+
+| Task | Command |
+|---|---|
+| Small VPS (2–4 GB) | `docker compose -f docker-compose.yml -f deploy/compose.small.yml up -d` |
+| With Elasticsearch | `docker compose --profile elastic up -d` |
+| With automatic TLS | `docker compose --profile letsencrypt up -d` |
+| Live event feed | `tail -f storage/logs/$(date -u +%F).jsonl` |
+| Bans as they fire | `tail -f storage/evidence/fail2ban.log` |
+| Wipe and re-baseline | `./deploy/reset-data.sh --yes` |
+| Dashboard | `ssh -N -L 8443:127.0.0.1:8443 -p 2222 you@vps` → <http://127.0.0.1:8443> |
+
+**A profile flag is part of the service's identity.** `--profile elastic` /
+`--profile letsencrypt` must be repeated on every `up`, `down`, `logs` and `ps`
+touching those containers, or Compose behaves as though they do not exist.
+
+## Troubleshooting
+
+Everything below was hit during a real first deployment.
+
+**Honeypot ports are not listening.** `docker inspect <c> --format '{{json
+.NetworkSettings.Ports}}'` returns `null` while `.HostConfig.PortBindings` looks
+correct. Docker does not install DNAT rules for published ports on an
+`internal: true` network — the config is accepted and silently does nothing.
+`honeypot-internal` is therefore a normal bridge, and egress is denied by
+DOCKER-USER rules that `bootstrap.sh` installs. Re-run bootstrap after any pull
+that touches it.
+
+**SSH won't move off port 22.** `sshd -T` reports both ports, `ss` shows only
+one, and the listener has backlog 4096 rather than 128. That is systemd's
+socket, not sshd: Ubuntu 24.04+ uses socket activation, under which `Port`
+directives in `sshd_config` are ignored entirely.
+
+```bash
+sudo systemctl disable --now ssh.socket && sudo systemctl mask ssh.socket
+sudo systemctl enable --now ssh.service
+```
+
+`mask` matters — `disable` alone lets a package upgrade bring it back.
+
+**Locked out after running bootstrap.** `ADMIN_IP=$(curl -s ifconfig.me)`
+executed *on the VPS* resolves to the VPS's own address, so ufw allows 2222 from
+the box and nobody else. Symptom is a connection timeout (a drop) rather than a
+refusal. Get the value from your own machine, or `echo "${SSH_CLIENT%% *}"` on
+an existing session.
+
+**Dashboard returns "Forbidden".** `allowed_ips` defaults to `127.0.0.1`, but
+docker-proxy rewrites the source to the bridge gateway, so Flask sees
+`172.x.x.x`. Add `"172.*"` to `admin-dashboard/config/admin-config.json`. Not a
+loosening — the port is bound to loopback on the host regardless.
+
+**`hp-web` restart-loops.** Two causes, both about the read-only rootfs:
+php-fpm's *global* config logging to `/var/log/php8.1-fpm.log`, and `/run`
+mounting root-owned when `mode=1777` is missing. Both are fixed in-tree; check
+`docker logs hp-web` for which one you are seeing.
+
+**nginx claims to load the certificate then dies.** The entrypoint's existence
+check passes on a file it cannot read — `stat` needs no read permission. A
+certificate created with `sudo` is `root:root 0600` and unreadable to UID 1000:
+
+```bash
+sudo chown 1000:1000 certs/origin.pem certs/origin.key
+```
+
+**Scripts are "Permission denied" after `git pull`.** Exec bits are now set in
+the git index, so this is fixed — but a local `chmod +x` is itself a tracked
+change and will block the next merge. `git checkout -- .` before pulling.
+
+**`.env` changes have no effect.** `docker compose restart` reuses the existing
+container environment. Use `up -d` (add `--force-recreate` if in doubt), and
+confirm with `docker compose config | grep VAR`.
+
+**Certificate stays on the staging CA.** `--keep-until-expiring` sees a valid
+certificate and declines to reissue, even though nothing trusts it. Set
+`LETSENCRYPT_STAGING=false`, verify with `docker compose config`, then
+`certbot delete --cert-name <domain>` before recreating.
+
+**Few session recordings, and short ones.** A tarpitted IP never reaches the
+interactive handler, which is the only place a recorder is created — so a low
+`HONEYPOT_TARPIT_THRESHOLD` means you tarpit exactly the attackers worth
+watching. Raise it to ~20. Most short clips are genuine: credential-validation
+bots log in, read the prompt, and leave.
+
+**Dashboard charts or playback blank.** Both are self-hosted; nothing loads from
+a CDN. A blank page after an update is a stale cached script — hard-refresh
+(Ctrl+Shift+R).
+
 ## Requirements
 
 Ubuntu 22.04/24.04, Docker 24+ with Compose v2, 2 vCPU / 4 GB / 40 GB, a domain

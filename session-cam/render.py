@@ -39,6 +39,12 @@ MIN_FRAME_INTERVAL = float(os.getenv("CAM_MIN_FRAME_INTERVAL", "0.10"))
 MAX_FRAMES = int(os.getenv("CAM_MAX_FRAMES", "420"))
 TAIL_HOLD_MS = 1500
 
+# A bot that connects, reads the prompt and leaves does all of it inside one
+# second, which is faithfully rendered as frames 20ms apart -- accurate and
+# completely unwatchable. Stretch clips shorter than this to a legible pace.
+# Only short clips are touched; a real session keeps its true timing.
+MIN_CLIP_MS = int(os.getenv("CAM_MIN_CLIP_MS", "2500"))
+
 BG = (12, 14, 18)
 FG_DEFAULT = (208, 214, 222)
 HUD_BG = (24, 26, 32)
@@ -356,6 +362,14 @@ def render_gif(cast_path: Path, out_path: Path,
     for index in range(len(shots) - 1):
         delays.append(max(int((shots[index + 1][1] - shots[index][1]) * 1000), 20))
     delays.append(TAIL_HOLD_MS)
+
+    # Raise the floor on clips that would otherwise flash past. The tail hold is
+    # excluded from the measurement and left alone, so the final frame still
+    # lingers long enough to read.
+    body = sum(delays[:-1])
+    if len(delays) > 1 and body < MIN_CLIP_MS:
+        floor = MIN_CLIP_MS // (len(delays) - 1)
+        delays = [max(delay, floor) for delay in delays[:-1]] + [delays[-1]]
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
