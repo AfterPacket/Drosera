@@ -59,6 +59,34 @@ and then tries SSH is one profile, with one consistent fake machine identity —
 same hostname, same kernel, same users, same filesystem. Redis is the single
 source of truth shared by the PHP engine and the Python services.
 
+## The session camera
+
+Every text protocol is recorded as an [asciicast](https://docs.asciinema.org)
+covering the **whole connection** — the login attempt, the credentials, the
+shell if they open one, until they disconnect. SSH, telnet, FTP, SMTP, MySQL
+and the web shell all record; SMB and RDP do not, being binary protocols with
+no terminal to replay.
+
+`session-cam` then renders finished recordings to video with a
+security-camera overlay — record dot, address, service, clock, running score,
+tool, and the fake hostname they were shown — and delivers them:
+
+| Where | What arrives |
+|---|---|
+| Telegram | The clip, captioned with IP, score, tool and credentials tried |
+| Email | Same, as an attachment |
+| Dashboard | Inline playback plus the raw `.cast` |
+| Webhook | Metadata only |
+
+It also tails the event log and sends a **live alert the moment someone opens a
+shell**, rather than waiting for the clip. That alerting lives in `session-cam`
+because it is the only container with internet access — the honeypots have
+none, by design, so anything they tried to send would go nowhere.
+
+Recording is deliberately generous and delivery is gated: clips are only sent
+past a score, content and frame floor, so a port scan does not become a
+notification.
+
 ## Zero-trust guarantees
 
 - No `exec`/`system`/`shell_exec`/`popen`/`eval` on anything, in any language
@@ -70,8 +98,15 @@ source of truth shared by the PHP engine and the Python services.
   dropped, `no-new-privileges`, setuid binaries stripped, memory and PID capped
 - Every writable path — tmpfs and the captured-data mount — is
   `noexec,nosuid,nodev`, so there is nowhere to stage or run a payload
-- **Both Docker networks are `internal: true`** — no container can make an
-  outbound connection, so the box cannot be used as a pivot or a relay
+- **No egress from the honeypot** — enforced by DOCKER-USER firewall rules that
+  drop anything the honeypot subnet originates outbound, while allowing replies
+  to inbound connections. Not by `internal: true`: Docker refuses to publish
+  ports on an internal network, which would leave every honeypot unreachable.
+  `deploy/smoke-test.sh` asserts this in both directions rather than trusting it
+- **One container has internet access** — `session-cam`, which delivers clips
+  and alerts. It is on no other network and receives recordings through the
+  storage volume, so a compromised honeypot gains no route out through it, and a
+  compromised camera gains no route in
 
 Together those mean code execution inside a container is a dead end: nothing to
 write to, nothing to execute from, nothing to fetch. See `deploy/README.md` §17
@@ -88,21 +123,6 @@ Built to survive unattended:
 - Redis is memory-capped with LRU eviction
 - Container logs are size-capped
 - Unhealthy or dead containers are restarted automatically
-
-## Quick start
-
-```bash
-git clone <your-repo> /opt/drosera && cd /opt/drosera
-sudo ADMIN_IP=$(curl -s ifconfig.me) ./deploy/bootstrap.sh
-cp .env.example .env && nano .env          # set DOMAIN
-# install certs/origin.pem + certs/origin.key from Cloudflare
-docker compose run --rm admin-dashboard python3 setup.py
-sudo ADMIN_IP=$(curl -s ifconfig.me) ./ssh-real/cutover.sh
-docker compose up -d --build
-```
-
-Full walkthrough: [`deploy/README.md`](deploy/README.md).
-Condensed path: [`QUICKSTART.md`](QUICKSTART.md).
 
 ## Dashboard
 
@@ -137,28 +157,100 @@ ssh-real/         SSH port cutover with deadman-switch rollback
 
 See [`MANIFEST.md`](MANIFEST.md) for a file-by-file description.
 
-## Running it
+## Deploying to a VPS
+
+Full walkthrough in [`deploy/README.md`](deploy/README.md). The spine:
 
 ```bash
-docker compose up -d --build            # honeypot, dashboard, session camera
-docker compose ps
-./deploy/preflight.sh                   # static checks, safe any time
-./deploy/smoke-test.sh                  # ports, render, containment
+# 1. base packages
+sudo apt-get update && sudo apt-get install -y ufw fail2ban logrotate git
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER && exit          # log back in
+
+# 2. clone
+sudo git clone <your-repo> /opt/drosera
+sudo chown -R $USER:$USER /opt/drosera && cd /opt/drosera
+
+# 3. host hardening. ADMIN_IP is YOUR address, not the VPS's -- getting this
+#    wrong is the most common way to lock yourself out
+sudo ADMIN_IP=203.0.113.10 ./deploy/bootstrap.sh
+
+# 4. configure
+cp .env.example .env && nano .env              # DOMAIN, WEBSHELL_ACTION
+
+# 5. TLS: either drop a Cloudflare Origin Certificate into certs/,
+#    or use the letsencrypt profile (§13 of deploy/README.md)
+sudo chown 1000:1000 certs/origin.pem certs/origin.key
+
+# 6. dashboard account -- scan the TOTP QR before dismissing it
+docker compose run --rm admin-dashboard python3 setup.py
+
+# 7. move real SSH off port 22 BEFORE starting, using the deadman switch
+sudo ADMIN_IP=203.0.113.10 ./ssh-real/cutover.sh
+
+# 8. launch
+./deploy/preflight.sh
+docker compose up -d --build
+./deploy/smoke-test.sh
 ```
+
+Sizing: **2 vCPU / 4 GB / 40 GB** runs the honeypot, tarpits, camera and
+dashboard comfortably. Elasticsearch needs ~2.5 GB more — see below.
 
 | Task | Command |
 |---|---|
 | Small VPS (2–4 GB) | `docker compose -f docker-compose.yml -f deploy/compose.small.yml up -d` |
 | With Elasticsearch | `docker compose --profile elastic up -d` |
 | With automatic TLS | `docker compose --profile letsencrypt up -d` |
+| Refresh GeoIP | `./deploy/update-geoip.sh` |
 | Live event feed | `tail -f storage/logs/$(date -u +%F).jsonl` |
 | Bans as they fire | `tail -f storage/evidence/fail2ban.log` |
 | Wipe and re-baseline | `./deploy/reset-data.sh --yes` |
 | Dashboard | `ssh -N -L 8443:127.0.0.1:8443 -p 2222 you@vps` → <http://127.0.0.1:8443> |
 
+### Two rules that will save you an hour
+
+**`restart` is almost never what you want.** Only `shared/` is bind-mounted.
+Every service's own code is copied into its image at build time, so a change to
+`ssh-honey/`, `telnet-honey/`, `web/`, `session-cam/`, `elastic/` or
+`admin-dashboard/` needs `up -d --build`. A plain `restart` silently reuses the
+old code, and the symptom is a fix that appears not to work.
+
+Likewise `restart` does not re-read `.env` — use `up -d` for configuration
+changes, and confirm with `docker compose config | grep VAR`.
+
 **A profile flag is part of the service's identity.** `--profile elastic` /
 `--profile letsencrypt` must be repeated on every `up`, `down`, `logs` and `ps`
 touching those containers, or Compose behaves as though they do not exist.
+
+## Optional extras
+
+**GeoIP** — country and city on every attacker, and coordinates for the Kibana
+map. Needs a free [MaxMind](https://www.maxmind.com/en/geolite2/signup)
+GeoLite2 database, which is licensed and cannot ship here:
+
+```bash
+# MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY in .env, then
+./deploy/update-geoip.sh
+echo '0 4 * * 1 root /opt/drosera/deploy/update-geoip.sh' | sudo tee /etc/cron.d/drosera-geoip
+```
+
+Without it, geolocation falls back to Cloudflare's country header, which only
+exists for proxied web traffic — so SSH, telnet, SMB and RDP show nothing.
+
+**Elasticsearch + Kibana** — T-Pot-style analytics, off by default because they
+want ~2.5 GB. On a small VPS, run them somewhere else instead: copy
+`storage/logs/` to a machine with spare memory and start the profile there. The
+shipper reads events off the filesystem and never talks to the honeypot, so it
+does not care where it runs.
+
+**Automatic TLS** — a certbot container doing DNS-01 through Cloudflare, for
+running unproxied. If you are behind Cloudflare's proxy, an Origin Certificate
+is 15 years and no renewal machinery, and is the better choice.
+
+**Telegram delivery** — set `ALERT_TELEGRAM_BOT_TOKEN` and
+`ALERT_TELEGRAM_CHAT_ID`. Message the bot once first; bots cannot open a
+conversation.
 
 ## Troubleshooting
 
@@ -222,10 +314,35 @@ certificate and declines to reissue, even though nothing trusts it. Set
 `certbot delete --cert-name <domain>` before recreating.
 
 **Few session recordings, and short ones.** A tarpitted IP never reaches the
-interactive handler, which is the only place a recorder is created — so a low
-`HONEYPOT_TARPIT_THRESHOLD` means you tarpit exactly the attackers worth
-watching. Raise it to ~20. Most short clips are genuine: credential-validation
-bots log in, read the prompt, and leave.
+session handler, so a low `HONEYPOT_TARPIT_THRESHOLD` means you tarpit exactly
+the attackers worth watching. Raise it to ~20. Beyond that, most short clips are
+genuine: credential-validation bots log in, read the prompt, and leave. A
+three-line cast is a complete `ssh host '<cmd>'` session — banner, command,
+output.
+
+**A fix appears not to work.** Check you rebuilt rather than restarted (see the
+two rules above). The recording's *filename timestamp* is a quick way to tell
+old captures from new: it is stamped when the recorder opened, so a cast created
+before a change will still show the old behaviour forever.
+
+**You tarpit or ban yourself.** Browsing your own site scores you like anyone
+else. Put your address in `HONEYPOT_IGNORE_IPS` (comma-separated) — ignored
+addresses are never scored, tarpitted or banned, and stay out of the statistics,
+but still record normally so you can test. Already flagged? Clear it:
+
+```bash
+MD5=$(printf '%s' "203.0.113.10" | md5sum | cut -d' ' -f1)
+docker exec hp-redis-honeypot redis-cli DEL "hp:identity:$MD5" "hp:banned:$MD5"
+```
+
+A blank terminal when you connect to your own honeypot is the SSH tarpit
+working — it drips the version banner one byte per second, so the client waits
+forever for a complete string.
+
+**Clips render but never arrive.** `no channels configured` on the Sessions page
+means no delivery is set up. Only `session-cam` can reach the internet; the
+honeypot containers have no egress, so alerting configured for them is inert by
+design.
 
 **Dashboard charts or playback blank.** Both are self-hosted; nothing loads from
 a CDN. A blank page after an update is a stale cached script — hard-refresh

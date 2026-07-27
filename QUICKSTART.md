@@ -16,7 +16,9 @@ curl -fsSL https://get.docker.com | sh
 apt-get install -y ufw fail2ban logrotate git
 
 git clone <your-repo> /opt/drosera && cd /opt/drosera
-sudo ADMIN_IP=$(curl -s ifconfig.me) ./deploy/bootstrap.sh
+# ADMIN_IP is YOUR address, not the VPS's. Run `curl -s ifconfig.me` on your
+# own machine to find it -- running it here returns the VPS and locks you out.
+sudo ADMIN_IP=203.0.113.10 ./deploy/bootstrap.sh
 ```
 
 `ADMIN_IP` is the address *you* connect from. It is the one address that stays
@@ -68,7 +70,7 @@ are no backup codes.
 ## 6. Move real SSH off port 22 (5 min)
 
 ```bash
-sudo ADMIN_IP=$(curl -s ifconfig.me) ./ssh-real/cutover.sh
+sudo ADMIN_IP=203.0.113.10 ./ssh-real/cutover.sh
 ```
 
 Then, **from a new terminal** (leave the current one open):

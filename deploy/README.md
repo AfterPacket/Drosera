@@ -94,8 +94,16 @@ what you want to catch. Just be clear that Cloudflare here provides TLS
 termination, a plausible front, and bot filtering on the web tier. It is not a
 containment boundary.
 
-The real containment boundary is the Docker configuration: both networks are
-`internal: true`, so no container can make an outbound connection.
+The real containment boundary is the host firewall: DOCKER-USER rules installed
+by `bootstrap.sh` drop anything the honeypot subnet originates outbound, while
+allowing replies to connections that came in. The honeypot bridge deliberately
+is **not** `internal: true` — Docker will not publish ports on an internal
+network, which would leave every honeypot unreachable. `admin-internal` and
+`elastic-internal` are internal, since nothing on them needs publishing.
+
+`./deploy/smoke-test.sh` asserts this in both directions rather than assuming
+it: the honeypots must fail to reach the internet, and `session-cam` must
+succeed.
 
 ---
 
@@ -289,7 +297,7 @@ is gitignored.
 The honeypot wants port 22. Your real SSH has to move first.
 
 ```bash
-sudo ADMIN_IP=$(curl -s ifconfig.me) ./ssh-real/cutover.sh
+sudo ADMIN_IP=203.0.113.10 ./ssh-real/cutover.sh   # YOUR address, not the VPS's
 ```
 
 The script uses a deadman switch rather than a self-test, because testing SSH
@@ -447,9 +455,16 @@ which fail2ban's `ignoreip` and the ufw allow rule protect.
 
 ## 13. Enabling outbound alerting
 
-Both Docker networks are `internal: true`, so webhook, Telegram, and syslog
-alerting are inert by default. JSONL logging and the fail2ban evidence log work
-without egress and need no changes.
+The honeypot containers have no egress — DOCKER-USER rules drop anything they
+originate — so webhook, Telegram and syslog alerting configured *for them* is
+inert by design. JSONL logging and the fail2ban evidence log work without egress
+and need no changes.
+
+**In practice you do not need this section.** `session-cam` already delivers
+both clips and live alerts, and it is the only container with internet access.
+Set `ALERT_TELEGRAM_BOT_TOKEN` and `ALERT_TELEGRAM_CHAT_ID` and you get a
+notification the moment someone opens a shell, plus the video when they leave —
+without granting the honeypot itself any outbound path.
 
 To enable outbound alerts, understand the trade-off first: you are giving a
 container that talks to attackers the ability to make outbound connections.
@@ -690,7 +705,10 @@ that will tell you the box fell over.
 | Bans not enforced | `fail2ban-client status honeypot`; confirm `logpath` matches your checkout |
 | Port 22 in use | The cutover's `Port 22` line is still in `sshd_config` |
 | Tarpit returns 404 instantly | `TARPIT_MAX_CONCURRENT` reached — by design, check the stats page |
-| Containers reach the internet | A network lost `internal: true`; check for an override file |
+| Containers reach the internet | DOCKER-USER rules missing; re-run `bootstrap.sh` and check `iptables -L DOCKER-USER -n` |
+| A code change appears not to work | `restart` reuses the old image; only `shared/` is bind-mounted. Use `up -d --build` |
+| `.env` change has no effect | `restart` does not re-read it; use `up -d`, verify with `docker compose config` |
+| You are tarpitted on your own box | Add your address to `HONEYPOT_IGNORE_IPS`, then clear `hp:identity:$(md5 of ip)` from Redis |
 
 ---
 
@@ -725,7 +743,8 @@ The defence is layered so that code execution inside a container is a dead end.
 | Socket | Docker socket never mounted | The single most common escape route is absent |
 | Devices | No `devices:` entries, no `privileged` | No raw block-device access to the host filesystem |
 | Resources | `pids_limit`, `mem_limit`, `cpus`, `ulimits` | Fork bombs and resource exhaustion are contained |
-| Network | Both networks `internal: true` | Even with code execution, no outbound channel |
+| Network | DOCKER-USER drops honeypot-originated egress | Even with code execution, no outbound channel |
+| Network | `session-cam` alone has egress, on no other network | Delivery without giving the honeypot a way out |
 | Daemon | `no-new-privileges`, `userland-proxy: false`, `icc: false` | Applied by `bootstrap.sh` to `/etc/docker/daemon.json` |
 
 Note the interaction that matters most: **read-only rootfs + noexec tmpfs +
