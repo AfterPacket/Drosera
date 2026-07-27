@@ -333,10 +333,29 @@
 
     var max = Math.max.apply(null, points.map(function (p) { return p.count; })) || 1;
 
+    // Labels are placed only where they do not collide with one already
+    // placed. Ranking alone is not enough: the busiest sources cluster
+    // geographically -- half of Europe lands within twenty pixels -- so
+    // "label the top four" produced four labels stacked into illegible mush.
+    var placed = [];
+    var CHAR_W = 6;    // 10px monospace
+    var LINE_H = 11;
+    var MAX_LABELS = 8;
+
+    function fits(bx, by, bw, bh) {
+      if (bx + bw > pad + w) { return false; }   // would run off the edge
+      for (var i = 0; i < placed.length; i++) {
+        var p = placed[i];
+        if (bx < p.x + p.w && bx + bw > p.x &&
+            by < p.y + p.h && by + bh > p.y) { return false; }
+      }
+      return true;
+    }
+
     // Area proportional to count, not radius: radius-scaling exaggerates the
     // big sources by the square of their lead.
     points.slice().sort(function (a, b) { return b.count - a.count; })
-      .forEach(function (point, index) {
+      .forEach(function (point) {
         if (point.lat === null || point.lon === null ||
             point.lat === undefined || point.lon === undefined) { return; }
         var radius = 2.5 + Math.sqrt(point.count / max) * 9;
@@ -355,12 +374,14 @@
         hoverable(hit, label);
         box.svg.appendChild(hit);
 
-        // Only the top few are labelled directly; more than that and the
-        // labels collide into noise.
-        if (index < 4) {
-          box.svg.appendChild(text(cx + radius + 4, cy + 3,
-                                   point.label || "", { fill: C.ink }));
-        }
+        if (placed.length >= MAX_LABELS || !point.label) { return; }
+        var bw = point.label.length * CHAR_W;
+        var bx = cx + radius + 4;
+        var by = cy - LINE_H / 2;
+        if (!fits(bx, by, bw, LINE_H)) { return; }
+
+        placed.push({ x: bx, y: by, w: bw, h: LINE_H });
+        box.svg.appendChild(text(bx, cy + 3, point.label, { fill: C.ink }));
       });
   }
 
