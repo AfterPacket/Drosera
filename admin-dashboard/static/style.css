@@ -81,6 +81,11 @@ td.mono,.mono{font-family:var(--mono);font-size:.82rem}
 .pill.unknown{background:rgba(139,148,158,.15);color:var(--muted)}
 .pill.failed,.pill.error{background:rgba(248,81,73,.15);color:var(--bad)}
 
+.credits{margin:2.5rem 0 1rem;padding-top:1rem;border-top:1px solid var(--line);
+  color:var(--muted);font-size:.75rem;text-align:center}
+.credits a{color:var(--muted);text-decoration:none}
+.credits a:hover{color:var(--text);text-decoration:underline}
+
 /* Chart hover tooltip. Positioned against the viewport, so it must sit above
    the layout rather than inside a card's overflow. */
 .chart-tip{position:fixed;z-index:60;pointer-events:none;

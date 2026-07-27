@@ -243,5 +243,128 @@
     });
   }
 
-  window.DroseraCharts = { line: line, bars: bars, hbars: hbars, colours: C };
+  // ------------------------------------------------------------- attack map
+
+  // Land outline, fetched once and reused. Natural Earth 110m, public domain.
+  // GeoJSON coordinates are [lon, lat], which the equirectangular projection
+  // consumes directly -- no projection library, no topology decoding.
+  var _land = null;
+  var _landPending = null;
+
+  function loadLand() {
+    if (_land !== null) { return Promise.resolve(_land); }
+    if (_landPending) { return _landPending; }
+    _landPending = fetch("/static/world.geojson", { credentials: "same-origin" })
+      .then(function (response) {
+        if (!response.ok) { throw new Error("http " + response.status); }
+        return response.json();
+      })
+      .then(function (geo) { _land = geo; return geo; })
+      .catch(function () { _land = false; return false; });
+    return _landPending;
+  }
+
+  function drawLand(svg, geo, x, y) {
+    (geo.features || []).forEach(function (feature) {
+      var geometry = feature.geometry;
+      if (!geometry) { return; }
+      var polygons = geometry.type === "Polygon" ? [geometry.coordinates]
+                   : geometry.type === "MultiPolygon" ? geometry.coordinates
+                   : [];
+      polygons.forEach(function (polygon) {
+        polygon.forEach(function (ring) {
+          if (ring.length < 3) { return; }
+          var d = "";
+          for (var i = 0; i < ring.length; i++) {
+            d += (i ? "L" : "M") + x(ring[i][0]).toFixed(1)
+                                 + " " + y(ring[i][1]).toFixed(1);
+          }
+          svg.appendChild(el("path", {
+            d: d + " Z", fill: "#1b2029",
+            stroke: "#2b3240", "stroke-width": 0.4
+          }));
+        });
+      });
+    });
+  }
+
+  // Equirectangular projection of attack origins over the land outline.
+  function geomap(host, points, opts) {
+    opts = opts || {};
+    if (!points || !points.length) { return empty(host); }
+
+    var box = surface(host, opts.height || 260);
+    var pad = 6;
+    var w = box.w - pad * 2;
+    var h = box.h - pad * 2;
+
+    var x = function (lon) { return pad + ((Number(lon) + 180) / 360) * w; };
+    var y = function (lat) { return pad + ((90 - Number(lat)) / 180) * h; };
+
+    box.svg.appendChild(el("rect", {
+      x: pad, y: pad, width: w, height: h,
+      fill: "#0c0e12", stroke: C.grid, "stroke-width": 1, rx: 4
+    }));
+
+    // Land goes in first so the dots sit on top of it. Drawn asynchronously
+    // and inserted beneath everything else, so a missing or slow world.geojson
+    // degrades to the graticule rather than blocking the plot.
+    loadLand().then(function (geo) {
+      if (!geo) { return; }
+      var layer = el("g", {});
+      drawLand(layer, geo, x, y);
+      box.svg.insertBefore(layer, box.svg.firstChild.nextSibling);
+    });
+
+    // Graticule every 30 degrees, kept faint. It carries the whole map when
+    // world.geojson is absent, and is a subtle reference when it is present.
+    for (var lon = -150; lon <= 150; lon += 30) {
+      box.svg.appendChild(el("line", {
+        x1: x(lon), y1: pad, x2: x(lon), y2: pad + h,
+        stroke: C.grid, "stroke-width": 0.5, "stroke-opacity": .35
+      }));
+    }
+    for (var lat = -60; lat <= 60; lat += 30) {
+      box.svg.appendChild(el("line", {
+        x1: pad, y1: y(lat), x2: pad + w, y2: y(lat),
+        stroke: C.grid, "stroke-width": 0.5, "stroke-opacity": .35
+      }));
+    }
+
+    var max = Math.max.apply(null, points.map(function (p) { return p.count; })) || 1;
+
+    // Area proportional to count, not radius: radius-scaling exaggerates the
+    // big sources by the square of their lead.
+    points.slice().sort(function (a, b) { return b.count - a.count; })
+      .forEach(function (point, index) {
+        if (point.lat === null || point.lon === null ||
+            point.lat === undefined || point.lon === undefined) { return; }
+        var radius = 2.5 + Math.sqrt(point.count / max) * 9;
+        var cx = x(point.lon);
+        var cy = y(point.lat);
+
+        box.svg.appendChild(el("circle", {
+          cx: cx, cy: cy, r: radius,
+          fill: C.series, "fill-opacity": .35,
+          stroke: C.series, "stroke-width": 1.5
+        }));
+
+        var label = (point.label || "?") + " · " + point.count;
+        var hit = el("circle", { cx: cx, cy: cy, r: Math.max(radius, 10),
+                                 fill: "transparent" });
+        hoverable(hit, label);
+        box.svg.appendChild(hit);
+
+        // Only the top few are labelled directly; more than that and the
+        // labels collide into noise.
+        if (index < 4) {
+          box.svg.appendChild(text(cx + radius + 4, cy + 3,
+                                   point.label || "", { fill: C.ink }));
+        }
+      });
+  }
+
+  window.DroseraCharts = {
+    line: line, bars: bars, hbars: hbars, geomap: geomap, colours: C
+  };
 })();

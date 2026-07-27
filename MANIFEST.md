@@ -118,6 +118,8 @@ honeypot container is a member of.
 | `bootstrap.sh` | Host preparation: storage, ufw, fail2ban, logrotate, watchdog, sysctl |
 | `watchdog.sh` | Cron fail-safe: prunes storage, restarts dead or unhealthy containers |
 | `logrotate-drosera` | Retention policy (90 days for event logs) |
+| `update-geoip.sh` | Fetches the MaxMind GeoLite2 database with the operator's credentials. Run from cron; MaxMind refreshes weekly |
+| `update-worldmap.sh` | Fetches the Natural Earth land outline for the attack map. Public domain, so the result can be committed |
 | `preflight.sh` | Static validation before deploying: Python/PHP/shell syntax, `docker compose config` on both profiles, `.env` sanity, git-safety of secret paths, host RAM and `vm.max_map_count` |
 | `smoke-test.sh` | Post-deploy functional checks: container health, every honeypot port, SSH banner, dashboard `/healthz`, a real GIF rendered from a synthetic recording, Elasticsearch doc count and ILM state, and an explicit assertion that honeypot containers cannot reach the internet while session-cam can |
 

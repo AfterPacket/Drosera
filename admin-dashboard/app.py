@@ -716,12 +716,25 @@ def api_stats():
 
     # Counted per distinct IP rather than per event, so one noisy scanner does
     # not make its country look like a campaign.
+    origins = {}
     for identity in identities:
         address = identity.get("ip")
         if not address:
             continue
-        code = geoip.country_code(address)
+        record = geoip.lookup(address)
+        code = (record or {}).get("country_code")
         countries[code or "unknown"] += 1
+
+        if not record or record.get("lat") is None:
+            continue
+        # Bucketed to whole degrees: a city's worth of scanners becomes one
+        # readable dot instead of a hundred overlapping ones.
+        key = (round(float(record["lat"])), round(float(record["lon"])))
+        bucket = origins.setdefault(key, {
+            "lat": key[0], "lon": key[1], "count": 0,
+            "label": record.get("city") or record.get("country") or code or "?",
+        })
+        bucket["count"] += 1
 
     for event in events:
         stamp = str(event.get("timestamp", ""))
@@ -758,6 +771,9 @@ def api_stats():
         "geoip": geoip.available(),
         "countries": [{"country": k, "count": v}
                       for k, v in countries.most_common(10)],
+        # Capped: past a couple of hundred dots the map is a smear, and the
+        # busiest origins are the ones worth seeing anyway.
+        "origins": sorted(origins.values(), key=lambda o: -o["count"])[:200],
         "score_distribution": [{"bucket": f"{b}-{b + 9}", "count": buckets[b]}
                                for b in sorted(buckets)],
         "top_ips": [{"ip": i.get("ip") or "unknown",

@@ -84,11 +84,15 @@
         }), { colour: C.accent });
 
       if (data.geoip) {
+        window.DroseraCharts.geomap(host("c-map"), data.origins || []);
         window.DroseraCharts.hbars(host("c-countries"),
           (data.countries || []).map(function (d) {
             return { label: d.country, value: d.count };
           }));
       } else {
+        host("c-map").textContent = "";
+        var mapNote = document.getElementById("map-note");
+        if (mapNote) { mapNote.style.display = "block"; }
         // Say why it is empty rather than showing an empty box. The database
         // is licensed and cannot ship with the repo.
         host("c-countries").textContent = "";

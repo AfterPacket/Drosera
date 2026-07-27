@@ -12,6 +12,15 @@
   <div class="tile"><div class="label">Attacker-minutes wasted</div><div class="value" id="t-wasted">—</div></div>
 </div>
 
+<div class="card">
+  <h2>Attack origins</h2>
+  <div id="c-map"></div>
+  <p class="muted" id="map-note" style="display:none;font-size:.75rem">
+    No GeoIP database. Add one with <span class="mono">./deploy/update-geoip.sh</span>
+    to plot attack origins.
+  </p>
+</div>
+
 <div class="grid2">
   <div class="card"><h2>Connections by hour (UTC, today)</h2><div id="c-hourly"></div></div>
   <div class="card"><h2>Events by service</h2><div id="c-service"></div></div>

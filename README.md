@@ -10,6 +10,9 @@ Nothing an attacker sends is ever executed, stored as code, or forwarded
 anywhere. See [`AUTHORIZATION.md`](AUTHORIZATION.md) for the legal and ethical
 basis, and for the design safeguards that make it non-weaponizable.
 
+Built by [Digital Systems LLC](https://digitalsystems.cc) /
+[Afterpacket](https://github.com/afterpacket).
+
 ```
 Internet
    │
@@ -237,6 +240,18 @@ echo '0 4 * * 1 root /opt/drosera/deploy/update-geoip.sh' | sudo tee /etc/cron.d
 
 Without it, geolocation falls back to Cloudflare's country header, which only
 exists for proxied web traffic — so SSH, telnet, SMB and RDP show nothing.
+
+**World map** — the attack map draws attack origins over a landmass outline.
+Natural Earth 110m, public domain, ~100 KB:
+
+```bash
+./deploy/update-worldmap.sh
+```
+
+Unlike the GeoIP database this may be redistributed, so once fetched you can
+commit `admin-dashboard/static/world.geojson` and nobody else needs to run it.
+Without the file the map falls back to a lat/lon graticule — the dots are still
+correctly placed, there is just no coastline behind them.
 
 **Elasticsearch + Kibana** — T-Pot-style analytics, off by default because they
 want ~2.5 GB. On a small VPS, run them somewhere else instead: copy
