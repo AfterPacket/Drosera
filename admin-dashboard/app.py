@@ -474,13 +474,18 @@ def session_files(ip=None):
                 except (ValueError, TypeError):
                     duration = 0.0
                 break
+        info = clip_info(path.stem)
         out.append({
             "name": path.name,
             "ip": path.name.split("_")[0],
             "size": stat.st_size,
             "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-            "duration": round(duration, 1),
-            **clip_info(path.stem),
+            # Prefer the connection's real length; fall back to the span
+            # between the first and last write when there is no sidecar.
+            "duration": info.get("session_seconds")
+            if info.get("session_seconds") is not None else round(duration, 1),
+            "write_span": round(duration, 1),
+            **info,
         })
     return out
 
@@ -492,7 +497,21 @@ def clip_info(stem: str) -> dict:
     egress-only network the dashboard cannot reach, and shares state with the
     rest of the appliance solely through the storage volume.
     """
-    info = {"clip": None, "clip_size": 0, "cam_status": "", "cam_detail": ""}
+    info = {"clip": None, "clip_size": 0, "cam_status": "", "cam_detail": "",
+            "session_seconds": None}
+
+    # Wall-clock length of the connection. The .cast frame offsets measure only
+    # the time between writes, so a `ssh host '<cmd>'` session -- everything
+    # happening inside five milliseconds -- reads as 0.0s and tells you nothing
+    # about how long the attacker was actually connected.
+    meta_path = STORAGE_DIR / "sessions" / f"{stem}.meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("duration") is not None:
+                info["session_seconds"] = round(float(meta["duration"]), 1)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
 
     for suffix in (".mp4", ".gif"):
         candidate = CLIP_DIR / f"{stem}{suffix}"
