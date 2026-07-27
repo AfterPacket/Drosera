@@ -277,6 +277,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
     identity.get_or_create_identity(ip)
     identity.score_named_event(ip, "CONNECTION_ANY", service=SERVICE)
+    recorder = None
 
     try:
         writer.write(handshake(os.getpid() & 0xFFFF))
@@ -284,6 +285,16 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
         response, _ = await asyncio.wait_for(read_packet(reader), timeout=30)
         username, auth_blob = parse_handshake_response(response)
+
+        # The wire format is binary but the queries are text, so the recording
+        # is written as the mysql(1) client transcript an operator would have
+        # seen. The auth blob is a challenge-response hash, not a password --
+        # recorded as-is because it is crackable evidence, not a credential.
+        recorder = alerting.SessionRecorder(ip, SERVICE, title=f"mysql from {ip}")
+        recorder.write_output(
+            f"Server version: {SERVER_VERSION}\r\n"
+            f"login: {username}  auth: {auth_blob.hex()[:32]}\r\n\r\n")
+
         identity.record_credential(ip, username, auth_blob.hex()[:64], SERVICE)
         identity.score_named_event(
             ip, "CREDENTIAL_ATTEMPT",
@@ -322,6 +333,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 continue
 
             sql = payload[1:].decode("utf-8", "replace")
+            recorder.write_output(f"mysql> {sql}\r\n")
             alerting.alert_event(
                 ip=ip, event_type="SQL_QUERY", service=SERVICE,
                 reason="COM_QUERY received", payload=sql[:500],
@@ -332,6 +344,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             ConnectionResetError, struct.error):
         pass
     finally:
+        # May not exist: a client that drops before the handshake response
+        # never gets a recorder.
+        if recorder is not None:
+            recorder.close()
         try:
             writer.close()
         except OSError:

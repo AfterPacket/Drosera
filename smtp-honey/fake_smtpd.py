@@ -57,7 +57,13 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     session = SMTPSession(ip, ident.get("fake_hostname", "mail-srv-01"))
     tarpitted = identity.is_tarpitted(ip)
 
+    # SMTP is a line protocol, so the transcript replays as a readable terminal
+    # session directly. Created up front rather than lazily: unlike SSH, every
+    # SMTP connection gets a banner, so there is no empty-recording case.
+    recorder = alerting.SessionRecorder(ip, SERVICE, title=f"smtp from {ip}")
+
     async def send(line: str) -> None:
+        recorder.write_output(line + "\r\n")
         writer.write((line + "\r\n").encode())
         await writer.drain()
 
@@ -75,6 +81,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             line = raw[:MAX_LINE].decode("utf-8", "replace").strip()
             if not line:
                 continue
+            recorder.write_output(line + "\r\n")
 
             verb, _, arg = line.partition(" ")
             verb = verb.upper()
@@ -162,6 +169,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     except (OSError, asyncio.IncompleteReadError, ConnectionResetError):
         pass
     finally:
+        recorder.close()
         try:
             writer.close()
         except OSError:

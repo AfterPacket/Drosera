@@ -47,10 +47,24 @@ class FTPSession:
         self.data_server = None
         self.data_target = None
         self.rest = 0
+        self.recorder = None
+
+    def rec(self):
+        """Session recorder, created on the first exchange.
+
+        Lazily, so a bare port scan that opens and drops a connection does not
+        leave an empty recording. FTP is a line protocol, so the transcript
+        replays as a readable terminal session with no translation needed.
+        """
+        if self.recorder is None:
+            self.recorder = alerting.SessionRecorder(
+                self.ip, SERVICE, title=f"ftp from {self.ip}")
+        return self.recorder
 
     async def reply(self, code: int, message: str) -> None:
         if identity.is_tarpitted(self.ip):
             await asyncio.sleep(TARPIT_DELAY)
+        self.rec().write_output(f"{code} {message}\r\n")
         self.writer.write(f"{code} {message}\r\n".encode())
         await self.writer.drain()
 
@@ -307,9 +321,9 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     try:
         if identity.is_tarpitted(ip):
             await asyncio.sleep(TARPIT_DELAY)
-        writer.write(
-            f"220 ProFTPD 1.3.5e Server (Debian) [::ffff:{ident.get('fake_lan_ip', '10.0.1.50')}]\r\n"
-            .encode())
+        banner = ("220 ProFTPD 1.3.5e Server (Debian) "
+                  f"[::ffff:{ident.get('fake_lan_ip', '10.0.1.50')}]\r\n")
+        writer.write(banner.encode())
         await writer.drain()
 
         while True:
@@ -323,6 +337,13 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             if not line:
                 continue
 
+            # The banner is written on first use so it lands in the recording
+            # ahead of whatever the client says back.
+            recorder = session.rec()
+            if recorder.frames == 0:
+                recorder.write_output(banner)
+            recorder.write_output(line + "\r\n")
+
             verb, _, arg = line.partition(" ")
             verb = verb.upper()
             handler = FTPSession.HANDLERS.get(verb)
@@ -335,6 +356,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     except (OSError, asyncio.IncompleteReadError):
         pass
     finally:
+        if session.recorder is not None:
+            session.recorder.close()
         await session.close_data()
         try:
             writer.close()
