@@ -45,6 +45,11 @@ MAX_PER_CYCLE = int(os.getenv("CAM_MAX_PER_CYCLE", "20"))
 # the useful clips drown in noise.
 MIN_SCORE = float(os.getenv("CAM_MIN_SCORE", "5"))
 MIN_DURATION = float(os.getenv("CAM_MIN_DURATION", "2"))
+# Content floor, checked alongside duration rather than instead of it. Duration
+# measures how long the socket stayed open, which correlates poorly with whether
+# anything happened: a bot that dumps 3 KB of probe output in half a second is
+# worth far more than an idle connection held for ten seconds.
+MIN_BYTES = int(os.getenv("CAM_MIN_BYTES", "700"))
 # Two frames is one real exchange -- a webshell command and its output, or a
 # banner and a prompt. Below that there is nothing to watch.
 MIN_FRAMES = int(os.getenv("CAM_MIN_FRAMES", "2"))
@@ -230,10 +235,15 @@ def should_send(meta: Dict[str, Any]) -> Optional[str]:
     """Returns a skip reason, or None when the session is worth a clip."""
     if float(meta.get("score") or 0) < MIN_SCORE:
         return f"score {meta.get('score')} below {MIN_SCORE}"
-    if float(meta.get("duration") or 0) < MIN_DURATION:
-        return f"duration {meta.get('duration')}s below {MIN_DURATION}s"
     if int(meta.get("frames") or 0) < MIN_FRAMES:
         return f"only {meta.get('frames')} frames"
+    # Either enough content or enough time. Requiring both discarded the most
+    # interesting captures -- fast, dense probe output -- while keeping idle
+    # sockets that recorded nothing but a banner.
+    written = int(meta.get("bytes") or 0)
+    elapsed = float(meta.get("duration") or 0)
+    if written < MIN_BYTES and elapsed < MIN_DURATION:
+        return f"{written}B in {elapsed}s: below both content and time floors"
     return None
 
 
