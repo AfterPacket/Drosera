@@ -279,6 +279,9 @@ class FakeShell:
 
     _ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
     _REDIRECT_RE = re.compile(r"\s*\d?>>?\s*\S+|\s*\d?>&\d")
+    # stdout only. `2>/dev/null` is noise suppression and must not be mistaken
+    # for a file write.
+    _REDIRECT_TARGET_RE = re.compile(r"(?:^|\s)1?(>>?)\s*(\S+)")
     _SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
     _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -317,8 +320,59 @@ class FakeShell:
         return self._VAR_RE.sub(
             lambda m: self.env.get(m.group(1) or m.group(2), ""), text)
 
+    def _write_file(self, path: str, content: str, append: bool) -> None:
+        """Pretend a redirection landed, and score what it was carrying.
+
+        Only the fake tree in memory is touched -- nothing reaches a real path,
+        here or anywhere else. Writing ~/.ssh/authorized_keys is the payoff of
+        the whole persistence chain, and the key itself is directly
+        attributable, so it is captured rather than merely counted.
+        """
+        resolved = self._resolve(path)
+        if resolved.startswith("/dev/") or resolved.startswith("/proc/"):
+            return
+
+        lowered = resolved.lower()
+        if "authorized_keys" in lowered:
+            self._score_always("PERSISTENCE_ATTEMPT",
+                               payload=f"{resolved} <- {content[:300]}")
+        elif any(name in lowered for name in
+                 ("/etc/passwd", "/etc/shadow", "/etc/crontab", "rc.local",
+                  "/etc/cron", "/etc/systemd", ".bashrc", ".profile")):
+            self._score_always("PERSISTENCE_ATTEMPT",
+                               payload=f"{resolved} <- {content[:300]}")
+
+        # Materialise it so a follow-up `ls` or `cat` agrees that the write
+        # happened. In-memory for this session only: persisting the tree would
+        # mean writing attacker-controlled content back into Redis.
+        parts = [p for p in resolved.strip("/").split("/") if p]
+        if not parts:
+            return
+        node = self.identity.get("fake_filesystem")
+        if not isinstance(node, dict):
+            return
+        for part in parts[:-1]:
+            children = node.setdefault("children", {})
+            child = children.get(part)
+            if child is None or child.get("type") != "dir":
+                child = {"type": "dir", "mode": "drwxr-xr-x", "children": {}}
+                children[part] = child
+            node = child
+        children = node.setdefault("children", {})
+        existing = children.get(parts[-1]) or {}
+        size = int(existing.get("size", 0)) if append else 0
+        children[parts[-1]] = {
+            "type": "file", "mode": "-rw-------",
+            "size": size + len(content) + 1,
+        }
+
     def _run_stage(self, stage: str, depth: int = 0) -> str:
         """Dispatch a single command, with pipes left as arguments to it."""
+        # Captured before stripping. Without this, `echo 'ssh-rsa AAAA...' >>
+        # ~/.ssh/authorized_keys` echoed the key straight back at the attacker,
+        # where a real shell writes it silently -- a plain tell at the exact
+        # moment they are deciding whether the box is real.
+        redirect = self._REDIRECT_TARGET_RE.search(stage)
         stage = self._REDIRECT_RE.sub("", stage).strip()
         if not stage:
             return ""
@@ -360,7 +414,15 @@ class FakeShell:
         handler = self._HANDLERS.get(command)
         if handler is None:
             return f"bash: {command}: command not found"
-        return handler(self, args, stage)
+
+        result = handler(self, args, stage)
+
+        if redirect:
+            operator, target = redirect.group(1), redirect.group(2)
+            self._write_file(self._expand(target, depth), result or "",
+                             append=(operator == ">>"))
+            return ""      # a redirected command prints nothing
+        return result
 
     # -------------------------------------------------------------- commands
 
@@ -717,7 +779,23 @@ class FakeShell:
         self._sleep(1.5)
         return "passwd: Authentication token manipulation error\npasswd: password unchanged"
 
-    def _cmd_mkdir(self, _args: List[str], _line: str) -> str:
+    def _cmd_mkdir(self, args: List[str], _line: str) -> str:
+        # `mkdir -p ~/.ssh` must not only stay silent but actually create the
+        # directory, or the `echo >> ~/.ssh/authorized_keys` that follows lands
+        # somewhere a later `ls` disagrees with.
+        for target in (a for a in args if not a.startswith("-")):
+            resolved = self._resolve(target)
+            parts = [p for p in resolved.strip("/").split("/") if p]
+            node = self.identity.get("fake_filesystem")
+            if not isinstance(node, dict) or not parts:
+                continue
+            for part in parts:
+                children = node.setdefault("children", {})
+                child = children.get(part)
+                if child is None or child.get("type") != "dir":
+                    child = {"type": "dir", "mode": "drwx------", "children": {}}
+                    children[part] = child
+                node = child
         return ""
 
     def _cmd_rm(self, args: List[str], _line: str) -> str:
