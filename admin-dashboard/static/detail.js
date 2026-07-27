@@ -1,4 +1,4 @@
-// Ban/unban actions and asciinema player mounting for the IP detail page.
+// Ban/unban actions and session playback for the IP detail page.
 (function () {
   "use strict";
 
@@ -31,14 +31,24 @@
     });
   });
 
+  // Mount on demand rather than on load: an IP with a dozen recordings would
+  // otherwise fetch and replay all of them at once.
   document.querySelectorAll(".player[data-src]").forEach(function (node) {
-    if (typeof window.AsciinemaPlayer === "undefined") { return; }
-    try {
-      window.AsciinemaPlayer.create(node.getAttribute("data-src"), node, {
-        fit: "width", speed: 1, idleTimeLimit: 3, theme: "asciinema"
-      });
-    } catch (error) {
-      node.textContent = "Unable to load recording.";
-    }
+    var button = document.createElement("button");
+    button.className = "act";
+    button.textContent = "Play";
+    node.parentNode.insertBefore(button, node);
+
+    button.addEventListener("click", function () {
+      if (node.dataset.mounted === "1") {
+        window.DroseraCast.stop(node);
+        node.dataset.mounted = "0";
+        button.textContent = "Play";
+        return;
+      }
+      window.DroseraCast.play(node.getAttribute("data-src"), node);
+      node.dataset.mounted = "1";
+      button.textContent = "Hide";
+    });
   });
 })();

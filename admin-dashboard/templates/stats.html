@@ -13,10 +13,10 @@
 </div>
 
 <div class="grid2">
-  <div class="card"><h2>Connections by hour (UTC, today)</h2><canvas id="c-hourly"></canvas></div>
-  <div class="card"><h2>Events by service</h2><canvas id="c-service"></canvas></div>
-  <div class="card"><h2>Tools detected</h2><canvas id="c-tools"></canvas></div>
-  <div class="card"><h2>Score distribution</h2><canvas id="c-scores"></canvas></div>
+  <div class="card"><h2>Connections by hour (UTC, today)</h2><div id="c-hourly"></div></div>
+  <div class="card"><h2>Events by service</h2><div id="c-service"></div></div>
+  <div class="card"><h2>Tools detected</h2><div id="c-tools"></div></div>
+  <div class="card"><h2>Score distribution</h2><div id="c-scores"></div></div>
 </div>
 
 <div class="card">
@@ -29,6 +29,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='charts.js') }}"></script>
 <script src="{{ url_for('static', filename='stats.js') }}" defer></script>
 {% endblock %}

@@ -3,7 +3,6 @@
 {% block heading %}Attacker profile &mdash; <span class="mono">{{ ip }}</span>{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/asciinema-player/3.6.3/asciinema-player.min.css">
 {% endblock %}
 
 {% block content %}
@@ -159,6 +158,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/asciinema-player/3.6.3/asciinema-player.min.js"></script>
+<script src="{{ url_for('static', filename='castplayer.js') }}"></script>
 <script src="{{ url_for('static', filename='detail.js') }}" defer></script>
 {% endblock %}

@@ -2,36 +2,14 @@
 (function () {
   "use strict";
 
-  var INK = "#f0f6fc";
-  var MUTED = "#8b949e";
-  var LINE = "#30363d";
-  // Categorical ramp chosen for contrast on the dark surface.
-  var SERIES = ["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff",
-                "#39c5cf", "#db61a2", "#e3b341"];
-
-  Chart.defaults.color = MUTED;
-  Chart.defaults.borderColor = LINE;
-  Chart.defaults.font.family = "ui-monospace, SFMono-Regular, Menlo, monospace";
-  Chart.defaults.font.size = 11;
+  var C = window.DroseraCharts.colours;
 
   function set(id, value) {
     var node = document.getElementById(id);
     if (node) { node.textContent = value; }
   }
 
-  function axes(stacked) {
-    return {
-      x: { grid: { color: LINE }, ticks: { color: MUTED } },
-      y: { grid: { color: LINE }, ticks: { color: MUTED, precision: 0 },
-           beginAtZero: true, stacked: !!stacked }
-    };
-  }
-
-  function make(id, config) {
-    var canvas = document.getElementById(id);
-    if (!canvas) { return; }
-    return new Chart(canvas.getContext("2d"), config);
-  }
+  function host(id) { return document.getElementById(id); }
 
   function topRows(rows) {
     var tbody = document.getElementById("t-top");
@@ -88,57 +66,29 @@
       set("t-events", data.events_today);
       set("t-wasted", data.attacker_minutes_wasted);
 
-      make("c-hourly", {
-        type: "line",
-        data: {
-          labels: data.hourly.map(function (d) { return d.hour; }),
-          datasets: [{
-            label: "Connections", data: data.hourly.map(function (d) { return d.count; }),
-            borderColor: SERIES[0], backgroundColor: "rgba(88,166,255,.15)",
-            fill: true, tension: .3, pointRadius: 2
-          }]
-        },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: axes() }
-      });
+      window.DroseraCharts.line(host("c-hourly"),
+        (data.hourly || []).map(function (d) {
+          return { label: d.hour, value: d.count };
+        }));
 
-      make("c-service", {
-        type: "bar",
-        data: {
-          labels: data.by_service.map(function (d) { return d.service; }),
-          datasets: [{
-            label: "Events", data: data.by_service.map(function (d) { return d.count; }),
-            backgroundColor: SERIES[1]
-          }]
-        },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: axes() }
-      });
+      // Horizontal: service and tool names are words, and rotated x-axis
+      // labels are the usual alternative to this and are worse to read.
+      window.DroseraCharts.hbars(host("c-service"),
+        (data.by_service || []).map(function (d) {
+          return { label: d.service, value: d.count };
+        }));
 
-      make("c-tools", {
-        type: "doughnut",
-        data: {
-          labels: data.tools.map(function (d) { return d.tool; }),
-          datasets: [{
-            data: data.tools.map(function (d) { return d.count; }),
-            backgroundColor: SERIES, borderColor: "#161b22", borderWidth: 2
-          }]
-        },
-        options: {
-          responsive: true,
-          plugins: { legend: { position: "right", labels: { color: INK, boxWidth: 12 } } }
-        }
-      });
+      window.DroseraCharts.hbars(host("c-tools"),
+        (data.tools || []).map(function (d) {
+          return { label: d.tool, value: d.count };
+        }), { colour: C.accent });
 
-      make("c-scores", {
-        type: "bar",
-        data: {
-          labels: data.score_distribution.map(function (d) { return d.bucket; }),
-          datasets: [{
-            label: "IPs", data: data.score_distribution.map(function (d) { return d.count; }),
-            backgroundColor: SERIES[4]
-          }]
-        },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: axes() }
-      });
+      // Buckets are ordered and comparable, so vertical bars read as a
+      // distribution rather than a ranking.
+      window.DroseraCharts.bars(host("c-scores"),
+        (data.score_distribution || []).map(function (d) {
+          return { label: d.bucket, value: d.count };
+        }), { colour: C.accent });
 
       topRows(data.top_ips || []);
     })
