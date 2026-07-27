@@ -499,9 +499,21 @@ services:
       retries: 3
 
 networks:
+  # NOT `internal: true`, despite that being the obvious choice here.
+  #
+  # Docker does not install DNAT rules for published ports on an internal
+  # network, so every `ports:` entry below silently does nothing: the config
+  # shows the binding, `NetworkSettings.Ports` shows null, and no honeypot is
+  # reachable. An internal network gives isolation by making the bridge useless
+  # in both directions, which is one direction too many for a honeypot.
+  #
+  # Egress is therefore blocked at the host firewall instead, by DOCKER-USER
+  # rules that bootstrap.sh installs: replies to inbound connections and
+  # container-to-container traffic are allowed, anything this subnet originates
+  # towards the outside is dropped. Verify with `./deploy/smoke-test.sh`, which
+  # asserts that ssh-honey and web cannot reach 1.1.1.1.
   honeypot-internal:
     driver: bridge
-    internal: true          # no egress: the honeypot cannot phone home or pivot
     ipam:
       config:
         - subnet: 172.25.0.0/16

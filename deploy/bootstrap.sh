@@ -179,6 +179,45 @@ else
     info "storage/ already mounted noexec"
 fi
 
+# ------------------------------------------------------- honeypot egress block
+
+# The honeypot bridge cannot be `internal: true` -- Docker will not publish
+# ports on an internal network, which would leave every honeypot unreachable.
+# So the containers sit on a normal bridge and egress is denied here instead.
+#
+# DOCKER-USER is consulted before Docker's own FORWARD rules and survives
+# daemon restarts, which is why the rules go here rather than in FORWARD.
+info "Blocking honeypot egress via DOCKER-USER"
+
+HP_SUBNET="172.25.0.0/16"
+
+# Idempotent: drop any rules we previously added before re-adding them.
+while iptables -C DOCKER-USER -s "$HP_SUBNET" -j DROP 2>/dev/null; do
+    iptables -D DOCKER-USER -s "$HP_SUBNET" -j DROP
+done
+while iptables -C DOCKER-USER -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN 2>/dev/null; do
+    iptables -D DOCKER-USER -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN
+done
+while iptables -C DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null; do
+    iptables -D DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+done
+
+# Inserted in reverse order, so the final chain reads:
+#   1. ESTABLISHED,RELATED -> RETURN   (replies to attackers we accepted)
+#   2. subnet -> subnet    -> RETURN   (honeypots reaching redis)
+#   3. subnet -> anywhere  -> DROP     (no phoning home, no pivoting)
+iptables -I DOCKER-USER 1 -s "$HP_SUBNET" -j DROP
+iptables -I DOCKER-USER 1 -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN
+iptables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+if command -v netfilter-persistent >/dev/null; then
+    netfilter-persistent save >/dev/null 2>&1 \
+        || warn "could not persist iptables rules; re-run this script after reboot"
+else
+    warn "iptables-persistent not installed: egress rules are lost on reboot."
+    warn "  apt-get install -y iptables-persistent   (then re-run this script)"
+fi
+
 # --------------------------------------------------------------- kernel limits
 
 info "Raising connection tracking limits for tarpit workloads"
