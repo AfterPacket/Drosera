@@ -10,25 +10,15 @@
       if (!slot) { return; }
 
       if (slot.dataset.mounted === "1") {
-        slot.textContent = "";
+        window.DroseraCast.stop(slot);
         slot.dataset.mounted = "0";
         button.textContent = "Play";
         return;
       }
 
-      if (typeof window.AsciinemaPlayer === "undefined") {
-        slot.textContent = "Player unavailable.";
-        return;
-      }
-      try {
-        window.AsciinemaPlayer.create(button.getAttribute("data-play"), slot, {
-          fit: "width", speed: 1, idleTimeLimit: 3, theme: "asciinema"
-        });
-        slot.dataset.mounted = "1";
-        button.textContent = "Hide";
-      } catch (error) {
-        slot.textContent = "Unable to load recording.";
-      }
+      window.DroseraCast.play(button.getAttribute("data-play"), slot);
+      slot.dataset.mounted = "1";
+      button.textContent = "Hide";
     });
   });
 

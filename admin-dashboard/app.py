@@ -110,9 +110,11 @@ def security_headers(response: Response) -> Response:
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Content-Security-Policy"] = (
+        # No third-party origins: the player is served from static/ now, so the
+        # dashboard loads nothing it does not host itself.
         "default-src 'self'; "
-        "script-src 'self' https://cdnjs.cloudflare.com; "
-        "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "font-src 'self' data:; "
         "connect-src 'self'; "
