@@ -11,6 +11,9 @@ SSL_CONF="${NGINX_TMP}/ssl.conf"
 
 mkdir -p "${NGINX_TMP}/client_body" "${NGINX_TMP}/proxy" "${NGINX_TMP}/fastcgi" \
          "${NGINX_TMP}/uwsgi" "${NGINX_TMP}/scgi"
+# /run is a tmpfs at runtime, which replaces whatever the image had there, so
+# php-fpm's directory has to be recreated on every start.
+mkdir -p /run/php
 mkdir -p /var/honeypot/storage/logs /var/honeypot/storage/sessions \
          /var/honeypot/storage/evidence /var/honeypot/storage/upload-tmp
 

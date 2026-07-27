@@ -18,6 +18,15 @@ RUN groupadd -g 1000 honeypot \
 COPY php-fpm.conf /etc/php/8.1/fpm/pool.d/honeypot.conf
 RUN rm -f /etc/php/8.1/fpm/pool.d/www.conf
 
+# The stock GLOBAL config (not the pool) logs to /var/log/php8.1-fpm.log. With a
+# read-only rootfs that path is unwritable, and FPM aborts during config
+# post-processing before it ever serves a request -- which presents as the whole
+# container restart-looping. Log to stderr instead, which is where the rest of
+# this stack's output goes anyway.
+RUN sed -i -e 's#^error_log = .*#error_log = /proc/self/fd/2#' \
+           -e 's#^;*daemonize = .*#daemonize = no#' \
+    /etc/php/8.1/fpm/php-fpm.conf
+
 COPY nginx.conf /etc/nginx/nginx.conf
 RUN rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/*.conf
 

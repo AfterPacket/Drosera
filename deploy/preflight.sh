@@ -31,29 +31,32 @@ have() { command -v "$1" >/dev/null 2>&1; }
 head2 "Python syntax"
 
 if have python3; then
-    # compileall rather than py_compile: it walks directories and reports every
-    # broken file instead of stopping at the first.
-    while read -r dir; do
+    # ast.parse rather than compileall: compileall writes __pycache__, which
+    # fails on a checkout the invoking user cannot write to and litters the tree
+    # with root-owned directories when run under sudo. Parsing gives the same
+    # answer and touches nothing. Every file is reported, not just the first.
+    PY_SYNTAX_CHECK='
+import ast, pathlib, sys
+bad = []
+for path in sorted(pathlib.Path(sys.argv[1]).rglob("*.py")):
+    try:
+        ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+    except SyntaxError as error:
+        bad.append("%s:%s: %s" % (path, error.lineno, error.msg))
+if bad:
+    print("\n".join(bad))
+    sys.exit(1)
+'
+    for dir in shared session-cam elastic admin-dashboard ssh-honey ftp-honey \
+               telnet-honey smtp-honey mysql-honey smb-honey rdp-honey; do
         [ -d "$dir" ] || continue
-        if out=$(python3 -m compileall -q "$dir" 2>&1); then
+        if out=$(python3 -c "$PY_SYNTAX_CHECK" "$dir" 2>&1); then
             pass "$dir"
         else
             fail "$dir"
             printf '%s\n' "$out" | sed 's/^/        /'
         fi
-    done <<'EOF'
-shared
-session-cam
-elastic
-admin-dashboard
-ssh-honey
-ftp-honey
-telnet-honey
-smtp-honey
-mysql-honey
-smb-honey
-rdp-honey
-EOF
+    done
 else
     warn "python3 not found; skipped"
 fi
