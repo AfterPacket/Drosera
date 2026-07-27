@@ -9,7 +9,7 @@
   {% if sessions %}
   <table>
     <thead><tr>
-      <th>IP</th><th>Recorded</th><th>Duration</th><th>Size</th><th>Camera</th><th></th>
+      <th>IP</th><th>Recorded</th><th>Duration</th><th>Recording / clip</th><th>Camera</th><th></th>
     </tr></thead>
     <tbody>
       {% for item in sessions %}
@@ -17,7 +17,14 @@
         <td class="mono"><a href="{{ url_for('ip_detail', ip=item.ip) }}">{{ item.ip }}</a></td>
         <td class="mono">{{ item.modified[:19] }}</td>
         <td class="mono">{{ item.duration }}s</td>
-        <td class="mono">{{ item.size }}</td>
+        <td class="mono">
+          {{ item.size }} B
+          {%- if item.clip_size %}
+          <div style="color:var(--muted);font-size:.72rem">
+            clip {{ (item.clip_size / 1024) | round(1) }} KB
+          </div>
+          {%- endif %}
+        </td>
         <td>
           <span class="pill {{ item.cam_status }}">{{ item.cam_status | upper }}</span>
           {% if item.cam_detail %}<div class="mono" style="color:var(--muted);font-size:.72rem">{{ item.cam_detail }}</div>{% endif %}
