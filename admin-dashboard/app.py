@@ -27,6 +27,8 @@ from pathlib import Path
 import bcrypt
 import pyotp
 import redis
+
+import geoip
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
                    request, send_file, url_for)
 
@@ -575,8 +577,12 @@ def ip_detail(ip):
         entry["points"] += float(event.get("points") or 0)
 
     events = read_events(limit=500, ip_filter=ip)
-    country = next((e.get("headers", {}).get("cf_ipcountry")
-                    for e in events if e.get("headers", {}).get("cf_ipcountry")), None)
+    # Cloudflare's header only exists for proxied web traffic, so it is blank
+    # for SSH, telnet, SMB and RDP. GeoIP works from the address alone and
+    # covers everything -- when the database is present.
+    cf_country = next((e.get("headers", {}).get("cf_ipcountry")
+                       for e in events if e.get("headers", {}).get("cf_ipcountry")), None)
+    country = geoip.describe(ip, cf_country)
 
     page = max(1, request.args.get("page", 1, type=int))
     per_page = 50
@@ -685,8 +691,18 @@ def api_stats():
     hourly = Counter()
     by_service = Counter()
     tools = Counter()
+    countries = Counter()
     tarpit_seconds = 0.0
     events_today = 0
+
+    # Counted per distinct IP rather than per event, so one noisy scanner does
+    # not make its country look like a campaign.
+    for identity in identities:
+        address = identity.get("ip")
+        if not address:
+            continue
+        code = geoip.country_code(address)
+        countries[code or "unknown"] += 1
 
     for event in events:
         stamp = str(event.get("timestamp", ""))
@@ -720,6 +736,9 @@ def api_stats():
                    for h in range(24)],
         "by_service": [{"service": k, "count": v} for k, v in by_service.most_common(12)],
         "tools": [{"tool": k, "count": v} for k, v in tools.most_common(10)],
+        "geoip": geoip.available(),
+        "countries": [{"country": k, "count": v}
+                      for k, v in countries.most_common(10)],
         "score_distribution": [{"bucket": f"{b}-{b + 9}", "count": buckets[b]}
                                for b in sorted(buckets)],
         "top_ips": [{"ip": i.get("ip") or "unknown",

@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=root:root app.py setup.py ./
+COPY --chown=root:root app.py setup.py geoip.py ./
 COPY --chown=root:root templates/ ./templates/
 COPY --chown=root:root static/ ./static/
 

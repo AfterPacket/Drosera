@@ -16,6 +16,14 @@
   <div class="card"><h2>Connections by hour (UTC, today)</h2><div id="c-hourly"></div></div>
   <div class="card"><h2>Events by service</h2><div id="c-service"></div></div>
   <div class="card"><h2>Tools detected</h2><div id="c-tools"></div></div>
+  <div class="card">
+    <h2>Source countries</h2>
+    <div id="c-countries"></div>
+    <p class="muted" id="geo-note" style="display:none;font-size:.75rem">
+      No GeoIP database. Drop a MaxMind <span class="mono">GeoLite2-City.mmdb</span>
+      into <span class="mono">elastic/geoip/</span> to populate this.
+    </p>
+  </div>
   <div class="card"><h2>Score distribution</h2><div id="c-scores"></div></div>
 </div>
 

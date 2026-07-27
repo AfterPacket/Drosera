@@ -536,6 +536,9 @@ services:
       - ./admin-dashboard/config:/app/config
       - ./admin-dashboard/admin-logs:/app/admin-logs
       - ./storage:/var/honeypot/storage:ro
+      # Same database the elastic shipper uses. Optional; the dashboard shows
+      # a note explaining how to add it when absent.
+      - ./elastic/geoip:/geoip:ro
     tmpfs:
       - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
     networks: [admin-internal, honeypot-internal]

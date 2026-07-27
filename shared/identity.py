@@ -374,10 +374,18 @@ def activate_tarpit(ip: str, reason: str = "Threshold reached",
 
 
 def is_tarpitted(ip: str) -> bool:
+    # Checked here as well as in score_event: an operator who was flagged before
+    # being added to the ignore list would otherwise stay tarpitted forever,
+    # since the flag already sits in their stored identity. The symptom is a
+    # blank terminal on your own honeypot, which is the tarpit working.
+    if ip in IGNORE_IPS:
+        return False
     return bool(get_or_create_identity(ip).get("tarpit_active"))
 
 
 def is_banned(ip: str) -> bool:
+    if ip in IGNORE_IPS:
+        return False
     client = _client()
     if client is None:
         return bool(_fallback(ip).get("banned"))

@@ -83,6 +83,19 @@
           return { label: d.tool, value: d.count };
         }), { colour: C.accent });
 
+      if (data.geoip) {
+        window.DroseraCharts.hbars(host("c-countries"),
+          (data.countries || []).map(function (d) {
+            return { label: d.country, value: d.count };
+          }));
+      } else {
+        // Say why it is empty rather than showing an empty box. The database
+        // is licensed and cannot ship with the repo.
+        host("c-countries").textContent = "";
+        var note = document.getElementById("geo-note");
+        if (note) { note.style.display = "block"; }
+      }
+
       // Buckets are ordered and comparable, so vertical bars read as a
       // distribution rather than a ranking.
       window.DroseraCharts.bars(host("c-scores"),
