@@ -313,7 +313,17 @@ def handle_client(sock: socket.socket, addr) -> None:
             identity.score_named_event(
                 ip, event, payload=transport.remote_version, tool=label, service=SERVICE,
             )
-            identity.activate_tarpit(ip, f"{label} on SSH", SERVICE)
+            # Deliberately NOT tarpitted on detection.
+            #
+            # Recognising Hydra and then stonewalling it throws away the only
+            # thing it was going to give us: the wordlist. A brute-forcer that
+            # is allowed to run captures hundreds of credential pairs, which is
+            # real intelligence about what is circulating. One that is tarpitted
+            # after its first attempt captures one pair and a lot of noise.
+            #
+            # The score still climbs on every attempt, so a persistent tool
+            # reaches the tarpit and ban thresholds on its own -- just later,
+            # and with the evidence already collected.
 
         channel = transport.accept(30)
         if channel is None:
@@ -323,12 +333,24 @@ def handle_client(sock: socket.socket, addr) -> None:
         server.event.wait(20)
         command = getattr(server, "exec_command", None)
         if command:
+            # `ssh host '<cmd>'`. This is the most common bot pattern by far,
+            # and it used to be the one path that ran a command without
+            # recording it -- so the dropper and persistence one-liners, which
+            # are the payloads actually worth watching, produced an event log
+            # entry and no footage. Non-interactive is not uninteresting.
             shell = FakeShell(ip, ident, score=identity.score_named_event,
                               service=SERVICE, username=server.username)
-            output = shell.run(command)
-            if output:
-                channel.sendall((output + "\n").encode())
-            channel.send_exit_status(0)
+            recorder = alerting.SessionRecorder(
+                ip, SERVICE, title=f"ssh exec {server.username}@{shell.hostname}")
+            try:
+                recorder.write_output(shell.prompt() + command + "\r\n")
+                output = shell.run(command)
+                if output:
+                    channel.sendall((output + "\n").encode())
+                    recorder.write_output(output.replace("\n", "\r\n") + "\r\n")
+                channel.send_exit_status(0)
+            finally:
+                recorder.close()
         else:
             interactive_session(channel, ip, ident, server.username)
 

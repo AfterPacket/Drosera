@@ -325,6 +325,47 @@ services:
     pids_limit: 128
     cpus: 1.0
 
+  # ------------------------------------------------------------ TLS automation
+
+  # Optional. Without it, drop a Cloudflare Origin Certificate into certs/ and
+  # forget about it for 15 years -- that remains the lower-maintenance option.
+  # This exists for running unproxied, or if you would rather not hand-place a
+  # certificate at all.
+  #
+  #   docker compose --profile letsencrypt up -d
+  #
+  # On cam-egress because it must reach the ACME API and Cloudflare's DNS API.
+  # It is on no other network: it hands the certificate to the web container
+  # through the certs/ volume, never over a socket, so the internet-facing
+  # container gains nothing from its egress.
+  certbot:
+    image: certbot/dns-cloudflare:latest
+    container_name: hp-certbot
+    restart: unless-stopped
+    profiles: [letsencrypt]
+    environment:
+      DOMAIN: ${DOMAIN:-example.com}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+      # Cloudflare API token scoped to Zone:DNS:Edit on this zone only.
+      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:-}
+      LETSENCRYPT_STAGING: ${LETSENCRYPT_STAGING:-false}
+      LETSENCRYPT_CHECK_INTERVAL: ${LETSENCRYPT_CHECK_INTERVAL:-43200}
+      LETSENCRYPT_PROPAGATION_SECONDS: ${LETSENCRYPT_PROPAGATION_SECONDS:-30}
+    entrypoint: ["/bin/sh", "/renew.sh"]
+    volumes:
+      - ./certbot/renew.sh:/renew.sh:ro
+      - ./certs:/certs
+      - letsencrypt-data:/etc/letsencrypt
+    tmpfs:
+      # The API token is written here as cloudflare.ini and never hits disk.
+      - /tmp:size=8m,mode=1777,noexec,nosuid,nodev
+    networks: [cam-egress]
+    mem_limit: 256m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "2" }
+
   # -------------------------------------------------------------- search stack
 
   # T-Pot-style analytics. Elasticsearch and Kibana sit on their own internal
@@ -550,3 +591,6 @@ volumes:
   redis-admin-data:
   ssh-host-key:
   elasticsearch-data:
+  # Account key and issued certificates. Losing this is not fatal -- certbot
+  # re-registers and re-issues -- but it does burn Let's Encrypt rate limit.
+  letsencrypt-data:
