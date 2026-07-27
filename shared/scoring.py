@@ -16,6 +16,9 @@ SCORES = {
     "PHP_EVAL_ATTEMPT": (7, "PHP code execution attempt"),
     "FILE_UPLOAD": (8, "Malicious file upload"),
     "WEBSHELL_CMD": (2, "Webshell command issued"),
+    # Clearing immutable flags on ~/.ssh, rewriting authorized_keys, disabling
+    # history. Weighted well above ordinary recon: this is someone settling in.
+    "PERSISTENCE_ATTEMPT": (8, "SSH persistence / anti-forensics attempt"),
     "REVERSE_SHELL": (12, "Reverse shell payload"),
     "CREDENTIAL_ATTEMPT": (2, "Login credential attempt"),
     "CREDENTIAL_SPRAY": (6, "Credential spraying"),

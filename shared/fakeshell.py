@@ -372,11 +372,29 @@ class FakeShell:
         joined = "".join(flags)
         return self._listing(paths[0] if paths else self.cwd, "a" in joined, "l" in joined)
 
+    @property
+    def home(self) -> str:
+        return "/root" if self.username == "root" else f"/home/{self.username}"
+
     def _cmd_cd(self, args: List[str], _line: str) -> str:
-        target = args[0] if args else ("/root" if self.username == "root" else f"/home/{self.username}")
+        target = args[0] if args else self.home
+        # `cd ~` and `cd ~/.ssh` are the opening move of nearly every SSH
+        # persistence script. Without tilde expansion they returned "No such
+        # file or directory", which ends the intrusion at step one and tells
+        # the operator the shell is fake.
+        if target == "~":
+            target = self.home
+        elif target.startswith("~/"):
+            target = self.home + target[1:]
+
         resolved = self._resolve(target)
         node = self._node(resolved)
         if node is None:
+            # A real home directory exists even when our fake tree has not
+            # materialised it yet.
+            if resolved == self.home:
+                self.cwd = resolved
+                return ""
             return f"bash: cd: {target}: No such file or directory"
         if node.get("type") != "dir":
             return f"bash: cd: {target}: Not a directory"
@@ -806,6 +824,26 @@ class FakeShell:
     _HANDLERS: Dict[str, Callable[["FakeShell", List[str], str], str]] = {}
 
 
+def _cmd_chattr(self, args, _line):
+    """Silence, which is what success looks like.
+
+    `chattr -ia .ssh` is the first step of the standard SSH persistence chain:
+    clear the immutable flag so authorized_keys can be rewritten. Returning
+    "command not found" both breaks the illusion and ends the intrusion before
+    the interesting part -- the key they were about to install.
+    """
+    self._score_once("PERSISTENCE_ATTEMPT", payload=" ".join(args)[:200])
+    targets = [a for a in args if not a.startswith("-")]
+    if not targets:
+        return "Usage: chattr [-RVf] [-+=aAcCdDeijPsStTu] [-v version] files..."
+    return ""
+
+
+def _cmd_lsattr(self, args, _line):
+    targets = [a for a in args if not a.startswith("-")] or ["."]
+    return "\n".join(f"--------------e----- {name}" for name in targets)
+
+
 def _cmd_nproc(self, _args, _line):
     return str(self._cpu_count())
 
@@ -863,6 +901,8 @@ def _cmd_printf(self, args, _line):
     return text
 
 
+FakeShell._cmd_chattr = _cmd_chattr
+FakeShell._cmd_lsattr = _cmd_lsattr
 FakeShell._cmd_nproc = _cmd_nproc
 FakeShell._cmd_lscpu = _cmd_lscpu
 FakeShell._cmd_lspci = _cmd_lspci
@@ -879,6 +919,8 @@ FakeShell._cpu_count = _cpu_count
 
 
 FakeShell._HANDLERS = {
+    "chattr": FakeShell._cmd_chattr,
+    "lsattr": FakeShell._cmd_lsattr,
     "nproc": FakeShell._cmd_nproc,
     "lscpu": FakeShell._cmd_lscpu,
     "lspci": FakeShell._cmd_lspci,
