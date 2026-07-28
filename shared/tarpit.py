@@ -15,10 +15,11 @@ protocol starts, where there is no writer to drip through.
 """
 
 import asyncio
+import json
 import os
 import random
 import time
-from typing import Any
+from typing import Any, Optional
 
 from . import alerting
 
@@ -83,6 +84,50 @@ async def drip(writer: Any, data: bytes, until: float,
     except (OSError, ConnectionResetError):
         pass
     return time.time() - started
+
+
+def begin_hold(ip: str, service: str, max_seconds: float) -> Optional[str]:
+    """Register a hold that is happening *now*, and return its key.
+
+    `tarpit_active` on an identity only means the IP is marked for tarpitting;
+    it says nothing about whether a socket is being drained at this moment.
+    This is the live view -- what the operator wants when the question is "am I
+    actually costing them anything right now".
+
+    The key carries a TTL slightly longer than the maximum hold, so a container
+    that dies mid-drain cannot leave a phantom connection on the dashboard
+    forever.
+    """
+    from . import identity
+
+    client = identity._client()
+    if client is None:
+        return None
+    key = (f"hp:holding:{identity.hash_ip(ip)}:{service}:"
+           f"{os.getpid()}:{time.time():.3f}")
+    try:
+        client.setex(key, int(max_seconds) + 30, json.dumps({
+            "ip": ip,
+            "service": service,
+            "started": time.time(),
+        }))
+    except Exception:                                       # noqa: BLE001
+        return None
+    return key
+
+
+def end_hold(key: Optional[str]) -> None:
+    from . import identity
+
+    if not key:
+        return
+    client = identity._client()
+    if client is None:
+        return
+    try:
+        client.delete(key)
+    except Exception:                                       # noqa: BLE001
+        pass
 
 
 def log_hold(ip: str, service: str, seconds: float, reason: str = "") -> None:

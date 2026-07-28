@@ -175,5 +175,66 @@
     });
   }
 
+  // Live holds poll independently of the day view. They are "right now", so
+  // they have no meaning for an archived day and must not be cached alongside
+  // the day's aggregates.
+  function renderHolds(holds) {
+    var count = document.getElementById("hold-count");
+    if (count) {
+      count.textContent = holds.length;
+      count.className = "pill " + (holds.length ? "on" : "off");
+    }
+
+    var tbody = document.getElementById("t-holds");
+    if (!tbody) { return; }
+    tbody.textContent = "";
+
+    if (!holds.length) {
+      var empty = document.createElement("tr");
+      var cell = document.createElement("td");
+      cell.colSpan = 3;
+      cell.className = "muted";
+      cell.textContent = "Nothing held right now.";
+      empty.appendChild(cell);
+      tbody.appendChild(empty);
+      return;
+    }
+
+    holds.forEach(function (hold) {
+      var row = document.createElement("tr");
+
+      var ipCell = document.createElement("td");
+      ipCell.className = "mono";
+      var link = document.createElement("a");
+      link.href = "/ip/" + encodeURIComponent(hold.ip);
+      link.textContent = hold.ip;
+      ipCell.appendChild(link);
+      row.appendChild(ipCell);
+
+      var svc = document.createElement("td");
+      svc.textContent = hold.service || "-";
+      row.appendChild(svc);
+
+      var held = document.createElement("td");
+      held.className = "mono";
+      var seconds = Number(hold.seconds || 0);
+      held.textContent = seconds >= 60
+        ? Math.floor(seconds / 60) + "m " + Math.round(seconds % 60) + "s"
+        : seconds.toFixed(1) + "s";
+      row.appendChild(held);
+
+      tbody.appendChild(row);
+    });
+  }
+
+  function pollHolds() {
+    fetch("/api/holds", { credentials: "same-origin" })
+      .then(function (response) { return response.json(); })
+      .then(renderHolds)
+      .catch(function () { /* transient; the next tick retries */ });
+  }
+
   load();
+  pollHolds();
+  setInterval(pollHolds, 5000);
 })();

@@ -111,9 +111,11 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             identity.score_named_event(ip, "TARPIT_ENGAGED",
                                        payload="telnet tarpit", service=SERVICE)
             started = time.monotonic()
+            hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_LOGIN_DELAY)
             try:
                 await asyncio.sleep(TARPIT_LOGIN_DELAY)
             finally:
+                tarpit.end_hold(hold_key)
                 # Logged even when the client gives up mid-hold, which is the
                 # normal case and the whole point -- the time is spent whether
                 # or not they wait for the end of it. Without this the stall

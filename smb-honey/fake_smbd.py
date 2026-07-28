@@ -206,9 +206,11 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     tarpitted = identity.is_tarpitted(ip)
     hold_until = tarpit.deadline(TARPIT_MAX_SECONDS)
     held = 0.0
+    hold_key = None
     if tarpitted:
         identity.score_named_event(ip, "TARPIT_ENGAGED", payload="smb tarpit",
                                    service=SERVICE)
+        hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_MAX_SECONDS)
 
     try:
         while True:
@@ -312,6 +314,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     except (OSError, asyncio.IncompleteReadError, ConnectionResetError, struct.error):
         pass
     finally:
+        tarpit.end_hold(hold_key)
         tarpit.log_hold(ip, SERVICE, held)
         try:
             writer.close()

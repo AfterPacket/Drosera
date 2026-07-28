@@ -551,6 +551,40 @@ def clip_info(stem: str) -> dict:
     return info
 
 
+def live_holds(ip: str = None):
+    """Connections being drained right now.
+
+    Distinct from the tarpit_active flag, which only records that an IP is
+    marked for tarpitting. These keys exist for the lifetime of an individual
+    held socket and carry a TTL past the maximum hold, so a container that dies
+    mid-drain cannot leave a phantom connection on the dashboard.
+    """
+    pattern = f"hp:holding:{hashlib.md5(ip.encode()).hexdigest()}:*" if ip \
+        else "hp:holding:*"
+    out = []
+    try:
+        client = _redis_honeypot()
+        for key in client.scan_iter(match=pattern, count=500):
+            raw = client.get(key)
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            record["seconds"] = round(time.time() - float(record.get("started", 0)), 1)
+            out.append(record)
+    except (redis.RedisError, ValueError, TypeError):
+        return []
+    return sorted(out, key=lambda r: -r.get("seconds", 0))
+
+
+@app.route("/api/holds")
+@require_auth
+def api_holds():
+    return jsonify(live_holds())
+
+
 def status_of(identity: dict) -> str:
     if identity.get("banned"):
         return "BANNED"

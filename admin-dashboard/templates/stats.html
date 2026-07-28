@@ -21,6 +21,17 @@
 </div>
 
 <div class="card">
+  <h2>Held right now <span class="pill on" id="hold-count">0</span></h2>
+  <p class="muted" style="font-size:.75rem;margin-top:-.4rem">
+    Connections being drained at this moment. Refreshes every 5 seconds.
+  </p>
+  <table>
+    <thead><tr><th>IP</th><th>Service</th><th>Held for</th></tr></thead>
+    <tbody id="t-holds"><tr><td colspan="3" class="muted">Nothing held right now.</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
   <h2>Attack origins</h2>
   <div id="c-map"></div>
   <p class="muted" id="map-note" style="display:none;font-size:.75rem">

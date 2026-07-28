@@ -221,6 +221,9 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
     deadline = time.time() + TARPIT_MAX_SECONDS
     held = 0.0
     started = time.time()
+    # Registered for the duration so the dashboard can show this connection
+    # being drained while it is happening, not only after it ends.
+    hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_MAX_SECONDS)
     try:
         sock.settimeout(TARPIT_BYTE_DELAY + 5)
         for char in SSH_BANNER:
@@ -236,6 +239,7 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
     except (OSError, socket.timeout):
         pass
     finally:
+        tarpit.end_hold(hold_key)
         held = time.time() - started
         alerting.alert_event(
             ip=ip, event_type="TARPIT_HELD", service=SERVICE,
