@@ -373,6 +373,27 @@ def activate_tarpit(ip: str, reason: str = "Threshold reached",
     return identity
 
 
+def release_tarpit(ip: str, reason: str = "Operator release") -> Dict[str, Any]:
+    """Drop an IP out of the tarpit without touching its score.
+
+    The counterpart to activate_tarpit, for false positives and for releasing
+    someone deliberately. The score is left alone on purpose: clearing it would
+    just let them climb back to the threshold and re-engage, which is rarely
+    what an operator releasing a host actually wants.
+    """
+    from . import alerting
+
+    identity = update_identity(ip, {"tarpit_active": False})
+    alerting.alert_event(
+        ip=ip,
+        event_type="TARPIT_RELEASED",
+        reason=reason,
+        cumulative_score=float(identity.get("score") or 0),
+        tarpit_active=False,
+    )
+    return identity
+
+
 def is_tarpitted(ip: str) -> bool:
     # Checked here as well as in score_event: an operator who was flagged before
     # being added to the ignore list would otherwise stay tarpitted forever,
@@ -461,6 +482,7 @@ class IdentityManager:
     score_event = staticmethod(score_event)
     score_named_event = staticmethod(score_named_event)
     activate_tarpit = staticmethod(activate_tarpit)
+    release_tarpit = staticmethod(release_tarpit)
     is_tarpitted = staticmethod(is_tarpitted)
     is_banned = staticmethod(is_banned)
     ban = staticmethod(ban)

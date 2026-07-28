@@ -26,6 +26,8 @@
   <div class="actions">
     <button class="act danger" data-action="ban" data-ip="{{ ip }}">Ban this IP</button>
     <button class="act" data-action="unban" data-ip="{{ ip }}">Unban</button>
+    <button class="act" data-action="tarpit" data-ip="{{ ip }}">Tarpit</button>
+    <button class="act" data-action="untarpit" data-ip="{{ ip }}">Release tarpit</button>
     <a class="act" href="{{ url_for('api_export', ip=ip) }}">Export evidence (ZIP)</a>
     <span id="action-status" class="muted"></span>
   </div>

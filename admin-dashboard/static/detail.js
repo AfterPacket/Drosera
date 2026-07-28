@@ -14,6 +14,8 @@
     button.addEventListener("click", function () {
       var action = button.getAttribute("data-action");
       var ip = button.getAttribute("data-ip");
+      // Only banning is confirmed. Tarpit changes are cheap and reversible;
+      // a ban writes a firewall rule and is the one worth pausing over.
       if (action === "ban" && !window.confirm("Ban " + ip + "?")) { return; }
 
       say("Working…");
