@@ -187,8 +187,12 @@ if have docker; then
     # loudly: sb_rickroll() just falls back to the 302 for every client,
     # including the scanners that ignore redirects and are the reason the text
     # payload exists. Checked here because the logs will never tell you.
+    # Matched on the target alone, and in both spellings. `docker compose config`
+    # normalises volumes into long form -- source and target land on separate
+    # lines -- so any pattern joining the two with a colon matches nothing and
+    # reports a missing mount that is demonstrably present.
     if docker compose config 2>/dev/null \
-        | grep -q 'shared/rickroll.txt:/rickroll.txt'; then
+        | grep -qE 'target: /rickroll\.txt$|:/rickroll\.txt:'; then
         pass "rickroll.txt mounted into web"
     else
         fail "shared/rickroll.txt is not mounted into the web container; \
