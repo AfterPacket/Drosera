@@ -593,7 +593,12 @@ def main() -> int:
         meta = {}
         if meta_path.is_file():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        out = render_gif(cast, CLIP_DIR / f"{cast.stem}.gif", meta)
+        # Capped, because this path writes a GIF and stops -- there is no ffmpeg
+        # step after it to turn a full render into something a fraction of the
+        # size. Unbounded here would mean `--render` on a long tarpit session
+        # producing a GIF of hundreds of megabytes to look at once.
+        out = render_gif(cast, CLIP_DIR / f"{cast.stem}.gif", meta,
+                         max_frames=GIF_SAFETY_FRAMES)
         print(f"wrote {out} ({out.stat().st_size} bytes)")
         return 0
 

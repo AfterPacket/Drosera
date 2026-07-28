@@ -718,6 +718,21 @@ docker compose up -d
 what is running and touches only the difference. There is never a moment where
 the stack is down, and services you did not change are not restarted at all.
 
+**Build before you `up -d`, and do not test in between.** These two commands
+move different things at different times: `up -d` applies the new environment
+immediately, while `build` is the only thing that moves code into an image.
+Reverse them and you get a window where new settings are running against old
+code, which is not a theoretical concern — `CAM_MAX_FRAMES=0` means "render
+every frame" to the current renderer and is a divisor to the previous one, so
+the wrong order crashes the camera with a `ZeroDivisionError` on the first
+recording it picks up. Any release that changes a default *and* the code
+reading it has this shape. If a smoke test fails right after an update, check
+that the image actually moved before you debug anything else:
+
+```bash
+docker compose exec session-cam grep -n "def _plan_frames" /app/render.py
+```
+
 ### Which changes need which action
 
 Knowing this saves rebuilding the world for a one-line fix:
