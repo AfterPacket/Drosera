@@ -85,6 +85,20 @@ MIN_BYTES = int(os.getenv("CAM_MIN_BYTES", "700"))
 # banner and a prompt. Below that there is nothing to watch.
 MIN_FRAMES = int(os.getenv("CAM_MIN_FRAMES", "2"))
 
+# Above this score the content and time floors no longer apply.
+#
+# Those floors are a proxy for "did anything happen", and the proxy fails on the
+# most interesting bots there are: a Go or Python client that authenticates,
+# runs one recon command and disconnects does all of it in under two seconds and
+# a few hundred bytes. `/bin/./uname -s -v -n -r -m` from an SSH-2.0-Go client
+# is a fingerprinting probe worth every byte of the clip, and it was being
+# dropped for being brief.
+#
+# The score is not a proxy -- it is the accumulated judgement of the scoring
+# table about this address. Once it is this high there is no longer any question
+# whether the session is worth watching, so stop asking a question about length.
+ALWAYS_SCORE = float(os.getenv("CAM_ALWAYS_SCORE", "15"))
+
 # MP4 by default, because it is what makes full playback deliverable: a whole
 # session as a GIF is tens of megabytes and H.264 carries the same frames in a
 # fraction of that. Falls back to GIF wherever ffmpeg is missing, so a build
@@ -385,10 +399,14 @@ def send_webhook(clip: Path, meta: Dict[str, Any]) -> Optional[str]:
 
 def should_send(meta: Dict[str, Any]) -> Optional[str]:
     """Returns a skip reason, or None when the session is worth a clip."""
-    if float(meta.get("score") or 0) < MIN_SCORE:
+    score = float(meta.get("score") or 0)
+    if score < MIN_SCORE:
         return f"score {meta.get('score')} below {MIN_SCORE}"
     if int(meta.get("frames") or 0) < MIN_FRAMES:
         return f"only {meta.get('frames')} frames"
+    # Earned a clip on merit; length stops being a question.
+    if score >= ALWAYS_SCORE:
+        return None
     # Either enough content or enough time. Requiring both discarded the most
     # interesting captures -- fast, dense probe output -- while keeping idle
     # sockets that recorded nothing but a banner.

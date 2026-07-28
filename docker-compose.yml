@@ -331,6 +331,9 @@ services:
       CAM_FORMAT: ${CAM_FORMAT:-mp4}
       CAM_MIN_SCORE: ${CAM_MIN_SCORE:-5}
       CAM_MIN_DURATION: ${CAM_MIN_DURATION:-2}
+      # Past this score the content/time floors no longer apply: a short, dense
+      # bot session is exactly what those floors were wrongly discarding.
+      CAM_ALWAYS_SCORE: ${CAM_ALWAYS_SCORE:-15}
       CAM_POLL_SECONDS: ${CAM_POLL_SECONDS:-15}
       CAM_RETENTION_DAYS: ${CAM_RETENTION_DAYS:-14}
       CAM_MAX_CLIP_MB: ${CAM_MAX_CLIP_MB:-45}
