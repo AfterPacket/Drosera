@@ -12,7 +12,7 @@ import time
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, persona, tarpit  # noqa: E402
+from shared import alerting, identity, persona, rickroll, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -83,6 +83,19 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     ip = peer[0]
 
     if identity.is_banned(ip):
+        # Telnet is a raw byte stream with no negotiation owed to anyone, so
+        # this is the one service where the art lands exactly as drawn.
+        # Dripped, so the ban path costs them time rather than just closing.
+        art = rickroll.banner()
+        if art:
+            hold_key = tarpit.begin_hold(ip, SERVICE, rickroll.DRIP_SECONDS)
+            try:
+                held = await tarpit.drip(
+                    writer, art, tarpit.deadline(int(rickroll.DRIP_SECONDS)),
+                    byte_delay=rickroll.drip_delay(art))
+            finally:
+                tarpit.end_hold(hold_key)
+            tarpit.log_hold(ip, SERVICE, held, reason="telnet rickroll (banned)")
         writer.close()
         return
 

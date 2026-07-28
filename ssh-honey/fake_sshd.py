@@ -20,7 +20,7 @@ import paramiko
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, loot, persona, scoring, tarpit  # noqa: E402
+from shared import alerting, identity, loot, persona, rickroll, scoring, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -403,6 +403,26 @@ def handle_client(sock: socket.socket, addr) -> None:
     server = None
     try:
         if identity.is_banned(ip):
+            # Pre-banner, which RFC 4253 §4.2 explicitly allows: a server may
+            # send any number of other lines before its version string, and a
+            # conforming client skips them. It is the same slot run_tarpit()
+            # drips junk into, so nothing new is being asked of the client.
+            #
+            # Dripped, so the ban path is a tarpit rather than a parting shot:
+            # a banned scanner's last act here is to spend two minutes
+            # collecting a picture. Registered as a hold like any other, so
+            # the time shows up on the dashboard and in attacker-minutes.
+            art = rickroll.banner()
+            if art:
+                sock.settimeout(rickroll.DRIP_SECONDS + 30)
+                hold_key = tarpit.begin_hold(ip, SERVICE, rickroll.DRIP_SECONDS)
+                try:
+                    held = tarpit.drip_sync(
+                        sock, art, time.time() + rickroll.DRIP_SECONDS,
+                        byte_delay=rickroll.drip_delay(art))
+                finally:
+                    tarpit.end_hold(hold_key)
+                tarpit.log_hold(ip, SERVICE, held, reason="ssh rickroll (banned)")
             sock.close()
             return
 

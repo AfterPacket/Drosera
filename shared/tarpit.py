@@ -11,7 +11,9 @@ and a task for as long as it costs them one, so the ceiling matters as much for
 our own stability as theirs.
 
 ssh-honey keeps its own endlessh-style implementation: it tarpits before the
-protocol starts, where there is no writer to drip through.
+protocol starts, where there is no writer to drip through. `drip_sync` is here
+for the rest of what that service drains -- a thread with a raw socket and no
+event loop to await on.
 """
 
 import asyncio
@@ -82,6 +84,34 @@ async def drip(writer: Any, data: bytes, until: float,
             await writer.drain()
             await asyncio.sleep(byte_delay)
     except (OSError, ConnectionResetError):
+        pass
+    return time.time() - started
+
+
+def drip_sync(sock: Any, data: bytes, until: float,
+              byte_delay: float = 0.0) -> float:
+    """`drip` for the threaded services. Returns seconds held.
+
+    ssh-honey runs a thread per connection and writes to a raw socket, so it
+    cannot await anything. Same pacing and the same guarantee: the remainder is
+    flushed at the deadline rather than left half-sent.
+
+    socket.timeout is a subclass of OSError on every version we run, so the one
+    except covers a stalled peer as well as a closed one.
+    """
+    started = time.time()
+    if byte_delay <= 0:
+        remaining = max(until - started, 0.0)
+        byte_delay = min(max(BYTE_DELAY, remaining / max(len(data), 1)),
+                         MAX_BYTE_GAP)
+    try:
+        for index in range(len(data)):
+            if time.time() > until:
+                sock.sendall(data[index:])
+                break
+            sock.sendall(data[index:index + 1])
+            time.sleep(byte_delay)
+    except OSError:
         pass
     return time.time() - started
 

@@ -8,8 +8,15 @@ WORKDIR /app
 # fonts-dejavu-core: the renderer needs a real monospace face. Pillow's builtin
 # bitmap font is a fallback, but it renders terminal output badly.
 # ca-certificates: required for TLS to api.telegram.org and any SMTP relay.
+# ffmpeg: what makes full-session playback deliverable. Every frame of a long
+# session as a GIF runs to tens of megabytes and is dropped at CAM_MAX_CLIP_MB;
+# the same frames as H.264 arrive comfortably inside Telegram's limit. Without
+# it the renderer falls back to a sampled GIF, so this is the difference between
+# watching the session and watching an excerpt. From Debian's archive, pinned by
+# the base image's snapshot, not a binary fetched from anywhere else.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends fonts-dejavu-core ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      fonts-dejavu-core ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

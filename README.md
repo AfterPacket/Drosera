@@ -13,6 +13,30 @@ basis, and for the design safeguards that make it non-weaponizable.
 Built by [Digital Systems LLC](https://digitalsystems.cc) /
 [Afterpacket](https://github.com/afterpacket).
 
+## The name
+
+*Drosera* is the genus of the sundews — carnivorous plants that catch insects
+with what looks like a drop of morning dew. The name is from the Greek
+*droseros*, "dewy". Each leaf is covered in tentacles tipped with a bead of
+clear mucilage that glitters exactly like water, which is the entire trick: an
+insect flies in for a drink and lands on glue. The tentacles then fold inward
+over minutes to hours, and the plant digests at its leisure.
+
+The whole appliance is that plant:
+
+| Sundew | Here |
+|---|---|
+| Looks like water | A convincing small-business site, real-looking banners, an SSH server that accepts your password |
+| The glue | The tarpit — a claimed 10 MB body trickled at ~3 KB/s, an SSH banner dripped a byte at a time |
+| Folding in slowly | Holds measured in minutes, deliberately not seconds; the cost is the attacker's time |
+| Digestion | Credentials, payload hashes, NTLMv2 responses and full session recordings turned into evidence |
+
+Sundews are also strictly passive. They grow in bogs too poor to live on, they
+never chase anything, and they only ever consume what flew into them. That is
+the same posture as [`AUTHORIZATION.md`](AUTHORIZATION.md): nothing here scans
+back, strikes back, or reaches toward anyone. It waits, and it is patient, and
+the only resource it spends is the attacker's own.
+
 ```
 Internet
    │
@@ -63,7 +87,7 @@ Three tiers, driven by a cumulative per-IP score:
 |---|---|---|
 | 1 | Unknown visitor | Serve the convincing fake site. Log silently |
 | 2 | Confirmed scanner (tool in User-Agent, or a known probe path) | Engage the tarpit: claim a 10 MB body, then trickle bytes at ~3 KB/s until they give up |
-| 3 | Score ≥ 35 | Ban. Redirect to a rickroll, and write a fail2ban line that firewalls them at the host |
+| 3 | Score ≥ 35 | Ban, and write a fail2ban line that firewalls them at the host. One last tarpit on the way out: browsers are redirected to a rickroll, and everything that ignores redirects — which is most of what gets banned — gets the same joke dripped as ASCII art, on the web and over SSH and telnet alike |
 
 Scores accumulate across *every* service. An attacker who probes the web shell
 and then tries SSH is one profile, with one consistent fake machine identity —
@@ -107,6 +131,20 @@ Recording is deliberately generous and delivery is gated: clips are only sent
 past a score, content and frame floor, so a port scan does not become a
 notification.
 
+**The clip is the whole session, not a highlight.** Every frame is rendered —
+sampling to a fixed budget used to drop the middle of any long session, which
+is usually the part worth watching, and nothing in the clip showed that it had.
+What is still compressed is dead air: gaps over `CAM_MAX_IDLE_SECONDS` are
+squeezed, because a tarpitted session can idle for half an hour and that is
+silence rather than content. The HUD clock keeps showing true elapsed time, so
+the footage never misrepresents how long they were held.
+
+That is affordable because delivery is MP4 by default: a full session as a GIF
+runs to tens of megabytes and would be dropped at `CAM_MAX_CLIP_MB`, while the
+same frames as H.264 land well inside Telegram's 50 MB limit. `ffmpeg` ships in
+the `session-cam` image for exactly this. Without it the renderer falls back to
+a frame-capped GIF — still delivered, but an excerpt.
+
 ## Zero-trust guarantees
 
 - No `exec`/`system`/`shell_exec`/`popen`/`eval` on anything, in any language
@@ -129,7 +167,7 @@ notification.
   compromised camera gains no route in
 
 Together those mean code execution inside a container is a dead end: nothing to
-write to, nothing to execute from, nothing to fetch. See `deploy/README.md` §17
+write to, nothing to execute from, nothing to fetch. See `deploy/README.md` §18
 for the escape threat model and the commands to verify each control.
 
 ## Fail-safes
@@ -156,6 +194,17 @@ ssh -N -L 8443:127.0.0.1:8443 -p 2222 you@your-vps
 Password **and** TOTP are both required; the session is created only after the
 TOTP step succeeds. Pages: live feed, per-IP attacker profiles with session
 replay, evidence log, charts, audit trail, settings.
+
+The charts are inline SVG built from the same `/api/stats` payload — no chart
+library, because the dashboard is reached from a box with no egress and a CDN
+that fails to load leaves empty boxes with no explanation. The attack map is a
+density heat map: a dot per origin answered "where is there an attacker" one at
+a time, but the question the page is actually asked is where attacks
+concentrate, and overlapping translucent dots are worst exactly where the
+answer matters most. Origins now accumulate into a field instead of occluding
+each other, drawn in a single-hue sequential ramp so colour carries magnitude
+and never identity. Hovering still names the individual city and its count — a
+heat bin is a neighbourhood, not a datum.
 
 Evidence export produces a ZIP with the event log, identity record, asciinema
 recordings, an HTML report, and a suggested fail2ban line.

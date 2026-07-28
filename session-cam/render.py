@@ -36,7 +36,20 @@ HUD_BOTTOM = 22
 # in the HUD clock; the clip itself squeezes dead air so it stays watchable.
 MAX_IDLE_SECONDS = float(os.getenv("CAM_MAX_IDLE_SECONDS", "2.0"))
 MIN_FRAME_INTERVAL = float(os.getenv("CAM_MIN_FRAME_INTERVAL", "0.10"))
-MAX_FRAMES = int(os.getenv("CAM_MAX_FRAMES", "420"))
+
+# 0 means no cap: render every frame the session produced. That is the default
+# now, because sampling to a fixed budget silently dropped the middle of any
+# long session -- exactly the part worth watching -- and the clip gave no sign
+# that it had. What squeezing remains is MAX_IDLE_SECONDS above, which removes
+# silence rather than content and leaves the HUD clock telling the truth.
+#
+# The cost is a large intermediate GIF, which is why cam.py caps this when the
+# GIF is what gets delivered. Through ffmpeg it is a temporary file on the way
+# to an MP4 a fraction of its size.
+MAX_FRAMES = int(os.getenv("CAM_MAX_FRAMES", "0"))
+# Applied only when the GIF itself is the delivered artefact, so a full render
+# can never push it past CAM_MAX_CLIP_MB and out of the delivery path entirely.
+GIF_SAFETY_FRAMES = int(os.getenv("CAM_GIF_SAFETY_FRAMES", "420"))
 TAIL_HOLD_MS = 1500
 
 # A bot that connects, reads the prompt and leaves does all of it inside one
@@ -149,8 +162,15 @@ def parse_cast(path: Path) -> Tuple[Dict[str, Any], List[Tuple[float, str]]]:
     return header, events
 
 
-def _plan_frames(events: Sequence[Tuple[float, str]]) -> float:
-    """Choose a sampling interval that keeps the clip under MAX_FRAMES."""
+def _plan_frames(events: Sequence[Tuple[float, str]], max_frames: int) -> float:
+    """Choose a sampling interval that keeps the clip under `max_frames`.
+
+    With no cap the interval is the floor, so every event that changes the
+    screen gets a frame and the playback is the session rather than a summary
+    of it.
+    """
+    if max_frames <= 0:
+        return MIN_FRAME_INTERVAL
     total = 0.0
     previous = 0.0
     for offset, _ in events:
@@ -158,7 +178,7 @@ def _plan_frames(events: Sequence[Tuple[float, str]]) -> float:
         previous = offset
     if total <= 0:
         return MIN_FRAME_INTERVAL
-    return max(MIN_FRAME_INTERVAL, total / MAX_FRAMES)
+    return max(MIN_FRAME_INTERVAL, total / max_frames)
 
 
 def _rows(screen: "pyte.Screen") -> List[List[Tuple[str, Any]]]:
@@ -303,9 +323,16 @@ class Renderer:
 
 
 def render_gif(cast_path: Path, out_path: Path,
-               meta: Optional[Dict[str, Any]] = None) -> Path:
-    """Render a .cast to an animated GIF. Returns the written path."""
+               meta: Optional[Dict[str, Any]] = None,
+               max_frames: Optional[int] = None) -> Path:
+    """Render a .cast to an animated GIF. Returns the written path.
+
+    `max_frames` overrides CAM_MAX_FRAMES; 0 or below means every frame. The
+    caller decides, because the right answer depends on whether this GIF is the
+    artefact being delivered or an intermediate on the way to an MP4.
+    """
     meta = dict(meta or {})
+    budget = MAX_FRAMES if max_frames is None else max_frames
     header, events = parse_cast(cast_path)
 
     columns = int(meta.get("width") or header.get("width") or 80)
@@ -322,7 +349,7 @@ def render_gif(cast_path: Path, out_path: Path,
     screen = pyte.Screen(columns, lines)
     stream = pyte.Stream(screen)
     renderer = Renderer(columns, lines, meta)
-    interval = _plan_frames(events)
+    interval = _plan_frames(events, budget)
 
     # (image, virtual timestamp). Durations are diffs taken afterwards, since a
     # GIF frame's duration is the gap until the *next* frame.
@@ -346,7 +373,7 @@ def render_gif(cast_path: Path, out_path: Path,
             # Malformed escape sequences are attacker-controlled and expected.
             continue
 
-        if virtual - last_emit >= interval and len(shots) < MAX_FRAMES:
+        if virtual - last_emit >= interval and (budget <= 0 or len(shots) < budget):
             shots.append((renderer.quantize(renderer.frame(screen, real, truncated)),
                           virtual))
             last_emit = virtual
@@ -382,6 +409,15 @@ def render_gif(cast_path: Path, out_path: Path,
         disposal=1,
     )
     return out_path
+
+
+def have_ffmpeg() -> bool:
+    """Whether an MP4 can be produced at all.
+
+    Asked before rendering, not after: the frame budget depends on whether the
+    GIF is a deliverable or a temporary file, and that is decided by this.
+    """
+    return shutil.which("ffmpeg") is not None
 
 
 def render_mp4(gif_path: Path, out_path: Path) -> Optional[Path]:

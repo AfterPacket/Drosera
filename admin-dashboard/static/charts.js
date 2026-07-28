@@ -12,6 +12,10 @@
 // That is also why the tool breakdown is a horizontal bar chart and not the
 // doughnut it used to be -- a doughnut asks you to compare angles and needs a
 // distinct hue per slice to do it.
+//
+// The attack map is the one place colour varies, and it varies with magnitude
+// rather than identity: a single-hue sequential ramp, which is safe for the
+// same reason -- no reader has to tell two hues apart to read it.
 (function () {
   "use strict";
 
@@ -26,6 +30,13 @@
     series: "#58a6ff",
     accent: "#bc8cff"
   };
+
+  // Sequential ramp for the attack map's density field: ONE hue, stepped for
+  // this dark surface so the low end recedes toward it and the brightest step
+  // is reserved for the peak. Never a rainbow -- hue carries no identity here,
+  // only magnitude, which is the same reason every other chart on this page is
+  // a single series. Ordered low -> high.
+  var HEAT = ["#0d366b", "#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4"];
 
   var FONT = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -325,7 +336,10 @@
     var mapH = mapW * ratio;
     if (mapH > maxH) { mapH = maxH; mapW = mapH / ratio; }
 
-    var box = surface(host, mapH + pad * 2);
+    // + LEGEND_BAND: the sequential ramp is drawn under the map, so the surface
+    // has to be tall enough to hold it or it clips against the viewBox.
+    var LEGEND_BAND = 28;
+    var box = surface(host, mapH + pad * 2 + LEGEND_BAND);
     var ox = pad + (box.w - pad * 2 - mapW) / 2;
     var oy = pad;
 
@@ -369,7 +383,75 @@
       }));
     }
 
-    var max = Math.max.apply(null, points.map(function (p) { return p.count; })) || 1;
+    // ----------------------------------------------------------- density field
+    //
+    // A heat map rather than a dot per origin. Dots answered "where is there an
+    // attacker" one at a time; the question the stats page is actually asked is
+    // where attacks concentrate, and a hundred overlapping semi-transparent
+    // circles is the worst possible way to show that -- the busiest regions are
+    // exactly where the marks stop being separable.
+    //
+    // Each origin splats a Gaussian weighted by its count onto a grid, and the
+    // grid is drawn in one sequential ramp. Overlap now accumulates instead of
+    // occluding, which is the entire point.
+    var CELL = 9;             // px per bin
+    var RADIUS = 34;          // px of influence per origin
+    var cols = Math.ceil(mapW / CELL);
+    var rows = Math.ceil(mapH / CELL);
+    var grid = new Array(cols * rows);
+    for (var gi = 0; gi < grid.length; gi++) { grid[gi] = 0; }
+
+    var sigma = RADIUS / 2;
+    var falloff = 2 * sigma * sigma;
+
+    points.forEach(function (point) {
+      if (point.lat === null || point.lon === null ||
+          point.lat === undefined || point.lon === undefined) { return; }
+      var weight = Math.max(Number(point.count) || 0, 0);
+      if (!weight) { return; }
+      var px = x(point.lon), py = y(point.lat);
+      var c0 = Math.max(0, Math.floor((px - ox - RADIUS) / CELL));
+      var c1 = Math.min(cols - 1, Math.floor((px - ox + RADIUS) / CELL));
+      var r0 = Math.max(0, Math.floor((py - oy - RADIUS) / CELL));
+      var r1 = Math.min(rows - 1, Math.floor((py - oy + RADIUS) / CELL));
+      for (var r = r0; r <= r1; r++) {
+        for (var c = c0; c <= c1; c++) {
+          var dx = ox + c * CELL + CELL / 2 - px;
+          var dy = oy + r * CELL + CELL / 2 - py;
+          var d2 = dx * dx + dy * dy;
+          if (d2 > RADIUS * RADIUS) { continue; }
+          grid[r * cols + c] += weight * Math.exp(-d2 / falloff);
+        }
+      }
+    });
+
+    var peak = 0;
+    for (var pi = 0; pi < grid.length; pi++) {
+      if (grid[pi] > peak) { peak = grid[pi]; }
+    }
+
+    if (peak > 0) {
+      var heat = el("g", {});
+      for (var ri = 0; ri < rows; ri++) {
+        for (var ci = 0; ci < cols; ci++) {
+          var value = grid[ri * cols + ci] / peak;
+          // Leave the coastline legible where nothing happened, rather than
+          // washing the whole ocean in the palest step.
+          if (value < 0.04) { continue; }
+          // sqrt, because one prolific source otherwise sets a peak that
+          // flattens every other region into the bottom step.
+          var t = Math.sqrt(value);
+          var step = Math.min(HEAT.length - 1, Math.floor(t * HEAT.length));
+          heat.appendChild(el("rect", {
+            x: ox + ci * CELL, y: oy + ri * CELL,
+            width: Math.min(CELL, mapW - ci * CELL),
+            height: Math.min(CELL, mapH - ri * CELL),
+            fill: HEAT[step], "fill-opacity": 0.3 + t * 0.5
+          }));
+        }
+      }
+      box.svg.appendChild(heat);
+    }
 
     // Labels are placed only where they do not collide with one already
     // placed. Ranking alone is not enough: the busiest sources cluster
@@ -391,25 +473,18 @@
       return true;
     }
 
-    // Area proportional to count, not radius: radius-scaling exaggerates the
-    // big sources by the square of their lead.
+    // The origins themselves stay inspectable. The field shows concentration;
+    // hover still answers "which city, how many" for every individual source,
+    // which the heat alone cannot -- a bin is a neighbourhood, not a datum.
     points.slice().sort(function (a, b) { return b.count - a.count; })
       .forEach(function (point) {
         if (point.lat === null || point.lon === null ||
             point.lat === undefined || point.lon === undefined) { return; }
-        var radius = 2 + Math.sqrt(point.count / max) * 6;
         var cx = x(point.lon);
         var cy = y(point.lat);
 
-        box.svg.appendChild(el("circle", {
-          cx: cx, cy: cy, r: radius,
-          fill: C.series, "fill-opacity": .35,
-          stroke: C.series, "stroke-width": 1.5
-        }));
-
         var label = (point.label || "?") + " · " + point.count;
-        var hit = el("circle", { cx: cx, cy: cy, r: Math.max(radius, 10),
-                                 fill: "transparent" });
+        var hit = el("circle", { cx: cx, cy: cy, r: 10, fill: "transparent" });
         hoverable(hit, label);
         box.svg.appendChild(hit);
 
@@ -421,13 +496,38 @@
         seenLabels[point.label] = true;
 
         var bw = point.label.length * CHAR_W;
-        var bx = cx + radius + 4;
+        var bx = cx + 6;
         var by = cy - LINE_H / 2;
         if (!fits(bx, by, bw, LINE_H)) { return; }
 
         placed.push({ x: bx, y: by, w: bw, h: LINE_H });
+        // A 1.5px anchor so the label points at something. Deliberately not a
+        // magnitude mark -- count is the field's job now, and encoding it twice
+        // would let the two disagree.
+        box.svg.appendChild(el("circle", {
+          cx: cx, cy: cy, r: 1.5, fill: C.ink, "fill-opacity": .8
+        }));
         box.svg.appendChild(text(bx, cy + 3, point.label, { fill: C.ink }));
       });
+
+    // Sequential legend. A magnitude ramp is unreadable without one: the reader
+    // has no way to know whether bright means ten or ten thousand.
+    var legendY = oy + mapH + 14;
+    var swatch = 26;
+    var legendW = swatch * HEAT.length;
+    var lx = ox;
+    box.svg.appendChild(text(lx, legendY + 9, "fewer", { fill: C.muted }));
+    var labelPad = 34;
+    for (var si = 0; si < HEAT.length; si++) {
+      box.svg.appendChild(el("rect", {
+        x: lx + labelPad + si * swatch, y: legendY,
+        width: swatch - 2, height: 8,
+        fill: HEAT[si], "fill-opacity": 0.3 + Math.sqrt((si + 1) / HEAT.length) * 0.5,
+        rx: 1
+      }));
+    }
+    box.svg.appendChild(text(lx + labelPad + legendW + 6, legendY + 9,
+                             "more attacks", { fill: C.muted }));
   }
 
   window.DroseraCharts = {

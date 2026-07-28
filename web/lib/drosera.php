@@ -26,6 +26,18 @@ define('RATE_LIMIT_RPM', (int)(getenv('RATE_LIMIT_RPM') ?: 60));
 define('BAN_THRESHOLD', (int)(getenv('HONEYPOT_BAN_THRESHOLD') ?: 35));
 define('TARPIT_THRESHOLD', (int)(getenv('HONEYPOT_TARPIT_THRESHOLD') ?: 5));
 define('RICKROLL_URL', getenv('RICKROLL_URL') ?: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+// Compared explicitly rather than with ?:, which would read '0' as falsy and
+// silently re-enable the thing the operator just turned off.
+define('RICKROLL_ENABLED', !in_array(
+    strtolower(trim((string)getenv('HONEYPOT_RICKROLL'))),
+    ['0', 'false', 'no', 'off'], true));
+define('RICKROLL_DRIP_SECONDS', (float)(getenv('HONEYPOT_RICKROLL_DRIP_SECONDS') ?: 120));
+// shared/rickroll.txt, bind-mounted in beside this file. The web container
+// mounts ./web and not ./shared, so this one file is mounted explicitly --
+// see the `web` service in docker-compose.yml. Absent the mount the redirect
+// still happens, which is why its absence is a preflight check rather than
+// something you would notice in the logs.
+define('RICKROLL_FILE', __DIR__ . '/rickroll.txt');
 
 // The machine this deployment pretends to be. Not hardcoded: these strings are
 // the most-observed thing the honeypot emits, and a value published in this
@@ -973,6 +985,101 @@ function detect_tool(string $userAgent): ?array
 // --------------------------------------------------------------- tarpit engine
 
 /**
+ * What a banned address gets. Never returns.
+ *
+ * A 302 is only a rickroll to something that follows redirects, and the clients
+ * that earn a ban here largely do not: curl-based scanners and `SSH-2.0-Go`
+ * worms read the status line and move on. So anything that did not ask for HTML
+ * gets the art as text/plain instead, dripped, out of the same
+ * `shared/rickroll.txt` the SSH and telnet services read. Real browsers still
+ * get the video.
+ *
+ * The drip takes a tarpit concurrency slot. Without one this would be an
+ * uncapped way to pin a PHP-FPM worker for two minutes, which is precisely the
+ * thing TARPIT_MAX_CONCURRENT exists to prevent; a banned flood would starve
+ * the pool that the rest of the site needs.
+ */
+function sb_rickroll(string $ip): void
+{
+    $art = (RICKROLL_ENABLED && is_readable(RICKROLL_FILE))
+        ? @file_get_contents(RICKROLL_FILE)
+        : false;
+    $wantsHtml = stripos((string)($_SERVER['HTTP_ACCEPT'] ?? ''), 'text/html') !== false;
+
+    // A browser, a disabled rickroll, or a missing bind mount. The fallback is
+    // deliberate: losing the mount should cost the joke, not the ban.
+    if ($art === false || $art === '' || $wantsHtml) {
+        header('Location: ' . RICKROLL_URL, true, 302);
+        exit;
+    }
+
+    $redis = sb_redis();
+    $counterKey = 'hp:tarpit:concurrent';
+    $slotTaken = false;
+    if ($redis->isReady()) {
+        $active = (int)$redis->incr($counterKey);
+        $redis->expire($counterKey, TARPIT_MAX_SECONDS + 60);
+        if ($active > TARPIT_MAX_CONCURRENT) {
+            $redis->decr($counterKey);
+            header('Location: ' . RICKROLL_URL, true, 302);
+            exit;
+        }
+        $slotTaken = true;
+    }
+    register_shutdown_function(static function () use ($redis, $counterKey, &$slotTaken): void {
+        if ($slotTaken && $redis->isReady()) {
+            $redis->decr($counterKey);
+            $slotTaken = false;
+        }
+    });
+
+    @ignore_user_abort(false);
+    @set_time_limit(0);
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+
+    http_response_code(200);
+    header('Content-Type: text/plain; charset=UTF-8');
+    header('Content-Length: ' . strlen($art));
+    header('Cache-Control: no-cache');
+    header('X-Powered-By: PHP/' . FAKE_PHP_VERSION);
+    header('X-Accel-Buffering: no');
+
+    // Paced across the window rather than sent at once. Content-Length promises
+    // the rest, so a client waiting for a complete body waits for all of it.
+    // A line at a time: byte-at-a-time through php-fpm and nginx buys nothing
+    // over a line, and costs a flush per byte.
+    $lines = preg_split("/(?<=\n)/", $art, -1, PREG_SPLIT_NO_EMPTY);
+    if (!$lines) {
+        $lines = [$art];
+    }
+    $delay = (int)(RICKROLL_DRIP_SECONDS * 1000000 / max(count($lines), 1));
+    $deadline = microtime(true) + RICKROLL_DRIP_SECONDS;
+    $started = time();
+
+    foreach ($lines as $index => $line) {
+        echo $line;
+        @flush();
+        if (connection_aborted()) {
+            break;
+        }
+        if (microtime(true) >= $deadline) {
+            // Flush the remainder rather than leave a body short of its
+            // Content-Length, which is the one thing that would make this
+            // look broken rather than slow.
+            echo implode('', array_slice($lines, $index + 1));
+            @flush();
+            break;
+        }
+        usleep($delay);
+    }
+
+    sb_log_tarpit($ip, 'banned rickroll', time() - $started, count($lines));
+    exit;
+}
+
+/**
  * Hold the attacker's connection open, trickling plausible page content.
  *
  * Zero-trust: this executes nothing. It exists only to consume the scanner's
@@ -1121,8 +1228,7 @@ function sb_bootstrap(): array
     $ip = get_real_ip();
 
     if (is_banned($ip)) {
-        header('Location: ' . RICKROLL_URL, true, 302);
-        exit;
+        sb_rickroll($ip);
     }
 
     if (sb_rate_limited($ip)) {

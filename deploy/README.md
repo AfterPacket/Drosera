@@ -386,7 +386,7 @@ curl -s  https://your-domain.com/ | grep generator     # WordPress 6.4.3 tell
 | Liveness | `restart: unless-stopped` on every service | `docker-compose.yml` |
 | Escape | No egress, read-only rootfs, all caps dropped, non-root | `docker-compose.yml` |
 
-Container escape gets its own treatment in §17.
+Container escape gets its own treatment in §18.
 
 Watch the watchdog:
 
@@ -667,7 +667,85 @@ do **not** share captured third-party credentials, and never test them anywhere.
 
 ---
 
-## 15. Routine maintenance
+## 15. Updating a box that is already running
+
+Updating is not redeploying. A running honeypot holds things that took real
+time to collect — captured sessions, scores, active bans, the SSH host key an
+attacker has already fingerprinted — and none of it is in git. The update path
+below keeps all of it.
+
+### What lives where
+
+| Survives | Why |
+|---|---|
+| `storage/` — logs, recordings, clips, loot, evidence | Bind mount from the repo directory |
+| `persona/persona.json` | Bind mount, and gitignored, so `git pull` cannot touch it |
+| `admin-dashboard/config/` — password hash, TOTP secret | Bind mount, gitignored |
+| `.env`, `certs/` | Gitignored |
+| Redis: scores, identities, live bans | Named volumes, `appendonly yes` |
+| SSH host key | Named volume `ssh-host-key` |
+
+The last three are named volumes. They survive `docker compose down`, and
+`docker compose up -d --build`, and a reboot. **They do not survive
+`docker compose down -v`.** That one flag is the difference between an update
+and starting over: it drops every score and ban you have accumulated and issues
+a new SSH host key, which changes the fingerprint attackers have already seen.
+There is no reason to use it here. If you want to clear captured data
+deliberately, use `deploy/reset-data.sh`, which is specific about what it
+removes.
+
+### The update
+
+```bash
+cd /opt/drosera
+
+git status                  # anything local? stash it before pulling
+git pull --ff-only
+
+./deploy/preflight.sh       # syntax, compose, .env sanity -- before anything restarts
+
+# Only the images whose source actually changed.
+docker compose build session-cam admin-dashboard
+
+# Recreates only the containers whose config or image changed, and leaves
+# every other one running and untouched.
+docker compose up -d
+
+./deploy/smoke-test.sh
+```
+
+`docker compose up -d` is the whole trick: it diffs the desired state against
+what is running and touches only the difference. There is never a moment where
+the stack is down, and services you did not change are not restarted at all.
+
+### Which changes need which action
+
+Knowing this saves rebuilding the world for a one-line fix:
+
+| Changed | Needed |
+|---|---|
+| `shared/*.py`, `shared/rickroll.txt` | Restart the Python services. Bind-mounted read-only, so no rebuild — `docker compose restart ssh-honey telnet-honey …` |
+| `web/` — PHP, templates, static | Nothing. Bind-mounted, and PHP re-reads per request |
+| `nginx/honeypot.conf` | `docker compose restart web` |
+| A new bind mount, or any `environment:` value | `docker compose up -d <service>` — mounts and env are fixed at container creation, so a restart is not enough |
+| `session-cam/`, `admin-dashboard/`, `intel/`, `elastic/` source | Rebuild: their code is `COPY`d into the image, not mounted |
+| `deploy/*.sh` | Nothing — host scripts, not containers |
+
+### After an update that changed defaults
+
+New settings ship with defaults in `docker-compose.yml`, so an existing `.env`
+does not need editing to pick them up. **But an `.env` that sets a value
+explicitly still wins**, and that is the usual reason an update appears to do
+nothing. If you copied `.env.example` wholesale at install time, check it
+against the current one after any release that changes a default:
+
+```bash
+diff <(grep -o '^[A-Z_]*' .env | sort -u) <(grep -o '^[A-Z_]*' .env.example | sort -u)
+```
+
+---
+
+## 16. Routine maintenance
 
 ```bash
 # Cloudflare IP ranges change occasionally
@@ -692,7 +770,7 @@ that will tell you the box fell over.
 
 ---
 
-## 16. Troubleshooting
+## 17. Troubleshooting
 
 | Symptom | Check |
 |---|---|
@@ -712,7 +790,7 @@ that will tell you the box fell over.
 
 ---
 
-## 17. Container escape hardening
+## 18. Container escape hardening
 
 ### The threat model
 

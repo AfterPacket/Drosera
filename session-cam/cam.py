@@ -32,7 +32,8 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from render import CastError, render_gif, render_mp4
+from render import (CastError, GIF_SAFETY_FRAMES, have_ffmpeg, render_gif,
+                    render_mp4)
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage"))
 SESSION_DIR = STORAGE_DIR / "sessions"
@@ -84,7 +85,11 @@ MIN_BYTES = int(os.getenv("CAM_MIN_BYTES", "700"))
 # banner and a prompt. Below that there is nothing to watch.
 MIN_FRAMES = int(os.getenv("CAM_MIN_FRAMES", "2"))
 
-CLIP_FORMAT = os.getenv("CAM_FORMAT", "gif").lower().strip()
+# MP4 by default, because it is what makes full playback deliverable: a whole
+# session as a GIF is tens of megabytes and H.264 carries the same frames in a
+# fraction of that. Falls back to GIF wherever ffmpeg is missing, so a build
+# without it still sends footage -- sampled, but sent.
+CLIP_FORMAT = os.getenv("CAM_FORMAT", "mp4").lower().strip()
 if CLIP_FORMAT not in ("gif", "mp4", "both"):
     # A typo here would otherwise mean rendering everything and delivering none.
     CLIP_FORMAT = "gif"
@@ -396,7 +401,17 @@ def should_send(meta: Dict[str, Any]) -> Optional[str]:
 
 def render_clips(cast: Path, stem: str, meta: Dict[str, Any]) -> List[Path]:
     clips: List[Path] = []
-    gif = render_gif(cast, CLIP_DIR / f"{stem}.gif", meta)
+
+    # Full playback costs nothing we keep when the GIF is only an intermediate:
+    # ffmpeg turns it into an MP4 a fraction of the size and the GIF is unlinked
+    # below. When the GIF is what gets delivered there is no such escape, so it
+    # keeps the frame budget -- an unbounded render would sail past
+    # CAM_MAX_CLIP_MB and be dropped from delivery, which is a worse outcome
+    # than a sampled clip.
+    gif_is_delivered = CLIP_FORMAT != "mp4" or not have_ffmpeg()
+    budget = GIF_SAFETY_FRAMES if gif_is_delivered else 0
+
+    gif = render_gif(cast, CLIP_DIR / f"{stem}.gif", meta, max_frames=budget)
     if CLIP_FORMAT in ("gif", "both"):
         clips.append(gif)
     if CLIP_FORMAT in ("mp4", "both"):

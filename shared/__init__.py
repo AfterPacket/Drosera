@@ -49,7 +49,8 @@ _EXPORTS = {
     "stall": "tarpit",
 }
 
-_SUBMODULES = ("alerting", "identity", "loot", "persona", "scoring", "tarpit")
+_SUBMODULES = ("alerting", "identity", "loot", "persona", "rickroll", "scoring",
+               "tarpit")
 
 __all__ = list(_EXPORTS) + list(_SUBMODULES)
 

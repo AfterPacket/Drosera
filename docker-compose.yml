@@ -48,6 +48,12 @@ x-honeypot-env: &honeypot-env
   # `nmap` in either fake shell reports on the attacker's own address. Set to 0
   # to keep them talking instead -- see .env.example for the trade-off.
   HONEYPOT_SCANBACK: ${HONEYPOT_SCANBACK:-1}
+  # A banned address gets shared/rickroll.txt, dripped, on every tier -- the
+  # website keeps the 302 only for clients that ask for HTML. Set to 0 to drop
+  # the connection silently instead. Read by the web container too, which
+  # inherits this anchor.
+  HONEYPOT_RICKROLL: ${HONEYPOT_RICKROLL:-1}
+  HONEYPOT_RICKROLL_DRIP_SECONDS: ${HONEYPOT_RICKROLL_DRIP_SECONDS:-120}
   ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
   ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
   ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
@@ -186,6 +192,11 @@ services:
       # Same persona the Python honeypots read, so the website and the fake
       # shell agree about what machine this is.
       - ./persona:/persona:ro
+      # One file out of shared/, not the directory: this container gets ./web
+      # and nothing else of ours, and that is worth keeping. Without this mount
+      # sb_rickroll() cannot find the art and quietly falls back to the 302 --
+      # deploy/preflight.sh asserts the mount for that reason.
+      - ./shared/rickroll.txt:/var/www/html/lib/rickroll.txt:ro
     tmpfs:
       # nginx and php-fpm scratch space. noexec matters most here: this is the
       # internet-facing container and the only writable path it has.
@@ -308,14 +319,20 @@ services:
     environment:
       STORAGE_DIR: /var/honeypot/storage
       CAM_ENABLED: ${CAM_ENABLED:-true}
-      CAM_FORMAT: ${CAM_FORMAT:-gif}
+      # mp4 by default: it is what makes full-session playback deliverable.
+      # Falls back to a sampled GIF wherever ffmpeg is missing.
+      CAM_FORMAT: ${CAM_FORMAT:-mp4}
       CAM_MIN_SCORE: ${CAM_MIN_SCORE:-5}
       CAM_MIN_DURATION: ${CAM_MIN_DURATION:-2}
       CAM_POLL_SECONDS: ${CAM_POLL_SECONDS:-15}
       CAM_RETENTION_DAYS: ${CAM_RETENTION_DAYS:-14}
       CAM_MAX_CLIP_MB: ${CAM_MAX_CLIP_MB:-45}
       CAM_MAX_CLIPS_TOTAL_MB: ${CAM_MAX_CLIPS_TOTAL_MB:-1024}
-      CAM_MAX_FRAMES: ${CAM_MAX_FRAMES:-420}
+      # 0 = every frame. The cap below applies only when the GIF is the thing
+      # being delivered, so a full render can never grow past CAM_MAX_CLIP_MB
+      # and drop out of delivery entirely.
+      CAM_MAX_FRAMES: ${CAM_MAX_FRAMES:-0}
+      CAM_GIF_SAFETY_FRAMES: ${CAM_GIF_SAFETY_FRAMES:-420}
       CAM_MIN_BYTES: ${CAM_MIN_BYTES:-700}
       # Live alerting. The honeypot containers have no egress, so this is the
       # only place an alert can actually leave the box.
@@ -563,7 +580,7 @@ services:
       # SMTP credentials are deliberately not passed here -- only session-cam
       # needs them.
       CAM_ENABLED: ${CAM_ENABLED:-true}
-      CAM_FORMAT: ${CAM_FORMAT:-gif}
+      CAM_FORMAT: ${CAM_FORMAT:-mp4}
       CAM_MIN_SCORE: ${CAM_MIN_SCORE:-5}
       CAM_RETENTION_DAYS: ${CAM_RETENTION_DAYS:-14}
       # A link target for the operator's browser only -- this container is not

@@ -181,8 +181,27 @@ if have docker; then
         count=$(printf '%s\n' "$svc" | grep -c . || true)
         pass "$count services defined"
     fi
+
+    # The web container mounts ./web, not ./shared, so the one file both halves
+    # read is bind-mounted on its own. Lose that line and nothing breaks
+    # loudly: sb_rickroll() just falls back to the 302 for every client,
+    # including the scanners that ignore redirects and are the reason the text
+    # payload exists. Checked here because the logs will never tell you.
+    if docker compose config 2>/dev/null \
+        | grep -q '/var/www/html/lib/rickroll.txt'; then
+        pass "rickroll.txt mounted into web"
+    else
+        fail "shared/rickroll.txt is not mounted into the web container; \
+banned clients that ignore redirects get nothing"
+    fi
 else
     warn "docker not found; compose not validated"
+fi
+
+if [ -f shared/rickroll.txt ]; then
+    pass "shared/rickroll.txt present"
+else
+    fail "shared/rickroll.txt missing; every tier falls back to the redirect"
 fi
 
 # --------------------------------------------------------------- configuration
