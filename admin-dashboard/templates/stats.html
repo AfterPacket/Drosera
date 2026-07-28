@@ -3,12 +3,20 @@
 {% block heading %}Statistics{% endblock %}
 
 {% block content %}
+<div class="daybar">
+  <button class="act" id="day-prev" title="Previous day">&larr;</button>
+  <select id="day-select" class="mono"></select>
+  <button class="act" id="day-next" title="Next day">&rarr;</button>
+  <button class="act" id="day-today">Today</button>
+  <span class="muted mono" id="day-note"></span>
+</div>
+
 <div class="tiles">
-  <div class="tile"><div class="label">Total IPs seen</div><div class="value" id="t-total">—</div></div>
-  <div class="tile"><div class="label">Active today</div><div class="value" id="t-active">—</div></div>
+  <div class="tile"><div class="label">Unique IPs</div><div class="value" id="t-total">—</div></div>
+  <div class="tile"><div class="label">Countries</div><div class="value" id="t-active">—</div></div>
   <div class="tile"><div class="label">Banned</div><div class="value" id="t-banned">—</div></div>
   <div class="tile"><div class="label">Tarpitted</div><div class="value" id="t-tarpit">—</div></div>
-  <div class="tile"><div class="label">Events today</div><div class="value" id="t-events">—</div></div>
+  <div class="tile"><div class="label">Events</div><div class="value" id="t-events">—</div></div>
   <div class="tile"><div class="label">Attacker-minutes wasted</div><div class="value" id="t-wasted">—</div></div>
 </div>
 

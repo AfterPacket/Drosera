@@ -56,11 +56,75 @@
     });
   }
 
-  fetch("/api/stats", { credentials: "same-origin" })
-    .then(function (response) { return response.json(); })
+  var days = [];
+  var current = null;
+
+  function label(day) {
+    var today = new Date().toISOString().slice(0, 10);
+    if (day === today) { return day + "  (today)"; }
+    return day;
+  }
+
+  function renderDayBar(data) {
+    days = data.available_days || [];
+    current = data.day;
+
+    var select = document.getElementById("day-select");
+    if (select) {
+      select.textContent = "";
+      days.forEach(function (day) {
+        var option = document.createElement("option");
+        option.value = day;
+        option.textContent = label(day);
+        if (day === current) { option.selected = true; }
+        select.appendChild(option);
+      });
+    }
+
+    var index = days.indexOf(current);
+    // days[] is newest-first, so "previous day" is the *higher* index.
+    var prev = document.getElementById("day-prev");
+    var next = document.getElementById("day-next");
+    if (prev) { prev.disabled = index < 0 || index >= days.length - 1; }
+    if (next) { next.disabled = index <= 0; }
+
+    var note = document.getElementById("day-note");
+    if (note) {
+      note.textContent = data.is_today
+        ? "live · counters reset at 00:00 UTC"
+        : "archived day · " + (data.events_today || 0) + " events";
+    }
+  }
+
+  function load(day) {
+    var url = "/api/stats" + (day ? "?day=" + encodeURIComponent(day) : "");
+    return fetch(url, { credentials: "same-origin" })
+      .then(function (response) { return response.json(); })
+      .then(render)
+      .catch(function () { set("t-total", "err"); });
+  }
+
+  document.addEventListener("click", function (event) {
+    var index = days.indexOf(current);
+    if (event.target.id === "day-prev" && index < days.length - 1) {
+      load(days[index + 1]);
+    } else if (event.target.id === "day-next" && index > 0) {
+      load(days[index - 1]);
+    } else if (event.target.id === "day-today") {
+      load(days[0]);
+    }
+  });
+
+  document.addEventListener("change", function (event) {
+    if (event.target.id === "day-select") { load(event.target.value); }
+  });
+
+  function render(data) {
+    renderDayBar(data);
+    return Promise.resolve(data)
     .then(function (data) {
       set("t-total", data.total_ips);
-      set("t-active", data.active_today);
+      set("t-active", (data.countries || []).length || "—");
       set("t-banned", data.banned_total);
       set("t-tarpit", data.tarpitted_total);
       set("t-events", data.events_today);
@@ -108,8 +172,8 @@
         }), { colour: C.accent });
 
       topRows(data.top_ips || []);
-    })
-    .catch(function () {
-      set("t-total", "err");
     });
+  }
+
+  load();
 })();

@@ -692,10 +692,55 @@ def stats():
     return render_template("stats.html", csrf_token=g.csrf_token)
 
 
+def read_day(day: str, limit: int = 80000):
+    """Every event from one UTC day.
+
+    The event log is already one file per day, so daily history needs no extra
+    storage and no rollup job -- logrotate's retention *is* the retention. This
+    reads one file rather than tailing the most recent few, which is what makes
+    an arbitrary past day as cheap to render as today.
+    """
+    path = STORAGE_DIR / "logs" / f"{day}.jsonl"
+    events = []
+    if not path.is_file():
+        return events
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if len(events) >= limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    events.append(parsed)
+    except OSError:
+        pass
+    return events
+
+
+def available_days():
+    directory = STORAGE_DIR / "logs"
+    if not directory.is_dir():
+        return []
+    days = [p.stem for p in directory.glob("*.jsonl") if len(p.stem) == 10]
+    return sorted(days, reverse=True)
+
+
 @app.route("/api/stats")
 @require_auth
 def api_stats():
-    cache_key = "admin:stats:v1"
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day = request.args.get("day", today)
+    # Path component, so validate rather than trust: this becomes a filename.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
+        day = today
+
+    cache_key = f"admin:stats:v2:{day}"
     try:
         cached = _redis_admin().get(cache_key)
         if cached:
@@ -703,28 +748,60 @@ def api_stats():
     except redis.RedisError:
         pass
 
-    identities = [identity for _, identity in iter_identities()]
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    events = read_events(limit=20000, max_files=2)
+    events = read_day(day)
 
     hourly = Counter()
     by_service = Counter()
     tools = Counter()
     countries = Counter()
     tarpit_seconds = 0.0
-    events_today = 0
+
+    # Every figure is derived from that day's events rather than from Redis,
+    # so a past day reads the same way today does. Redis holds current state
+    # only -- it cannot tell you what Tuesday looked like.
+    seen_ips = set()
+    banned_ips = set()
+    tarpitted_ips = set()
+    peak_score = {}
+    tool_by_ip = {}
+    services_by_ip = {}
+
+    for event in events:
+        stamp = str(event.get("timestamp", ""))
+        if len(stamp) >= 13:
+            hourly[stamp[11:13]] += 1
+
+        address = event.get("real_ip")
+        if address:
+            seen_ips.add(address)
+            score = float(event.get("cumulative_score") or 0)
+            if score > peak_score.get(address, 0):
+                peak_score[address] = score
+            if event.get("tool_detected"):
+                tool_by_ip[address] = event["tool_detected"]
+            if event.get("service"):
+                services_by_ip.setdefault(address, set()).add(event["service"])
+
+        kind = event.get("event_type")
+        if kind == "BAN" and address:
+            banned_ips.add(address)
+        elif kind == "TARPIT_ENGAGED" and address:
+            tarpitted_ips.add(address)
+
+        if event.get("service"):
+            by_service[event["service"]] += 1
+        if event.get("tool_detected"):
+            tools[event["tool_detected"]] += 1
+        if kind in ("TARPIT_HELD", "TARPIT_KEEPALIVE"):
+            tarpit_seconds += float(event.get("held_seconds") or 0)
 
     # Counted per distinct IP rather than per event, so one noisy scanner does
     # not make its country look like a campaign.
     origins = {}
-    for identity in identities:
-        address = identity.get("ip")
-        if not address:
-            continue
+    for address in seen_ips:
         record = geoip.lookup(address)
         code = (record or {}).get("country_code")
         countries[code or "unknown"] += 1
-
         if not record or record.get("lat") is None:
             continue
         # Bucketed to whole degrees: a city's worth of scanners becomes one
@@ -736,33 +813,30 @@ def api_stats():
         })
         bucket["count"] += 1
 
-    for event in events:
-        stamp = str(event.get("timestamp", ""))
-        if stamp.startswith(today):
-            events_today += 1
-            hourly[stamp[11:13]] += 1
-        if event.get("service"):
-            by_service[event["service"]] += 1
-        if event.get("tool_detected"):
-            tools[event["tool_detected"]] += 1
-        if event.get("event_type") in ("TARPIT_HELD", "TARPIT_KEEPALIVE"):
-            tarpit_seconds += float(event.get("held_seconds") or 0)
-
-    scores = [float(i.get("score") or 0) for i in identities]
     buckets = Counter()
-    for score in scores:
+    for score in peak_score.values():
         buckets[min(int(score // 10) * 10, 60)] += 1
 
-    top = sorted(identities, key=lambda i: float(i.get("score") or 0), reverse=True)[:10]
+    top = sorted(peak_score.items(), key=lambda kv: -kv[1])[:10]
+    identities = [{
+        "ip": address,
+        "score": round(score, 1),
+        "tool_detected": tool_by_ip.get(address),
+        "banned": address in banned_ips,
+        "tarpit_active": address in tarpitted_ips,
+        "services_touched": sorted(services_by_ip.get(address, [])),
+    } for address, score in top]
 
 
     payload = {
-        "total_ips": len(identities),
-        "active_today": sum(1 for i in identities
-                            if str(i.get("last_seen", "")).startswith(today)),
-        "banned_total": sum(1 for i in identities if i.get("banned")),
-        "tarpitted_total": sum(1 for i in identities if i.get("tarpit_active")),
-        "events_today": events_today,
+        "day": day,
+        "is_today": day == today,
+        "available_days": available_days(),
+        "total_ips": len(seen_ips),
+        "active_today": len(seen_ips),
+        "banned_total": len(banned_ips),
+        "tarpitted_total": len(tarpitted_ips),
+        "events_today": len(events),
         "attacker_minutes_wasted": round(tarpit_seconds / 60, 1),
         "hourly": [{"hour": f"{h:02d}", "count": hourly.get(f"{h:02d}", 0)}
                    for h in range(24)],
@@ -781,11 +855,14 @@ def api_stats():
                      "tool": i.get("tool_detected") or "-",
                      "status": status_of(i),
                      "services": ", ".join(i.get("services_touched") or [])}
-                    for i in top],
+                    for i in identities],
     }
     body = json.dumps(payload, default=str)
     try:
-        _redis_admin().setex(cache_key, STATS_CACHE_TTL, body)
+        # A finished day never changes, so there is no reason to recompute it
+        # every thirty seconds for as long as someone keeps looking at it.
+        ttl = STATS_CACHE_TTL if day == today else 3600
+        _redis_admin().setex(cache_key, ttl, body)
     except redis.RedisError:
         pass
     return Response(body, mimetype="application/json")
@@ -852,6 +929,45 @@ def api_unban(ip):
 
     audit("MANUAL_UNBAN", target_ip=ip)
     return jsonify({"ok": True, "ip": ip, "banned": False})
+
+
+def _set_tarpit(ip: str, active: bool):
+    """Flip the tarpit flag on a stored identity.
+
+    Separate from banning on purpose, and the more useful of the two: a ban
+    closes the connection immediately, which costs the attacker nothing. The
+    tarpit is what actually spends their time, so being able to put someone
+    back into it -- or let a false positive out -- is the control that matters.
+    """
+    digest = hashlib.md5(ip.encode()).hexdigest()
+    try:
+        client = _redis_honeypot()
+        raw = client.get(f"hp:identity:{digest}")
+        if not raw:
+            return jsonify({"ok": False,
+                            "error": "no identity recorded for that address"}), 404
+        identity = json.loads(raw)
+        identity["tarpit_active"] = active
+        client.set(f"hp:identity:{digest}", json.dumps(identity), ex=7 * 24 * 3600)
+    except (redis.RedisError, json.JSONDecodeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    audit("MANUAL_TARPIT" if active else "MANUAL_UNTARPIT", target_ip=ip)
+    return jsonify({"ok": True, "ip": ip, "tarpit_active": active})
+
+
+@app.route("/api/tarpit/<path:ip>", methods=["POST"])
+@require_auth
+def api_tarpit(ip):
+    require_csrf()
+    return _set_tarpit(safe_ip(ip), True)
+
+
+@app.route("/api/untarpit/<path:ip>", methods=["POST"])
+@require_auth
+def api_untarpit(ip):
+    require_csrf()
+    return _set_tarpit(safe_ip(ip), False)
 
 
 @app.route("/api/export/<path:ip>", methods=["POST", "GET"])

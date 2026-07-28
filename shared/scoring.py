@@ -20,6 +20,11 @@ SCORES = {
     # history. Weighted well above ordinary recon: this is someone settling in.
     "PERSISTENCE_ATTEMPT": (8, "SSH persistence / anti-forensics attempt"),
     "REVERSE_SHELL": (12, "Reverse shell payload"),
+    # Running something they just wrote. Distinct from a reverse shell and
+    # weighted lower: fingerprinting scripts routinely write a trivial script
+    # and run it purely to test whether the filesystem allows it, and scoring
+    # that as a reverse shell banned them mid-probe.
+    "DROPPED_BINARY_EXEC": (6, "Executed a file they created"),
     "CREDENTIAL_ATTEMPT": (2, "Login credential attempt"),
     "CREDENTIAL_SPRAY": (6, "Credential spraying"),
     "RATE_LIMIT_ABUSE": (4, "Rate limit exceeded"),

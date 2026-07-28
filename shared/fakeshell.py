@@ -153,6 +153,9 @@ class FakeShell:
         # of a probe to a variable and echo it back later, so without this the
         # whole exchange returns empty and reads as obviously fake.
         self.env: Dict[str, str] = {}
+        # Contents of files they have written this session, so that running one
+        # back can produce what it would actually have printed.
+        self.written: Dict[str, str] = {}
 
     # ---------------------------------------------------------------- helpers
 
@@ -332,6 +335,10 @@ class FakeShell:
         if resolved.startswith("/dev/") or resolved.startswith("/proc/"):
             return
 
+        # Kept so that running the file back can reproduce its output.
+        previous = self.written.get(resolved, "") if append else ""
+        self.written[resolved] = (previous + content)[:8192]
+
         lowered = resolved.lower()
         if "authorized_keys" in lowered:
             self._score_always("PERSISTENCE_ATTEMPT",
@@ -366,6 +373,26 @@ class FakeShell:
             "size": size + len(content) + 1,
         }
 
+    def _run_script(self, script: str) -> str:
+        """Run a script the attacker wrote, one line at a time.
+
+        Depth is not the concern here -- a script that invokes itself is
+        already bounded by the stage recursion limit -- but breadth is: a
+        thousand-line drop should not become a thousand dispatches, so only
+        the first handful of lines are honoured.
+        """
+        outputs = []
+        for line in script.splitlines()[:20]:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue          # shebang and comments
+            # depth=3 caps how far a script that writes and runs another can
+            # recurse before the expander refuses to go deeper.
+            result = self._run_stage(line, depth=3)
+            if result:
+                outputs.append(result)
+        return "\n".join(outputs)
+
     def _run_stage(self, stage: str, depth: int = 0) -> str:
         """Dispatch a single command, with pipes left as arguments to it."""
         # Captured before stripping. Without this, `echo 'ssh-rsa AAAA...' >>
@@ -394,9 +421,19 @@ class FakeShell:
         # a dozen answers.
         dropped = DROPPED_BINARY_RE.search(stage)
         if dropped:
-            self._score_always("REVERSE_SHELL", payload=stage[:300])
+            name = dropped.group(1)
+            self._score_once("DROPPED_BINARY_EXEC", payload=stage[:300])
+            script = self.written.get(self._resolve(name))
+            if script is not None:
+                # They wrote it here, so we know what it prints. Fingerprinting
+                # scripts write a trivial script and run it purely to learn
+                # whether this filesystem permits it -- answering correctly is
+                # what convinces them to go on and drop the real payload, which
+                # is the thing actually worth capturing.
+                self._sleep(0.2)
+                return self._run_script(script)
             self._sleep(0.5)
-            return (f"bash: {dropped.group(1)}: cannot execute binary file: "
+            return (f"bash: {name}: cannot execute binary file: "
                     "Exec format error")
 
         try:
@@ -1054,4 +1091,11 @@ FakeShell._HANDLERS = {
     "exit": FakeShell._cmd_exit, "logout": FakeShell._cmd_exit, "quit": FakeShell._cmd_exit,
     "clear": FakeShell._cmd_noop, "export": FakeShell._cmd_noop,
     "cp": FakeShell._cmd_noop, "mv": FakeShell._cmd_noop,
+    # All silent on success, and all steps in the drop-and-run chain. chmod
+    # missing was its own tell: `chmod +x payload` returned command not found
+    # on a box that had just accepted the write.
+    "chmod": FakeShell._cmd_noop, "chown": FakeShell._cmd_noop,
+    "unset": FakeShell._cmd_noop, "alias": FakeShell._cmd_noop,
+    "true": FakeShell._cmd_noop, ":": FakeShell._cmd_noop,
+    "sync": FakeShell._cmd_noop, "sleep": FakeShell._cmd_noop,
 }
