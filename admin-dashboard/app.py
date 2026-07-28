@@ -844,12 +844,20 @@ def api_stats():
         countries[code or "unknown"] += 1
         if not record or record.get("lat") is None:
             continue
-        # Bucketed to whole degrees: a city's worth of scanners becomes one
-        # readable dot instead of a hundred overlapping ones.
-        key = (round(float(record["lat"])), round(float(record["lon"])))
+        # Grouped by city where GeoIP knows one, and plotted at that city's real
+        # coordinates. Rounding to whole degrees was doing the grouping before,
+        # which is ~111km: it merged neighbouring cities into one dot and then
+        # drew it up to 55km from either of them, so the map looked approximate
+        # everywhere and simply wrong in dense regions like the Randstad or the
+        # US northeast. Falling back to a tenth of a degree (~11km) keeps the
+        # no-city case from becoming a hundred overlapping dots.
+        city = record.get("city")
+        lat, lon = float(record["lat"]), float(record["lon"])
+        key = (city, code) if city else (round(lat, 1), round(lon, 1))
         bucket = origins.setdefault(key, {
-            "lat": key[0], "lon": key[1], "count": 0,
-            "label": record.get("city") or record.get("country") or code or "?",
+            "lat": lat, "lon": lon, "count": 0,
+            "label": f"{city}, {code}" if city and code
+                     else (city or record.get("country") or code or "?"),
         })
         bucket["count"] += 1
 

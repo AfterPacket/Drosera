@@ -6,10 +6,13 @@
 #     ports still work (Docker DNATs those on the host), so inbound traffic
 #     arrives normally while outbound is impossible. This is what stops the box
 #     being usable as a pivot or a relay.
-#   - cam-egress is the single exception and has exactly one member,
-#     session-cam, which is on no other network. Recordings reach it over the
-#     storage volume, so it can deliver clips out without giving anything on
-#     the honeypot side a path to the internet.
+#   - cam-egress is the single exception. Its members -- session-cam, intel,
+#     and certbot under its profile -- are on no other network and listen on
+#     nothing. Work reaches them over the storage volume, never a socket, so
+#     they can deliver clips and look up hashes without giving anything on the
+#     honeypot side a path to the internet. Note what intel does NOT do: it
+#     reads the JSON sidecars and the hash in the filename, never the captured
+#     bytes, so the one container with egress never opens attacker input.
 #   - Every container: non-root (UID 1000), read-only root filesystem, all
 #     capabilities dropped, no-new-privileges, pids and memory capped.
 #   - Services bind unprivileged ports inside the container; the host maps the

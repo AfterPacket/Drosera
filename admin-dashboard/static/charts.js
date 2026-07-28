@@ -264,6 +264,9 @@
     return _landPending;
   }
 
+  // Must match LAT_BOTTOM in geomap: land below the drawn band is skipped.
+  var LAND_MIN_LAT = -56;
+
   function drawLand(svg, geo, x, y) {
     (geo.features || []).forEach(function (feature) {
       var geometry = feature.geometry;
@@ -274,6 +277,14 @@
       polygons.forEach(function (polygon) {
         polygon.forEach(function (ring) {
           if (ring.length < 3) { return; }
+          // Rings entirely below the drawn band are dropped rather than
+          // clamped. y() pins out-of-range latitudes to the edge, which turns
+          // Antarctica into a solid grey bar across the bottom of the map.
+          var north = -90;
+          for (var k = 0; k < ring.length; k++) {
+            if (ring[k][1] > north) { north = ring[k][1]; }
+          }
+          if (north < LAND_MIN_LAT) { return; }
           var d = "";
           for (var i = 0; i < ring.length; i++) {
             d += (i ? "L" : "M") + x(ring[i][0]).toFixed(1)
@@ -296,19 +307,35 @@
     var pad = 6;
     var available = Math.max(host.clientWidth || 900, 320) - pad * 2;
 
-    // Equirectangular is 2:1 by definition. Filling a wide card at a fixed
-    // height stretched it about two and a half times horizontally, which does
-    // not just look wrong -- it moves every dot away from the coastline it
-    // belongs to, so placement reads as broken. Size the plot from the width
-    // and letterbox it, capped so the panel stays a panel.
-    var mapW = Math.min(available, 920);
-    var mapH = mapW / 2;
+    // Equirectangular must keep its aspect or every dot drifts off the
+    // coastline it belongs to. Full -90..90 forces 2:1, which on a wide card
+    // meant either a very tall panel or -- what it actually did -- capping the
+    // width at 920 and letterboxing the rest into empty margins.
+    //
+    // Clipping the latitudes nobody attacks from fixes both. Antarctica and the
+    // empty southern ocean are ~30% of the height and zero percent of the data,
+    // so dropping them widens the natural aspect to ~2.6:1: the map fills the
+    // card and every dot gets bigger, with the projection still honest.
+    var LAT_TOP = 78, LAT_BOTTOM = LAND_MIN_LAT;
+    var latSpan = LAT_TOP - LAT_BOTTOM;
+    var ratio = latSpan / 360;
+
+    var maxH = opts.maxHeight || 520;
+    var mapW = available;
+    var mapH = mapW * ratio;
+    if (mapH > maxH) { mapH = maxH; mapW = mapH / ratio; }
+
     var box = surface(host, mapH + pad * 2);
     var ox = pad + (box.w - pad * 2 - mapW) / 2;
     var oy = pad;
 
     var x = function (lon) { return ox + ((Number(lon) + 180) / 360) * mapW; };
-    var y = function (lat) { return oy + ((90 - Number(lat)) / 180) * mapH; };
+    var y = function (lat) {
+      // Clamped rather than dropped: a point outside the drawn band belongs at
+      // the edge, not silently missing from the totals the map is showing.
+      var v = Math.min(LAT_TOP, Math.max(LAT_BOTTOM, Number(lat)));
+      return oy + ((LAT_TOP - v) / latSpan) * mapH;
+    };
 
     var w = mapW;
     var h = mapH;
@@ -335,7 +362,7 @@
         stroke: C.grid, "stroke-width": 0.5, "stroke-opacity": .35
       }));
     }
-    for (var lat = -60; lat <= 60; lat += 30) {
+    for (var lat = -30; lat <= 60; lat += 30) {
       box.svg.appendChild(el("line", {
         x1: ox, y1: y(lat), x2: ox + w, y2: y(lat),
         stroke: C.grid, "stroke-width": 0.5, "stroke-opacity": .35
