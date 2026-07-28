@@ -88,6 +88,43 @@ case "$banner" in
     *)                warn "unexpected ssh banner: ${banner}" ;;
 esac
 
+# ------------------------------------------------------------------- public site
+
+head2 "Public site"
+
+# `/` is rendered by public_site/home.php, which fills the persona into the
+# index.html template. Two ways this fails silently: PHP-FPM is down, so the
+# front door 502s; or nginx still has the old config and serves the raw
+# template, publishing "{{COMPANY_NAME}}" to anyone who looks.
+home=$(curl -fsS --max-time 10 http://127.0.0.1/ 2>/dev/null || true)
+
+if [ -z "$home" ]; then
+    fail "homepage returned nothing (php-fpm down, or tarpit engaged for 127.0.0.1)"
+elif printf '%s' "$home" | grep -q '{{'; then
+    fail "homepage served with placeholders unfilled -- nginx is still routing / to index.html"
+    printf '%s\n' "        docker compose up -d --force-recreate web"
+else
+    title=$(printf '%s' "$home" | sed -n 's/.*<title>\(.*\)<\/title>.*/\1/p' | head -1)
+    pass "homepage renders${title:+: $title}"
+fi
+
+# The template must never be reachable directly, or the placeholders leak.
+# No -f here: a 404 is the pass condition, and -f would suppress the code.
+code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+       http://127.0.0.1/index.html 2>/dev/null || echo 000)
+case "$code" in
+    404) pass "/index.html goes to the trap (404)" ;;
+    200) fail "/index.html serves the raw template -- placeholders are public" ;;
+    *)   warn "/index.html returned ${code}" ;;
+esac
+
+if [ -f "${REPO_DIR:-.}/persona/persona.json" ]; then
+    pass "persona present (this deployment has its own fingerprint)"
+else
+    warn "no persona: running the defaults published in this repo"
+    warn "  ./deploy/generate-persona.sh && docker compose up -d"
+fi
+
 # ------------------------------------------------------------------- dashboard
 
 head2 "Operator dashboard"

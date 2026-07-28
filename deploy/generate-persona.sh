@@ -25,9 +25,22 @@ if [ -f "$TARGET" ] && [ "${1:-}" != "--force" ]; then
     exit 0
 fi
 
-mkdir -p "$(dirname "$TARGET")"
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found; cannot generate a persona." >&2
+    echo "  The honeypot still runs on the defaults published in this repo," >&2
+    echo "  which is exactly what you do not want on a live host." >&2
+    exit 1
+fi
 
-python3 - "$TARGET" <<'PY'
+mkdir -p "$(dirname "$TARGET")" || exit 1
+
+# Written to a temporary file first: a half-written persona.json is worse than
+# none, because both readers fall back per-key and you would get a machine that
+# is half yours and half the published default.
+TMP="${TARGET}.tmp.$$"
+trap 'rm -f "$TMP"' EXIT
+
+if ! python3 - "$TMP" <<'PY'
 import json
 import random
 import sys
@@ -230,7 +243,27 @@ print(f"  hostnames {', '.join(persona['hostname_pool'][:4])} ...")
 print(f"  tokens    {persona['honeytoken_key']}")
 print(f"            {persona['aws_access_key_id']}")
 PY
+then
+    echo "persona generation failed; ${TARGET} left unchanged." >&2
+    exit 1
+fi
 
+# Sanity-check what we just wrote before it replaces a working persona.
+if ! python3 -c "
+import json, sys
+required = ['ssh_banner', 'company_name', 'company_domain', 'db_name',
+            'honeytoken_key', 'hostname_pool', 'user_pool', 'seeded_history',
+            'fs_seed', 'upload_path']
+data = json.load(open(sys.argv[1], encoding='utf-8'))
+missing = [k for k in required if not data.get(k)]
+if missing:
+    sys.exit('incomplete persona, missing: ' + ', '.join(missing))
+" "$TMP"; then
+    echo "generated persona failed validation; ${TARGET} left unchanged." >&2
+    exit 1
+fi
+
+mv "$TMP" "$TARGET" || exit 1
 chmod 0644 "$TARGET"
 echo
 echo "Wrote ${TARGET} (gitignored)."
