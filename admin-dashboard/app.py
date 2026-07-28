@@ -827,7 +827,12 @@ def api_stats():
             by_service[event["service"]] += 1
         if event.get("tool_detected"):
             tools[event["tool_detected"]] += 1
-        if kind in ("TARPIT_HELD", "TARPIT_KEEPALIVE"):
+        # TARPIT_HELD only. Keepalives report elapsed-since-start, so a
+        # ten-minute hold emits 10, 20, 30 ... 600 and summing them counts the
+        # same seconds over and over -- an error that grows with the square of
+        # the duration, and produced 64 days of "wasted time" in a single day.
+        # The closing TARPIT_HELD already carries the true total.
+        if kind == "TARPIT_HELD":
             tarpit_seconds += float(event.get("held_seconds") or 0)
 
     # Counted per distinct IP rather than per event, so one noisy scanner does

@@ -1003,6 +1003,27 @@ function run_tarpit(string $ip, string $reason): void
     $started = time();
     $deadline = $started + TARPIT_MAX_SECONDS;
 
+    // Register this hold for as long as it runs, so the dashboard can show the
+    // connection being drained rather than only reporting it afterwards. The
+    // HTTP tarpit is the longest-running one in the appliance -- up to 15
+    // minutes against a browser or scraper -- so it is the one most worth
+    // seeing live. TTL outlives the maximum hold, so a worker killed
+    // mid-drain cannot leave a phantom connection on the dashboard.
+    $holdKey = 'hp:holding:' . sb_ip_hash($ip) . ':web:' . getmypid() . ':' . $started;
+    $redisHold = sb_redis();
+    if ($redisHold->isReady()) {
+        $redisHold->setex($holdKey, TARPIT_MAX_SECONDS + 30, json_encode([
+            'ip' => $ip,
+            'service' => 'web',
+            'started' => $started,
+        ]));
+    }
+    $releaseHold = static function () use ($redisHold, $holdKey): void {
+        if ($redisHold->isReady()) {
+            $redisHold->del($holdKey);
+        }
+    };
+
     $preamble = [
         "<!DOCTYPE html><html><head><title>Meridian Digital Solutions</title>",
         "<meta charset='UTF-8'><meta name='generator' content='WordPress 6.4.3'>",
@@ -1012,6 +1033,7 @@ function run_tarpit(string $ip, string $reason): void
     foreach ($preamble as $chunk) {
         if (connection_aborted()) {
             sb_log_tarpit($ip, $reason, time() - $started, 0);
+            $releaseHold();
             $release();
             exit;
         }
@@ -1043,6 +1065,7 @@ function run_tarpit(string $ip, string $reason): void
     }
 
     sb_log_tarpit($ip, $reason, time() - $started, $counter);
+    $releaseHold();
     $release();
     exit;
 }
