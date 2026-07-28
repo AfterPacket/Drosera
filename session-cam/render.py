@@ -37,16 +37,19 @@ HUD_BOTTOM = 22
 MAX_IDLE_SECONDS = float(os.getenv("CAM_MAX_IDLE_SECONDS", "2.0"))
 MIN_FRAME_INTERVAL = float(os.getenv("CAM_MIN_FRAME_INTERVAL", "0.10"))
 
-# 0 means no cap: render every frame the session produced. That is the default
-# now, because sampling to a fixed budget silently dropped the middle of any
-# long session -- exactly the part worth watching -- and the clip gave no sign
-# that it had. What squeezing remains is MAX_IDLE_SECONDS above, which removes
-# silence rather than content and leaves the HUD clock telling the truth.
+# Fallback for callers that do not state a budget. Both real call sites do --
+# cam.py decides per clip, because the answer depends on whether the GIF is the
+# artefact being delivered or an intermediate on the way to an MP4 -- so this is
+# a floor, not the policy.
 #
-# The cost is a large intermediate GIF, which is why cam.py caps this when the
-# GIF is what gets delivered. Through ffmpeg it is a temporary file on the way
-# to an MP4 a fraction of its size.
-MAX_FRAMES = int(os.getenv("CAM_MAX_FRAMES", "0"))
+# Deliberately NOT 0 ("every frame"). It was, briefly, and that made the setting
+# a trap during a staged update: 0 means unlimited to this renderer and is a
+# divisor to the previous one, so a box that got the new environment before the
+# new image crashed on the first recording it picked up. A default that is only
+# ever dangerous while it disagrees with the code reading it should not be a
+# default. Full playback is requested explicitly, by the code that knows an
+# ffmpeg step follows.
+MAX_FRAMES = int(os.getenv("CAM_MAX_FRAMES", "420"))
 # Applied only when the GIF itself is the delivered artefact, so a full render
 # can never push it past CAM_MAX_CLIP_MB and out of the delivery path entirely.
 GIF_SAFETY_FRAMES = int(os.getenv("CAM_GIF_SAFETY_FRAMES", "420"))

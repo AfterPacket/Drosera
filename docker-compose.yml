@@ -328,10 +328,12 @@ services:
       CAM_RETENTION_DAYS: ${CAM_RETENTION_DAYS:-14}
       CAM_MAX_CLIP_MB: ${CAM_MAX_CLIP_MB:-45}
       CAM_MAX_CLIPS_TOTAL_MB: ${CAM_MAX_CLIPS_TOTAL_MB:-1024}
-      # 0 = every frame. The cap below applies only when the GIF is the thing
-      # being delivered, so a full render can never grow past CAM_MAX_CLIP_MB
-      # and drop out of delivery entirely.
-      CAM_MAX_FRAMES: ${CAM_MAX_FRAMES:-0}
+      # Full playback is not requested here -- cam.py asks for it per clip, when
+      # it knows an ffmpeg step follows and the GIF is only an intermediate.
+      # These two are the fallback and the cap for when the GIF is what actually
+      # gets delivered. Setting CAM_MAX_FRAMES=0 is supported but pointless, and
+      # breaks any container still running an older renderer.
+      CAM_MAX_FRAMES: ${CAM_MAX_FRAMES:-420}
       CAM_GIF_SAFETY_FRAMES: ${CAM_GIF_SAFETY_FRAMES:-420}
       CAM_MIN_BYTES: ${CAM_MIN_BYTES:-700}
       # Live alerting. The honeypot containers have no egress, so this is the
