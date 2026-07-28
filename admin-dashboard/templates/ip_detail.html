@@ -82,7 +82,7 @@
 <div class="card">
   <h2>Commands issued</h2>
   {% if commands %}
-  <pre class="log">{% for event in commands %}[{{ event.timestamp[:19] }}] {{ event.payload }}
+  <pre class="log">{% for event in commands %}[{{ event.timestamp[:19] }}]{% if event.event_type != 'WEBSHELL_CMD' %} &lt;{{ event.event_type }}&gt;{% endif %} {{ event.payload }}
 {% endfor %}</pre>
   {% else %}<div class="empty">No commands issued.</div>{% endif %}
 </div>

@@ -54,6 +54,18 @@ BAN_TTL = int(os.getenv("HONEYPOT_BAN_TTL", str(7 * 24 * 3600)))
 # So this is a link target, never something the dashboard connects to.
 KIBANA_URL = os.getenv("KIBANA_PUBLIC_URL", "").strip()
 
+# Event types whose payload is something the attacker ran or wrote, rather than
+# a status change. These are what "Commands issued" should show.
+COMMAND_EVENTS = {
+    "WEBSHELL_CMD",
+    "DROPPED_BINARY_EXEC",
+    "PERSISTENCE_ATTEMPT",
+    "REVERSE_SHELL",
+    "FILE_UPLOAD",
+    "PHP_EVAL_ATTEMPT",
+    "LOOT_CAPTURED",
+}
+
 
 @app.context_processor
 def inject_nav():
@@ -647,7 +659,14 @@ def ip_detail(ip):
         ip=ip, identity=identity, status=status_of(identity), country=country,
         breakdown=sorted(breakdown.items(), key=lambda kv: -kv[1]["points"]),
         credentials=(identity.get("credentials") or [])[-100:],
-        commands=[e for e in history if e.get("event_type") == "WEBSHELL_CMD"][-100:],
+        # Every event carrying a command line, not just WEBSHELL_CMD. Filtering
+        # on that one type hid the most interesting entries an attacker
+        # produces: DROPPED_BINARY_EXEC, PERSISTENCE_ATTEMPT and FILE_UPLOAD
+        # all record what was actually run or written, and none of them showed
+        # up in the list titled "commands issued".
+        commands=[e for e in history
+                  if e.get("event_type") in COMMAND_EVENTS
+                  and (e.get("payload") or "").strip()][-100:],
         payloads=[e for e in history
                   if e.get("event_type") in ("SQLI_BASIC", "SQLI_UNION_BLIND", "SQLI_OOB",
                                              "PHP_EVAL_ATTEMPT", "FILE_UPLOAD",
