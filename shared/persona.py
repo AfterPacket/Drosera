@@ -22,6 +22,7 @@ keep them -- `deploy/preflight.sh` warns when it finds none.
 
 import json
 import os
+import random
 import threading
 from pathlib import Path
 from typing import Any, Dict, List
@@ -38,6 +39,22 @@ DEFAULTS: Dict[str, Any] = {
     "php_version": "7.4.33",
     "mysql_version": "5.7.38-0ubuntu0.22.04.1",
     "company_name": "Meridian Digital Solutions",
+    "company_short": "Meridian Digital",
+    "company_address": "847 Commerce Drive, Suite 210, Austin, TX 78701",
+    "company_founded": 2019,
+    # Credentials in the fake wp-config and .env. Honeytokens: nothing accepts
+    # them, so any use anywhere is proof of where they came from -- which is
+    # only true if they are unique to this deployment.
+    "company_domain": "meridiandigital.example",
+    "company_slug": "meridian",
+    "db_name": "meridian_prod",
+    "db_user": "devuser",
+    "db_password": "DevPass2024!",
+    "honeytoken_key": "sk-mrd-test-4f8a2c1b9e3d7f6a",
+    "aws_access_key_id": "AKIA4MRDN2QX7VLPWZ3T",
+    "aws_access_key_id_staging": "AKIA4MRDN2QXHK9DLM2P",
+    "mail_password": "Staging#Pass99",
+    "staging_ip": "10.0.1.47",
     "hostname_pool": [
         "prod-web-01", "prod-web-02", "prod-db-01", "prod-cache-01",
         "mail-srv-01", "api-gateway-01", "proxy-01", "app-node-03",
@@ -64,6 +81,17 @@ DEFAULTS: Dict[str, Any] = {
     ],
     "last_login_from": "10.0.1.9",
     "last_login_at": "Mon Jan 15 08:14:02 2024",
+    # The fake filesystem. `ls -la` in the fake shell prints these names and
+    # sizes; identical output on two hosts identifies both.
+    "document_pool": [
+        "strategic-plan-2024.pdf", "invoice-template.xlsx",
+        "onboarding-checklist.docx",
+    ],
+    "backup_name": "db-backup-2024-01-14.sql.gz",
+    "upload_path": ["2024", "01"],
+    # Seeds the size jitter. 0 means "publish the sizes above verbatim", which
+    # is what a deployment running the defaults gets -- and why it should not.
+    "fs_seed": 0,
 }
 
 _loaded: Dict[str, Any] = {}
@@ -101,6 +129,24 @@ def get(key: str, default: Any = None) -> Any:
 def pool(key: str) -> List[Any]:
     value = get(key)
     return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def rng(namespace: str) -> random.Random:
+    """A PRNG that is fixed for this deployment and different from every other.
+
+    Seeded from the persona, so the numbers it yields are identical on every
+    process start. That matters: a file whose size changes between restarts is
+    a liveness oracle, and one that differs per attacker is worse.
+    """
+    return random.Random("{}:{}".format(get("fs_seed") or 0, namespace))
+
+
+def jitter(value: int, namespace: str, spread: float = 0.35) -> int:
+    """Scale a published size by a per-deployment factor."""
+    if not get("fs_seed"):
+        return value
+    factor = 1.0 + rng(namespace).uniform(-spread, spread)
+    return max(1, int(value * factor))
 
 
 def is_custom() -> bool:

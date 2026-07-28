@@ -42,6 +42,9 @@ x-honeypot-env: &honeypot-env
   # Comma-separated. Your own address belongs here, or browsing your own site
   # tarpits you, eventually bans you, and pollutes the statistics.
   HONEYPOT_IGNORE_IPS: ${HONEYPOT_IGNORE_IPS:-}
+  # `nmap` in either fake shell reports on the attacker's own address. Set to 0
+  # to keep them talking instead -- see .env.example for the trade-off.
+  HONEYPOT_SCANBACK: ${HONEYPOT_SCANBACK:-1}
   ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
   ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
   ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
@@ -177,6 +180,9 @@ services:
       - ./nginx/honeypot.conf:/etc/nginx/conf.d/honeypot.conf:ro
       - ./certs:/etc/nginx/certs:ro
       - ./storage:/var/honeypot/storage
+      # Same persona the Python honeypots read, so the website and the fake
+      # shell agree about what machine this is.
+      - ./persona:/persona:ro
     tmpfs:
       # nginx and php-fpm scratch space. noexec matters most here: this is the
       # internet-facing container and the only writable path it has.

@@ -6,8 +6,8 @@
     <meta name="generator" content="WordPress 6.4.3">
     <meta name="description" content="Expert IT Solutions for Modern Business - Web Development, Cloud Infrastructure, Cybersecurity">
     <meta name="keywords" content="web development, cloud infrastructure, cybersecurity, IT consulting">
-    <title>Meridian Digital Solutions - Expert IT Solutions</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect fill='%231a2744' width='32' height='32'/><text x='16' y='22' font-size='20' fill='%233a5fa0' text-anchor='middle' font-weight='bold'>MD</text></svg>">
+    <title>{{COMPANY_NAME}} - Expert IT Solutions</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect fill='%231a2744' width='32' height='32'/><text x='16' y='22' font-size='20' fill='%233a5fa0' text-anchor='middle' font-weight='bold'>{{COMPANY_INITIALS}}</text></svg>">
     <style>
         * {
             margin: 0;
@@ -312,13 +312,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <!-- TODO: remove test API key before deploy: sk-mrd-test-4f8a2c1b9e3d7f6a -->
-    <!-- dev DB: mysql://devuser:DevPass2024!@127.0.0.1:3306/meridian_prod -->
-    <!-- staging server: 10.0.1.47 admin:Staging#Pass99 -->
+    <!-- TODO: remove test API key before deploy: {{HONEYTOKEN_KEY}} -->
+    <!-- dev DB: mysql://{{DB_USER}}:{{DB_PASSWORD}}@127.0.0.1:3306/{{DB_NAME}} -->
+    <!-- staging server: {{STAGING_IP}} admin:{{MAIL_PASSWORD}} -->
 
     <header>
         <div class="container">
-            <a href="/" class="logo">Meridian Digital</a>
+            <a href="/" class="logo">{{COMPANY_SHORT}}</a>
             <nav>
                 <a href="#home">Home</a>
                 <a href="#services">Services</a>
@@ -360,11 +360,11 @@
 
         <section class="about" id="about">
             <div class="container">
-                <h2>About Meridian Digital Solutions</h2>
+                <h2>About {{COMPANY_NAME}}</h2>
                 <div class="about-content">
                     <div class="about-text">
                         <h3>Trusted by Industry Leaders</h3>
-                        <p>Since 2019, Meridian Digital Solutions has been partnering with innovative companies to build secure, scalable technology solutions. Our team of experienced engineers and architects brings decades of combined expertise in cloud platforms, security, and software development.</p>
+                        <p>Since {{COMPANY_FOUNDED}}, {{COMPANY_NAME}} has been partnering with innovative companies to build secure, scalable technology solutions. Our team of experienced engineers and architects brings decades of combined expertise in cloud platforms, security, and software development.</p>
                         <p style="margin-top: 1rem;">We believe in transparent communication, proactive problem-solving, and delivering measurable business value. Whether you're scaling infrastructure, modernizing legacy systems, or securing your digital assets, we're here to help.</p>
                     </div>
                     <div class="team-photo">Team Expertise 👥</div>
@@ -450,8 +450,8 @@
 
     <footer>
         <div class="container">
-            <p>&copy; 2019–2024 Meridian Digital Solutions LLC. All rights reserved.</p>
-            <p>847 Commerce Drive, Suite 210, Austin, TX 78701 | (512) 555-0123 | info@meridiandigital.com</p>
+            <p>&copy; {{COMPANY_FOUNDED}}–2024 {{COMPANY_NAME}} LLC. All rights reserved.</p>
+            <p>{{COMPANY_ADDRESS}} | (512) 555-0123 | info@{{COMPANY_DOMAIN}}</p>
             <p>
                 <a href="#">Privacy Policy</a> •
                 <a href="#">Terms of Service</a> •

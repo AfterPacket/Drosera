@@ -27,9 +27,31 @@ define('BAN_THRESHOLD', (int)(getenv('HONEYPOT_BAN_THRESHOLD') ?: 35));
 define('TARPIT_THRESHOLD', (int)(getenv('HONEYPOT_TARPIT_THRESHOLD') ?: 5));
 define('RICKROLL_URL', getenv('RICKROLL_URL') ?: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
 
-define('FAKE_PHP_VERSION', '7.4.33');
-define('FAKE_MYSQL_VERSION', '5.7.38-0ubuntu0.22.04.1');
-define('FAKE_SERVER_SOFTWARE', 'Apache/2.4.41 (Ubuntu)');
+// The machine this deployment pretends to be. Not hardcoded: these strings are
+// the most-observed thing the honeypot emits, and a value published in this
+// repository identifies any host still using it. See web/lib/persona.php.
+require_once __DIR__ . '/persona.php';
+
+define('FAKE_PHP_VERSION', (string)sb_persona('php_version'));
+define('FAKE_MYSQL_VERSION', (string)sb_persona('mysql_version'));
+define('FAKE_SERVER_SOFTWARE', (string)sb_persona('http_server'));
+define('COMPANY_NAME', (string)sb_persona('company_name'));
+define('COMPANY_SHORT', (string)sb_persona('company_short'));
+define('COMPANY_ADDRESS', (string)sb_persona('company_address'));
+define('COMPANY_FOUNDED', (int)sb_persona('company_founded'));
+define('FAKE_DB_NAME', (string)sb_persona('db_name'));
+define('FAKE_DB_USER', (string)sb_persona('db_user'));
+define('FAKE_DB_PASSWORD', (string)sb_persona('db_password'));
+define('FAKE_HONEYTOKEN_KEY', (string)sb_persona('honeytoken_key'));
+define('COMPANY_DOMAIN', (string)sb_persona('company_domain'));
+define('COMPANY_SLUG', (string)sb_persona('company_slug'));
+define('FAKE_AWS_KEY_ID', (string)sb_persona('aws_access_key_id'));
+define('FAKE_AWS_KEY_ID_STAGING', (string)sb_persona('aws_access_key_id_staging'));
+define('FAKE_MAIL_PASSWORD', (string)sb_persona('mail_password'));
+define('FAKE_STAGING_IP', (string)sb_persona('staging_ip'));
+define('FAKE_LAST_LOGIN_FROM', (string)sb_persona('last_login_from'));
+// Series only: /etc/php/8.2/fpm/php.ini, never /etc/php/8.2.7/fpm/php.ini.
+define('FAKE_PHP_SERIES', implode('.', array_slice(explode('.', FAKE_PHP_VERSION), 0, 2)));
 define('WEBSHELL_PATH', '/wp-admin/admin-ajax.php');
 // Magic ?action= value that unlocks the shell UI. Looks like an ordinary
 // WordPress AJAX hook so it does not stand out in a log or a wordlist.
@@ -1025,10 +1047,10 @@ function run_tarpit(string $ip, string $reason): void
     };
 
     $preamble = [
-        "<!DOCTYPE html><html><head><title>Meridian Digital Solutions</title>",
+        "<!DOCTYPE html><html><head><title>" . sb_html(COMPANY_NAME) . "</title>",
         "<meta charset='UTF-8'><meta name='generator' content='WordPress 6.4.3'>",
         "<style>body{font-family:sans-serif;color:#333}</style></head><body>",
-        "<header><h1>Meridian Digital Solutions</h1></header><main>",
+        "<header><h1>" . sb_html(COMPANY_NAME) . "</h1></header><main>",
     ];
     foreach ($preamble as $chunk) {
         if (connection_aborted()) {

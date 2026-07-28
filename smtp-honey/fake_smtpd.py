@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity  # noqa: E402
+from shared import alerting, identity, persona  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "2525"))
@@ -23,7 +23,7 @@ TARPIT_BANNER_DELAY = float(os.getenv("SMTP_TARPIT_DELAY", "10.0"))
 IDLE_TIMEOUT = int(os.getenv("SMTP_IDLE_TIMEOUT", "300"))
 MAX_LINE = 4096
 MAX_MESSAGE_BYTES = 262144
-LOCAL_DOMAINS = ("meridiandigital.example", "localhost")
+LOCAL_DOMAINS = (persona.get("company_domain"), "localhost")
 
 
 def _b64(value: str) -> str:
@@ -68,7 +68,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         await writer.drain()
 
     try:
-        await send(f"220 mail.{session.hostname} ESMTP Postfix (Ubuntu)")
+        await send(f"220 mail.{session.hostname} ESMTP {persona.get('smtp_software')}")
 
         while True:
             try:

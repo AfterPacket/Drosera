@@ -8,6 +8,7 @@ Latency tiers mimic real work so an attacker's timing heuristics agree with the
 story the rest of the honeypot tells.
 """
 
+import os
 import random
 import re
 import shlex
@@ -26,6 +27,28 @@ SLOW_MIN, SLOW_MAX = 1.5, 3.0
 # tells an attacker exactly what both of them are, so this comes from the
 # deployment's persona.
 SEEDED_HISTORY = persona.pool("seeded_history")
+
+# The "admin workstation" that shows up in netstat, journalctl, w, last and the
+# SSH motd. It has to be the same address in all of them -- an attacker who
+# compares them is checking exactly this -- and it has to differ per deployment.
+ADMIN_IP = persona.get("last_login_from")
+
+# `nmap` in the fake shell reports on the attacker's own address instead of the
+# target they gave. It is unnerving and it costs them time, but it also tells a
+# careful attacker that the box is watching them, which ends the session and the
+# intel it was producing. Set HONEYPOT_SCANBACK=0 to keep them talking instead.
+SCANBACK = os.getenv("HONEYPOT_SCANBACK", "1") not in ("0", "false", "no", "")
+
+# Plausible ports to report on a random internet host: a compromised VPS, a
+# home router, someone else's poorly-kept box. Chosen deterministically per
+# address so the same attacker rescanning gets the same answer.
+SCANBACK_PORTS = [
+    (21, "ftp"), (22, "ssh"), (23, "telnet"), (25, "smtp"), (53, "domain"),
+    (80, "http"), (110, "pop3"), (143, "imap"), (443, "https"),
+    (445, "microsoft-ds"), (993, "imaps"), (995, "pop3s"), (1723, "pptp"),
+    (3306, "mysql"), (3389, "ms-wbt-server"), (5900, "vnc"), (8080, "http-proxy"),
+    (8443, "https-alt"),
+]
 
 CRONTAB = """# m h  dom mon dow   command
 */5 * * * * /usr/bin/php /opt/monitoring/check.php > /dev/null 2>&1
@@ -584,7 +607,7 @@ class FakeShell:
             "tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN\n"
             "tcp        0      0 127.0.0.1:3306          0.0.0.0:*               LISTEN\n"
             "tcp        0      0 127.0.0.1:9000          0.0.0.0:*               LISTEN\n"
-            f"tcp        0      0 {lan}:22          10.0.1.9:51442          ESTABLISHED\n"
+            f"tcp        0      0 {lan}:22          {ADMIN_IP}:51442          ESTABLISHED\n"
             "tcp6       0      0 :::443                  :::*                    LISTEN"
         )
 
@@ -617,8 +640,74 @@ class FakeShell:
         self._score_once("NETWORK_ENUM")
         return ("Address                  HWtype  HWaddress           Flags Mask            Iface\n"
                 "10.0.1.1                 ether   00:1b:21:3c:4d:5e   C                     eth0\n"
-                "10.0.1.9                 ether   00:50:56:9a:11:c2   C                     eth0\n"
+                f"{ADMIN_IP.ljust(24)} ether   00:50:56:9a:11:c2   C                     eth0\n"
                 "10.0.1.23                ether   00:50:56:9a:44:71   C                     eth0")
+
+    def _cmd_nmap(self, args: List[str], line: str) -> str:
+        """Scan the scanner: whatever they aim at, the report comes back on them.
+
+        Nothing is actually scanned. The honeypot has no egress by design, and
+        scanning back would be both a real port scan launched at a third party
+        -- unlawful in most places, and their address is often a victim's box
+        rather than theirs -- and an instant tell, since the packets would come
+        from this host. So the port list is fabricated deterministically from
+        their address, the way every other answer in this shell is.
+
+        The `Host script results` block is not fabricated. It is what this
+        honeypot has actually recorded about them, which is the part that lands.
+        """
+        self._score_once("NETWORK_ENUM", payload=line[:200])
+        self._latency("slow")
+
+        if not SCANBACK:
+            return ("Starting Nmap 7.80 ( https://nmap.org ) at "
+                    f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC\n"
+                    "Failed to resolve \"" + (args[0] if args else "") + "\".\n"
+                    "WARNING: No targets were specified, so 0 hosts scanned.\n"
+                    "Nmap done: 0 IP addresses (0 hosts up) scanned in 0.29 seconds")
+
+        # Imported here rather than at module scope: this is the only place in
+        # the fake shell that needs live state, and a top-level import would
+        # couple two modules that are otherwise independent.
+        from . import identity as _identity
+
+        try:
+            live = _identity.get_or_create_identity(self.ip)
+        except Exception:
+            live = self.identity
+
+        rng = random.Random(zlib.crc32(self.ip.encode()))
+        open_ports = sorted(rng.sample(SCANBACK_PORTS, rng.randint(2, 4)))
+        filtered = 1000 - len(open_ports)
+
+        rows = "\n".join(
+            f"{str(port) + '/tcp':<10}open  {name}" for port, name in open_ports
+        )
+
+        touched = live.get("services_touched") or []
+        creds = len(live.get("credentials") or [])
+        events = len(live.get("session_history") or [])
+        first_seen = str(live.get("first_seen") or "")[:19]
+
+        return (
+            "Starting Nmap 7.80 ( https://nmap.org ) at "
+            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC\n"
+            f"Nmap scan report for {self.ip}\n"
+            f"Host is up (0.00{rng.randint(11, 89)}s latency).\n"
+            f"Not shown: {filtered} filtered ports\n"
+            "PORT      STATE SERVICE\n"
+            f"{rows}\n\n"
+            "Host script results:\n"
+            "| clients-observed:\n"
+            f"|   address: {self.ip}\n"
+            f"|   first seen: {first_seen}\n"
+            f"|   sessions logged: {events}\n"
+            f"|   services probed: {', '.join(touched) if touched else 'ssh'}\n"
+            f"|   credentials offered: {creds}\n"
+            f"|_  threat score: {float(live.get('score') or 0):.0f}\n\n"
+            f"Nmap done: 1 IP address (1 host up) scanned in "
+            f"{rng.randint(9, 26)}.{rng.randint(10, 99)} seconds"
+        )
 
     def _cmd_docker(self, args: List[str], _line: str) -> str:
         self._score_once("DOCKER_K8S_ENUM", payload=" ".join(args)[:120])
@@ -652,12 +741,12 @@ class FakeShell:
         stamp = datetime.now(timezone.utc).strftime("%b %d %H:%M:%S")
         host = self.hostname
         return "\n".join([
-            f"{stamp} {host} nginx[721]: 10.0.1.9 - - \"GET /wp-admin/ HTTP/1.1\" 200 4821",
+            f"{stamp} {host} nginx[721]: {ADMIN_IP} - - \"GET /wp-admin/ HTTP/1.1\" 200 4821",
             f"{stamp} {host} php-fpm[810]: [pool www] child 811 said into stderr: \"NOTICE: PHP message: cache warm\"",
             f"{stamp} {host} mysqld[934]: 2024-01-15T03:12:44.201Z 0 [Note] InnoDB: Buffer pool(s) load completed",
             f"{stamp} {host} systemd[1]: Started Daily apt download activities.",
             f"{stamp} {host} cron[1204]: (root) CMD (/usr/bin/php /opt/monitoring/check.php > /dev/null 2>&1)",
-            f"{stamp} {host} sshd[689]: Accepted publickey for root from 10.0.1.9 port 51442 ssh2",
+            f"{stamp} {host} sshd[689]: Accepted publickey for root from {ADMIN_IP} port 51442 ssh2",
         ])
 
     def _cmd_lsof(self, _args: List[str], _line: str) -> str:
@@ -669,7 +758,7 @@ class FakeShell:
             "sshd      689     root    3u  IPv4  16482      0t0  TCP *:ssh (LISTEN)\n"
             "nginx     721     root    6u  IPv4  17033      0t0  TCP *:http (LISTEN)\n"
             "mysqld    934    mysql   32u  IPv4  17944      0t0  TCP localhost:mysql (LISTEN)\n"
-            f"sshd     2870     root    3u  IPv4  22841      0t0  TCP {lan}:ssh->10.0.1.9:51442 (ESTABLISHED)"
+            f"sshd     2870     root    3u  IPv4  22841      0t0  TCP {lan}:ssh->{ADMIN_IP}:51442 (ESTABLISHED)"
         )
 
     def _cmd_strace(self, args: List[str], _line: str) -> str:
@@ -763,10 +852,10 @@ class FakeShell:
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
         return (f" {now} up 47 days,  3:19,  1 user,  load average: 0.28, 0.34, 0.31\n"
                 "USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT\n"
-                "root     pts/0    10.0.1.9         08:14    0.00s  0.04s  0.00s -bash")
+                f"root     pts/0    {ADMIN_IP.ljust(17)}08:14    0.00s  0.04s  0.00s -bash")
 
     def _cmd_who(self, _args: List[str], _line: str) -> str:
-        return "root     pts/0        2024-01-15 08:14 (10.0.1.9)"
+        return f"root     pts/0        2024-01-15 08:14 ({ADMIN_IP})"
 
     def _cmd_env(self, _args: List[str], _line: str) -> str:
         return "\n".join([
@@ -778,7 +867,7 @@ class FakeShell:
             "TERM=xterm-256color",
             f"USER={self.username}",
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "DB_PASSWORD=DevPass2024!",
+            f"DB_PASSWORD={persona.get('db_password')}",
         ])
 
     def _cmd_echo(self, args: List[str], _line: str) -> str:
@@ -788,8 +877,16 @@ class FakeShell:
         self._score_once("RECON_LS")
         self._latency("slow")
         base = next((a for a in args if not a.startswith("-")), self.cwd)
+        # Must agree with the tree in identity.py: an attacker who runs both
+        # `find` and `ls` and gets different filenames has found the seam.
+        year, month = (persona.pool("upload_path") + ["2024", "01"])[:2]
+        documents = persona.pool("document_pool") or ["strategic-plan-2024.pdf"]
+        uploads = "\n".join(
+            f"{base}/wp-content/uploads/{year}/{month}/{name}"
+            for name in documents
+        )
         return (f"{base}/wp-config.php\n{base}/index.php\n"
-                f"{base}/wp-content/uploads/2024/01/strategic-plan-2024.pdf\n"
+                f"{uploads}\n"
                 "find: '/root': Permission denied")
 
     def _cmd_grep(self, _args: List[str], _line: str) -> str:
@@ -887,14 +984,17 @@ class FakeShell:
         return "\n".join(lines)
 
     def _wp_config(self) -> str:
+        # The credentials here are honeytokens: nothing accepts them, so a
+        # login attempt with one anywhere is proof of where it was stolen from.
+        # That only holds while they are unique to this deployment.
         return (
             "<?php\n"
-            "define( 'DB_NAME', 'meridian_prod' );\n"
-            "define( 'DB_USER', 'devuser' );\n"
-            "define( 'DB_PASSWORD', 'DevPass2024!' );\n"
+            f"define( 'DB_NAME', '{persona.get('db_name')}' );\n"
+            f"define( 'DB_USER', '{persona.get('db_user')}' );\n"
+            f"define( 'DB_PASSWORD', '{persona.get('db_password')}' );\n"
             "define( 'DB_HOST', '127.0.0.1:3306' );\n"
             "define( 'DB_CHARSET', 'utf8mb4' );\n"
-            "define( 'AUTH_KEY',  'sk-mrd-test-4f8a2c1b9e3d7f6a' );\n"
+            f"define( 'AUTH_KEY',  '{persona.get('honeytoken_key')}' );\n"
             "$table_prefix = 'wp_';\n"
             "define( 'WP_DEBUG', false );\n"
             "require_once ABSPATH . 'wp-settings.php';"
@@ -992,7 +1092,7 @@ def _cmd_lspci(self, _args, _line):
 
 def _cmd_last(self, _args, _line):
     self._score_once("RECON_LS")
-    host = self.identity.get("fake_lan_ip", "10.0.1.9")
+    host = self.identity.get("fake_lan_ip", "10.0.1.50")
     return (
         f"{self.username:<9}pts/0        {host}      Mon Jan 15 08:14   still logged in\n"
         f"root     pts/0        {host}      Sun Jan 14 22:03 - 23:41  (01:38)\n"
@@ -1051,6 +1151,8 @@ FakeShell._HANDLERS = {
     "ifconfig": FakeShell._cmd_ifconfig,
     "ip": FakeShell._cmd_ip,
     "arp": FakeShell._cmd_arp,
+    "nmap": FakeShell._cmd_nmap, "masscan": FakeShell._cmd_nmap,
+    "zmap": FakeShell._cmd_nmap, "rustscan": FakeShell._cmd_nmap,
     "docker": FakeShell._cmd_docker,
     "kubectl": FakeShell._cmd_kubectl,
     "history": FakeShell._cmd_history,

@@ -138,7 +138,7 @@ function serve_crawler_trap(string $ip, string $path): void
 
     echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">';
     echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
-    echo '<title>' . sb_html($title) . ' &ndash; Meridian Digital Solutions</title>';
+    echo '<title>' . sb_html($title) . ' &ndash; ' . sb_html(COMPANY_NAME) . '</title>';
     echo '<meta name="generator" content="WordPress 6.4.3">';
     echo '<link rel="next" href="/blog/' . sb_html($nextSlug) . '">';
     echo '<style>body{font-family:Georgia,serif;max-width:820px;margin:0 auto;'
@@ -146,9 +146,10 @@ function serve_crawler_trap(string $ip, string $path): void
         . 'padding-bottom:1rem;margin-bottom:2rem}h1{color:#1a2744}'
         . 'aside{background:#f4f6fa;padding:1rem 1.5rem;margin-top:2.5rem;border-left:4px solid #3a5fa0}'
         . 'a{color:#3a5fa0}.meta{color:#777;font-size:.9rem}</style></head><body>';
-    echo '<header><a href="/"><strong>Meridian Digital Solutions</strong></a></header>';
+    echo '<header><a href="/"><strong>' . sb_html(COMPANY_NAME) . '</strong></a></header>';
     echo '<article><h1>' . sb_html($title) . '</h1>';
-    echo '<p class="meta">Posted ' . sb_html($published) . ' by the Meridian team</p>';
+    echo '<p class="meta">Posted ' . sb_html($published) . ' by the '
+        . sb_html(explode(' ', COMPANY_SHORT)[0]) . ' team</p>';
     echo $paragraphs;
     echo '</article><aside><h3>Related reading</h3><ul>' . $links . '</ul></aside>';
     echo '<p><a href="/blog/' . sb_html($nextSlug) . '">Next article &rarr;</a></p>';
@@ -262,9 +263,9 @@ function render_tab_form(string $tab, array $identity): void
             echo '<form method="post" action="' . $action . '">'
                 . '<b>MySQL console</b><br>'
                 . 'Host: <input type="text" name="host" value="127.0.0.1"> '
-                . 'User: <input type="text" name="user" value="devuser"> '
-                . 'Pass: <input type="text" name="pass" value="DevPass2024!"> '
-                . 'DB: <input type="text" name="db" value="meridian_prod"><br><br>'
+                . 'User: <input type="text" name="user" value="' . sb_html(FAKE_DB_USER) . '"> '
+                . 'Pass: <input type="text" name="pass" value="' . sb_html(FAKE_DB_PASSWORD) . '"> '
+                . 'DB: <input type="text" name="db" value="' . sb_html(FAKE_DB_NAME) . '"><br><br>'
                 . '<textarea name="sql" rows="6" class="w100">'
                 . sb_html((string)($_POST['sql'] ?? 'SHOW TABLES;')) . '</textarea><br>'
                 . '<input type="submit" value="Run SQL"></form>';
@@ -422,8 +423,13 @@ function simulate_command(string $ip, array $identity, string $command): string
             score_event($ip, 'NETWORK_ENUM', $trimmed);
             return "Address                  HWtype  HWaddress           Flags Mask            Iface\n"
                 . "10.0.1.1                 ether   00:1b:21:3c:4d:5e   C                     eth0\n"
-                . "10.0.1.9                 ether   00:50:56:9a:11:c2   C                     eth0\n"
+                . str_pad(FAKE_LAST_LOGIN_FROM, 25) . "ether   00:50:56:9a:11:c2   C                     eth0\n"
                 . "10.0.1.23                ether   00:50:56:9a:44:71   C                     eth0";
+
+        case 'nmap': case 'masscan': case 'zmap': case 'rustscan':
+            score_event($ip, 'NETWORK_ENUM', $trimmed);
+            usleep(600000);
+            return fake_scanback($ip, $identity);
 
         case 'docker': case 'kubectl':
             score_event($ip, 'DOCKER_K8S_ENUM', $trimmed);
@@ -530,13 +536,14 @@ function simulate_command(string $ip, array $identity, string $command): string
 
         case 'w': case 'who':
             return "USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT\n"
-                . "root     pts/0    10.0.1.9         08:14    0.00s  0.04s  0.00s -bash";
+                . 'root     pts/0    ' . str_pad(FAKE_LAST_LOGIN_FROM, 17)
+                . "08:14    0.00s  0.04s  0.00s -bash";
 
         case 'env': case 'printenv':
             return "SHELL=/bin/bash\nPWD=" . ($identity['fake_cwd'] ?? '/var/www/html')
                 . "\nUSER=www-data\nHOME=/var/www\nLANG=en_US.UTF-8\n"
                 . "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-                . "DB_PASSWORD=DevPass2024!";
+                . 'DB_PASSWORD=' . FAKE_DB_PASSWORD;
 
         case 'echo':
             return implode(' ', $args);
@@ -682,10 +689,11 @@ function fake_passwd(array $identity): string
 
 function fake_wp_config(): string
 {
-    return "<?php\ndefine( 'DB_NAME', 'meridian_prod' );\n"
-        . "define( 'DB_USER', 'devuser' );\ndefine( 'DB_PASSWORD', 'DevPass2024!' );\n"
+    return "<?php\ndefine( 'DB_NAME', '" . FAKE_DB_NAME . "' );\n"
+        . "define( 'DB_USER', '" . FAKE_DB_USER . "' );\n"
+        . "define( 'DB_PASSWORD', '" . FAKE_DB_PASSWORD . "' );\n"
         . "define( 'DB_HOST', '127.0.0.1:3306' );\ndefine( 'DB_CHARSET', 'utf8mb4' );\n"
-        . "define( 'AUTH_KEY',  'sk-mrd-test-4f8a2c1b9e3d7f6a' );\n"
+        . "define( 'AUTH_KEY',  '" . FAKE_HONEYTOKEN_KEY . "' );\n"
         . "\$table_prefix = 'wp_';\ndefine( 'WP_DEBUG', false );\n"
         . "require_once ABSPATH . 'wp-settings.php';";
 }
@@ -712,7 +720,7 @@ function fake_netstat(array $identity): string
         . "tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN\n"
         . "tcp        0      0 127.0.0.1:3306          0.0.0.0:*               LISTEN\n"
         . "tcp        0      0 127.0.0.1:9000          0.0.0.0:*               LISTEN\n"
-        . "tcp        0      0 {$lan}:22          10.0.1.9:51442          ESTABLISHED\n"
+        . "tcp        0      0 {$lan}:22          " . FAKE_LAST_LOGIN_FROM . ":51442          ESTABLISHED\n"
         . "tcp6       0      0 :::443                  :::*                    LISTEN";
 }
 
@@ -731,11 +739,8 @@ function fake_ifconfig(array $identity): string
 
 function fake_history(array $identity): string
 {
-    $seeded = [
-        'cd /var/www/html', 'ls -la', 'tail -f /var/log/nginx/error.log',
-        'systemctl restart php7.4-fpm', 'mysql -u devuser -p meridian_prod',
-        'df -h', 'sudo apt-get update', 'vim wp-config.php',
-    ];
+    // Same list the SSH fake shell prints. Two halves of one machine.
+    $seeded = (array)sb_persona('seeded_history');
     foreach (($identity['session_history'] ?? []) as $event) {
         if (($event['event_type'] ?? '') === 'WEBSHELL_CMD' && !empty($event['payload'])) {
             $seeded[] = (string)$event['payload'];
@@ -774,11 +779,12 @@ function fake_systemctl(string $unit): string
 function fake_journal(string $hostname): string
 {
     $stamp = gmdate('M d H:i:s');
-    return "{$stamp} {$hostname} nginx[721]: 10.0.1.9 - - \"GET /wp-admin/ HTTP/1.1\" 200 4821\n"
+    $admin = FAKE_LAST_LOGIN_FROM;
+    return "{$stamp} {$hostname} nginx[721]: {$admin} - - \"GET /wp-admin/ HTTP/1.1\" 200 4821\n"
         . "{$stamp} {$hostname} php-fpm[810]: [pool www] child 811 said into stderr: \"NOTICE: cache warm\"\n"
         . "{$stamp} {$hostname} mysqld[934]: [Note] InnoDB: Buffer pool(s) load completed\n"
         . "{$stamp} {$hostname} cron[1204]: (root) CMD (/usr/bin/php /opt/monitoring/check.php)\n"
-        . "{$stamp} {$hostname} sshd[689]: Accepted publickey for root from 10.0.1.9 port 51442 ssh2";
+        . "{$stamp} {$hostname} sshd[689]: Accepted publickey for root from {$admin} port 51442 ssh2";
 }
 
 // -------------------------------------------------------------- php simulation
@@ -835,7 +841,8 @@ function simulate_sql(string $ip, string $sql): string
     }
     $low = strtolower(rtrim($sql, "; \t\n"));
     $header = "Connected to " . (get_or_create_identity($ip)['fake_hostname'] ?? 'prod-db-01')
-        . " (" . FAKE_MYSQL_VERSION . ") as devuser. Database: meridian_prod.\n\n";
+        . " (" . FAKE_MYSQL_VERSION . ") as " . FAKE_DB_USER
+        . ". Database: " . FAKE_DB_NAME . ".\n\n";
 
     if (preg_match('/\binto\s+(?:dump|out)file\b/i', $low)) {
         score_event($ip, 'SQLI_OOB', $sql);
@@ -854,7 +861,8 @@ function simulate_sql(string $ip, string $sql): string
     }
     if (preg_match('/\bxp_cmdshell\b/i', $low)) {
         score_event($ip, 'SQLI_OOB', $sql);
-        return $header . 'ERROR 1305 (42000): PROCEDURE meridian_prod.xp_cmdshell does not exist';
+        return $header . 'ERROR 1305 (42000): PROCEDURE ' . FAKE_DB_NAME
+            . '.xp_cmdshell does not exist';
     }
     if (preg_match('/\b(?:sleep|benchmark)\s*\(\s*(\d+)/i', $low, $m)) {
         score_event($ip, 'SQLI_UNION_BLIND', $sql);
@@ -871,38 +879,43 @@ function simulate_sql(string $ip, string $sql): string
 
     if (str_starts_with($low, 'show databases')) {
         return $header . sql_table(['Database'],
-            [['information_schema'], ['mysql'], ['performance_schema'], ['sys'], ['meridian_prod']]);
+            [['information_schema'], ['mysql'], ['performance_schema'], ['sys'], [FAKE_DB_NAME]]);
     }
     if (str_starts_with($low, 'show tables')) {
         $tables = ['wp_commentmeta', 'wp_comments', 'wp_links', 'wp_options', 'wp_postmeta',
                    'wp_posts', 'wp_term_relationships', 'wp_term_taxonomy', 'wp_termmeta',
                    'wp_terms', 'wp_usermeta', 'wp_users'];
-        return $header . sql_table(['Tables_in_meridian_prod'],
+        return $header . sql_table(['Tables_in_' . FAKE_DB_NAME],
             array_map(static fn($t) => [$t], $tables));
     }
     if (str_starts_with($low, 'show grants')) {
-        return $header . sql_table(['Grants for devuser@localhost'],
-            [["GRANT ALL PRIVILEGES ON `meridian_prod`.* TO 'devuser'@'localhost'"]]);
+        return $header . sql_table(['Grants for ' . FAKE_DB_USER . '@localhost'],
+            [["GRANT ALL PRIVILEGES ON `" . FAKE_DB_NAME . "`.* TO '"
+              . FAKE_DB_USER . "'@'localhost'"]]);
     }
     if (str_starts_with($low, 'grant ')) {
         return $header . 'Query OK, 0 rows affected (0.00 sec)';
     }
     if (str_contains($low, 'wp_users')) {
         score_event($ip, 'SQLI_BASIC', $sql);
+        // The staff username comes from the same pool the SSH honeypot uses, so
+        // a name harvested here is one that "exists" on the rest of the machine.
+        $staff = (array)sb_persona('user_pool');
+        $staffName = (string)($staff[0][0] ?? 'jmarsh');
         return $header . sql_table(['ID', 'user_login', 'user_pass', 'user_email'], [
-            ['1', 'admin', '$P$BqZ7vK2nR8xLmYcD4wF6tG9hJ1sA0e/', 'admin@meridiandigital.example'],
-            ['2', 'jmarsh', '$P$B4kL9mN2pQ7rS5tU8vW1xY3zA6bC0d.', 'jmarsh@meridiandigital.example'],
-            ['3', 'editor', '$P$BvX2cV5bN8mQ1wE4rT7yU0iO3pA6sD/', 'editor@meridiandigital.example'],
+            ['1', 'admin', '$P$BqZ7vK2nR8xLmYcD4wF6tG9hJ1sA0e/', 'admin@' . COMPANY_DOMAIN],
+            ['2', $staffName, '$P$B4kL9mN2pQ7rS5tU8vW1xY3zA6bC0d.', $staffName . '@' . COMPANY_DOMAIN],
+            ['3', 'editor', '$P$BvX2cV5bN8mQ1wE4rT7yU0iO3pA6sD/', 'editor@' . COMPANY_DOMAIN],
         ]);
     }
     if (str_contains($low, 'version()') || str_contains($low, '@@version')) {
         return $header . sql_table(['version()'], [[FAKE_MYSQL_VERSION]]);
     }
     if (str_contains($low, 'user()')) {
-        return $header . sql_table(['user()'], [['devuser@localhost']]);
+        return $header . sql_table(['user()'], [[FAKE_DB_USER . '@localhost']]);
     }
     if (str_contains($low, 'database()')) {
-        return $header . sql_table(['database()'], [['meridian_prod']]);
+        return $header . sql_table(['database()'], [[FAKE_DB_NAME]]);
     }
     if (str_starts_with($low, 'select')) {
         return $header . sql_table(['result'], [['1']]);
@@ -1156,9 +1169,75 @@ function network_overview(array $identity): string
         . "--- ARP table ---\n"
         . "Address                  HWtype  HWaddress           Flags Mask            Iface\n"
         . "10.0.1.1                 ether   00:1b:21:3c:4d:5e   C                     eth0\n"
-        . "10.0.1.9                 ether   00:50:56:9a:11:c2   C                     eth0\n"
+        . str_pad(FAKE_LAST_LOGIN_FROM, 25) . "ether   00:50:56:9a:11:c2   C                     eth0\n"
         . "10.0.1.23                ether   00:50:56:9a:44:71   C                     eth0"
     );
+}
+
+/**
+ * Scan the scanner: whatever they aimed at, the report comes back on them.
+ *
+ * Nothing is actually scanned. This container has no egress by design, and
+ * scanning back would be a real port scan launched at a third party -- often a
+ * victim's compromised box rather than the attacker's own -- as well as an
+ * instant tell, since the packets would come from this host. So the port list
+ * is fabricated deterministically from their address, like every other answer
+ * in this shell.
+ *
+ * The observed block is not fabricated: it is what the honeypot has actually
+ * recorded about them. Matches shared/fakeshell.py so both shells agree.
+ */
+function fake_scanback(string $ip, array $identity): string
+{
+    if (getenv('HONEYPOT_SCANBACK') === '0') {
+        return "Starting Nmap 7.80 ( https://nmap.org ) at " . gmdate('Y-m-d H:i') . " UTC\n"
+            . "WARNING: No targets were specified, so 0 hosts scanned.\n"
+            . "Nmap done: 0 IP addresses (0 hosts up) scanned in 0.29 seconds";
+    }
+
+    $catalogue = [
+        [21, 'ftp'], [22, 'ssh'], [23, 'telnet'], [25, 'smtp'], [53, 'domain'],
+        [80, 'http'], [110, 'pop3'], [143, 'imap'], [443, 'https'],
+        [445, 'microsoft-ds'], [993, 'imaps'], [995, 'pop3s'], [1723, 'pptp'],
+        [3306, 'mysql'], [3389, 'ms-wbt-server'], [5900, 'vnc'],
+        [8080, 'http-proxy'], [8443, 'https-alt'],
+    ];
+
+    // Seeded from their address so a rescan returns the same host, the way a
+    // real one would.
+    mt_srand(crc32($ip));
+    $count = 2 + mt_rand(0, 2);
+    $keys = array_rand($catalogue, $count);
+    $keys = is_array($keys) ? $keys : [$keys];
+    sort($keys);
+
+    $rows = '';
+    foreach ($keys as $key) {
+        [$port, $name] = $catalogue[$key];
+        $rows .= str_pad($port . '/tcp', 10) . 'open  ' . $name . "\n";
+    }
+
+    $touched = $identity['services_touched'] ?? [];
+    $creds = count($identity['credentials'] ?? []);
+    $events = count($identity['session_history'] ?? []);
+    $firstSeen = substr((string)($identity['first_seen'] ?? ''), 0, 19);
+
+    return "Starting Nmap 7.80 ( https://nmap.org ) at " . gmdate('Y-m-d H:i') . " UTC\n"
+        . "Nmap scan report for {$ip}\n"
+        . "Host is up (0.00" . mt_rand(11, 89) . "s latency).\n"
+        . "Not shown: " . (1000 - $count) . " filtered ports\n"
+        . "PORT      STATE SERVICE\n"
+        . $rows . "\n"
+        . "Host script results:\n"
+        . "| clients-observed:\n"
+        . "|   address: {$ip}\n"
+        . "|   first seen: {$firstSeen}\n"
+        . "|   sessions logged: {$events}\n"
+        . "|   services probed: " . ($touched ? implode(', ', $touched) : 'http') . "\n"
+        . "|   credentials offered: {$creds}\n"
+        . "|_  threat score: " . number_format((float)($identity['score'] ?? 0), 0) . "\n\n"
+        . "Nmap done: 1 IP address (1 host up) scanned in "
+        . mt_rand(9, 26) . "." . mt_rand(10, 99) . " seconds";
 }
 
 function fake_nmap_scan(array $identity): string
@@ -1167,7 +1246,7 @@ function fake_nmap_scan(array $identity): string
     return "Starting Nmap 7.80 ( https://nmap.org ) at " . gmdate('Y-m-d H:i') . " UTC\n"
         . "Nmap scan report for 10.0.1.1\nHost is up (0.00042s latency).\n"
         . "PORT     STATE SERVICE\n22/tcp   open  ssh\n80/tcp   open  http\n443/tcp  open  https\n\n"
-        . "Nmap scan report for 10.0.1.9\nHost is up (0.00071s latency).\n"
+        . "Nmap scan report for " . FAKE_LAST_LOGIN_FROM . "\nHost is up (0.00071s latency).\n"
         . "PORT     STATE SERVICE\n22/tcp   open  ssh\n445/tcp  open  microsoft-ds\n"
         . "3389/tcp open  ms-wbt-server\n\n"
         . "Nmap scan report for 10.0.1.23\nHost is up (0.00088s latency).\n"
@@ -1195,9 +1274,9 @@ function fake_phpinfo(array $identity): string
         . "Build Date => Nov  2 2023 12:41:22\n"
         . "Server API => FPM/FastCGI\n"
         . "Virtual Directory Support => disabled\n"
-        . "Configuration File (php.ini) Path => /etc/php/7.4/fpm\n"
-        . "Loaded Configuration File => /etc/php/7.4/fpm/php.ini\n"
-        . "Scan this dir for additional .ini files => /etc/php/7.4/fpm/conf.d\n"
+        . "Configuration File (php.ini) Path => /etc/php/" . FAKE_PHP_SERIES . "/fpm\n"
+        . "Loaded Configuration File => /etc/php/" . FAKE_PHP_SERIES . "/fpm/php.ini\n"
+        . "Scan this dir for additional .ini files => /etc/php/" . FAKE_PHP_SERIES . "/fpm/conf.d\n"
         . "PHP API => 20190902\nPHP Extension => 20190902\nZend Extension => 320190902\n"
         . "Debug Build => no\nThread Safety => disabled\nZend Signal Handling => enabled\n"
         . "IPv6 Support => enabled\nRegistered PHP Streams => https, ftps, compress.zlib, php, file, glob, data, http, ftp, phar\n\n"
@@ -1216,7 +1295,7 @@ function fake_phpinfo(array $identity): string
     }
 
     $out .= "\n--- mysqli ---\n"
-        . "Client API library version => mysqlnd 7.4.33\n"
+        . "Client API library version => mysqlnd " . FAKE_PHP_VERSION . "\n"
         . "Active Persistent Links => 0\nActive Links => 0\n\n"
         . "--- \$_SERVER ---\n"
         . "SERVER_SOFTWARE => " . FAKE_SERVER_SOFTWARE . "\n"
@@ -1226,9 +1305,10 @@ function fake_phpinfo(array $identity): string
         . "SCRIPT_FILENAME => /var/www/html/index.php\n"
         . "USER => www-data\n\n"
         . "--- \$_ENV ---\n"
-        . "DB_HOST => 127.0.0.1\nDB_NAME => meridian_prod\nDB_USER => devuser\n"
-        . "DB_PASSWORD => DevPass2024!\n"
-        . "APP_KEY => sk-mrd-test-4f8a2c1b9e3d7f6a\n";
+        . "DB_HOST => 127.0.0.1\nDB_NAME => " . FAKE_DB_NAME
+        . "\nDB_USER => " . FAKE_DB_USER . "\n"
+        . "DB_PASSWORD => " . FAKE_DB_PASSWORD . "\n"
+        . "APP_KEY => " . FAKE_HONEYTOKEN_KEY . "\n";
 
     return sb_html($out);
 }

@@ -16,7 +16,7 @@ Built by [Digital Systems LLC](https://digitalsystems.cc) /
 ```
 Internet
    │
-   ├─ :80/:443 ─► nginx ─┬─► fake business site (Meridian Digital Solutions)
+   ├─ :80/:443 ─► nginx ─┬─► fake business site (named by your persona)
    │                     ├─► webshell emulator  (/wp-admin/admin-ajax.php)
    │                     ├─► crawler trap       (/blog/…, effectively infinite)
    │                     └─► scanner-path traps (.env, wp-config.php, backup.sql…)
@@ -230,20 +230,54 @@ touching those containers, or Compose behaves as though they do not exist.
 
 **Persona** — do this before going live. The engine is public, so every
 observable constant shipped as source is a fingerprint: the SSH version string,
-the hostname and kernel pools, the shell history, the company name. Anyone with
-this repository can compare a live host against the defaults and identify it in
-a few lines — which is exactly why stock Cowrie is trivially detected.
+the hostname and kernel pools, the shell history, the company name on the
+website, even the byte sizes in `ls -la`. Anyone with this repository can
+compare a live host against the defaults and identify it in a few lines — which
+is exactly why stock Cowrie is trivially detected.
 
 ```bash
 ./deploy/generate-persona.sh
 docker compose up -d
 ```
 
-That writes a randomised, gitignored `persona/persona.json`, so two deployments
-of the same release are two different machines. `preflight.sh` warns while you
-are still running the published defaults. Keep a backup: an attacker who saw
-one machine last week and a different one on the same address this week has
-learnt something.
+That writes a randomised, gitignored `persona/persona.json` covering both
+halves of the machine — `shared/persona.py` for the protocol honeypots,
+`web/lib/persona.php` for the website — so the fake shell and the fake business
+site tell one consistent story, and two deployments of the same release are two
+different machines. `preflight.sh` warns while you are still running the
+published defaults.
+
+It also generates your **honeytokens**: the database password, API key and AWS
+key ID planted in the fake `.env`, `wp-config.php` and the homepage comments.
+Nothing accepts them, so if one surfaces in a credential-stuffing attempt or a
+paste dump, you know which box it was scraped from — an inference that only
+works while the values are yours alone.
+
+Keep a backup alongside your `.env`. An attacker who saw one machine last week
+and a different one on the same address this week has learnt something.
+
+**Scan-back** — `nmap`, `masscan`, `zmap` and `rustscan` in either fake shell
+ignore the target given and report on the attacker's own address, ending with
+what this honeypot has actually recorded about them:
+
+```
+Host script results:
+| clients-observed:
+|   address: 203.0.113.44
+|   first seen: 2026-07-26T11:04:12
+|   sessions logged: 7
+|   services probed: ssh, http, ftp
+|   credentials offered: 214
+|_  threat score: 47
+```
+
+Nothing is really scanned. The honeypot has no egress by design, and scanning
+back would be a live port scan aimed at a third party — frequently a victim's
+compromised box rather than the attacker's own machine — and would expose this
+host besides. The port list is fabricated deterministically from their address;
+only the observed block is real. `HONEYPOT_SCANBACK=0` turns it off, which you
+may want: a careful attacker reads that block and leaves, and the rest of the
+session goes with them.
 
 **GeoIP** — country and city on every attacker, and coordinates for the Kibana
 map. Needs a free [MaxMind](https://www.maxmind.com/en/geolite2/signup)

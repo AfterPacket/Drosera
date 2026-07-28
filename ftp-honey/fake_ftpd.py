@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, tarpit  # noqa: E402
+from shared import alerting, identity, persona, tarpit  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "2121"))
@@ -334,7 +334,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 await asyncio.sleep(TARPIT_DELAY)
             finally:
                 session.tarpit_seconds += time.monotonic() - started
-        banner = ("220 ProFTPD 1.3.5e Server (Debian) "
+        banner = (f"220 {persona.get('ftp_banner')} "
                   f"[::ffff:{ident.get('fake_lan_ip', '10.0.1.50')}]\r\n")
         writer.write(banner.encode())
         await writer.drain()

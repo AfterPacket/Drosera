@@ -25,6 +25,7 @@ services were stubs.
 | `alerting.py` | JSONL, fail2ban, webhook, Telegram, RFC 5424 syslog, and the asciinema v2 recorder. Bounded queue on a worker thread. Writes the `.meta.json` sidecar that tells `session-cam` a recording is finished |
 | `tarpit.py` | Slow-drain helpers for the asyncio services: byte-at-a-time PDU dripping and randomised per-response stalls, both deadline-bounded |
 | `fakeshell.py` | Simulated bash. Table-driven; executes nothing |
+| `persona.py` | Reads `/persona/persona.json`: the machine this deployment pretends to be. Banners, hostname/kernel/user pools, shell history, honeytoken credentials, fake-file sizes. Falls back to published defaults so a fresh clone runs |
 | `__init__.py` | Re-exports the public surface |
 
 ## `web/` — public site, webshell, tarpit
@@ -32,8 +33,10 @@ services were stubs.
 | File | Purpose |
 |---|---|
 | `lib/drosera.php` | Shared runtime: Redis client (phpredis with a raw RESP/fsockopen fallback), IP resolution, scoring, tarpit engine, logging. Outside the document root |
+| `lib/persona.php` | PHP half of the persona reader. Same `/persona/persona.json` the Python honeypots read, so the website and the fake shell agree about what machine this is |
 | `index.php` | Webshell UI (cmd/php/mysql/files/info/network) and the crawler trap. Outside the document root; reachable only via nginx's explicit mappings |
-| `public_site/index.html` | The fake Meridian Digital Solutions site, with honeytoken comments |
+| `public_site/index.html` | Template for the fake business site, with honeytoken comments. Never served directly — `/index.html` goes to the trap |
+| `public_site/home.php` | Renders `index.html` with this deployment's persona. What `/` actually serves |
 | `public_site/robots.txt` | Disallow list that doubles as scanner bait |
 | `public_site/sitemap.php` | Sitemap generated with the real serving host; entries lead into the crawler trap. Served at `/sitemap.xml` |
 | `public_site/wp-login.php` | WordPress 6.4.x login replica; records credentials |
@@ -116,6 +119,7 @@ honeypot container is a member of.
 |---|---|
 | `README.md` | Full deployment guide |
 | `bootstrap.sh` | Host preparation: storage, ufw, fail2ban, logrotate, watchdog, sysctl |
+| `generate-persona.sh` | Writes `persona/persona.json`: randomised banners, hostnames, kernels, company, credentials and file sizes. Run once before going live; the result is gitignored and worth backing up |
 | `watchdog.sh` | Cron fail-safe: prunes storage, restarts dead or unhealthy containers |
 | `logrotate-drosera` | Retention policy (90 days for event logs) |
 | `update-geoip.sh` | Fetches the MaxMind GeoLite2 database with the operator's credentials. Run from cron; MaxMind refreshes weekly |

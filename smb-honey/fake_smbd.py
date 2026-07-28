@@ -16,7 +16,7 @@ import time
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, tarpit  # noqa: E402
+from shared import alerting, identity, persona, tarpit  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 PORT_SMB = int(os.getenv("LISTEN_PORT_SMB", "4445"))
@@ -40,6 +40,7 @@ STATUS_LOGON_FAILURE = 0xC000006D
 SERVER_GUID = os.urandom(16)
 # Fixed so every captured NTLMv2 line is crackable against a known challenge.
 SERVER_CHALLENGE = bytes.fromhex(os.getenv("SMB_NTLM_CHALLENGE", "1122334455667788"))
+NTLM_TARGET = str(persona.get("company_slug")).upper()[:15] or "WORKGROUP"
 
 SHARES = {"IPC$": 0x02, "C$": 0x01, "ADMIN$": 0x01, "SharedDocs": 0x01, "backups": 0x01}
 
@@ -90,7 +91,10 @@ def negotiate_response(message_id: int) -> bytes:
 
 
 def ntlm_challenge_blob() -> bytes:
-    target = "MERIDIAN".encode("utf-16le")
+    # NTLM target name -- the Windows domain this box claims to be joined to.
+    # Enumeration tools print it, so it belongs to the persona like every other
+    # observable name.
+    target = NTLM_TARGET.encode("utf-16le")
     payload_offset = 56
     return (
         b"NTLMSSP\x00"

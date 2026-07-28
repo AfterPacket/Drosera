@@ -81,16 +81,17 @@ if (preg_match('#wp-config\.php#', $path)) {
 }
 
 if (preg_match('#^/\.aws/credentials#', $path)) {
-    serve_plain("[default]\naws_access_key_id = AKIA4MRDN2QX7VLPWZ3T\n"
+    serve_plain("[default]\naws_access_key_id = " . FAKE_AWS_KEY_ID . "\n"
         . "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY\n"
-        . "region = us-east-2\n\n[staging]\naws_access_key_id = AKIA4MRDN2QXHK9DLM2P\n"
+        . "region = us-east-2\n\n[staging]\naws_access_key_id = "
+        . FAKE_AWS_KEY_ID_STAGING . "\n"
         . "aws_secret_access_key = 8Qz1nR4vT7yU0iOpAsDfGhJkLzXcVbNm3456789A\n"
         . "region = us-west-1\n");
 }
 
 if (preg_match('#^/\.ssh/id_rsa#', $path)) {
     serve_plain("-----BEGIN OPENSSH PRIVATE KEY-----\n"
-        . chunk_split(base64_encode(str_repeat('meridian-deploy-key-placeholder-', 48)), 70, "\n")
+        . chunk_split(base64_encode(str_repeat(COMPANY_SLUG . '-deploy-key-placeholder-', 48)), 70, "\n")
         . "-----END OPENSSH PRIVATE KEY-----\n");
 }
 
@@ -192,7 +193,7 @@ function serve_sql_dump_tarpit(string $ip, string $filename): void
     header('X-Accel-Buffering: no');
 
     echo "-- MySQL dump 10.13  Distrib 5.7.38, for Linux (x86_64)\n--\n"
-        . "-- Host: localhost    Database: meridian_prod\n"
+        . "-- Host: localhost    Database: " . FAKE_DB_NAME . "\n"
         . "-- ------------------------------------------------------\n"
         . "-- Server version\t" . FAKE_MYSQL_VERSION . "\n\n"
         . "/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n"
@@ -218,7 +219,7 @@ function serve_sql_dump_tarpit(string $ip, string $filename): void
     while (!connection_aborted() && time() < $deadline) {
         $name = $surnames[array_rand($surnames)] . $row;
         echo sprintf(
-            "INSERT INTO `wp_users` VALUES (%d,'%s','\$P\$B%s','%s@meridiandigital.example');\n",
+            "INSERT INTO `wp_users` VALUES (%d,'%s','\$P\$B%s','%s@" . COMPANY_DOMAIN . "');\n",
             $row, $name, substr(md5((string)$row), 0, 30), $name
         );
         @flush();
@@ -238,19 +239,22 @@ function serve_sql_dump_tarpit(string $ip, string $filename): void
 
 function fake_env_file(array $identity): string
 {
-    return "APP_NAME=\"Meridian Digital Solutions\"\nAPP_ENV=production\n"
-        . "APP_KEY=base64:sk-mrd-test-4f8a2c1b9e3d7f6a\nAPP_DEBUG=false\n"
-        . "APP_URL=https://" . (string)($_SERVER['HTTP_HOST'] ?? 'meridiandigital.example') . "\n\n"
+    // Every credential here is a honeytoken, and a honeytoken shared with every
+    // other deployment tells you nothing when it surfaces. Persona-derived.
+    return "APP_NAME=\"" . COMPANY_NAME . "\"\nAPP_ENV=production\n"
+        . "APP_KEY=base64:" . FAKE_HONEYTOKEN_KEY . "\nAPP_DEBUG=false\n"
+        . "APP_URL=https://" . (string)($_SERVER['HTTP_HOST'] ?? COMPANY_DOMAIN) . "\n\n"
         . "LOG_CHANNEL=stack\nLOG_LEVEL=error\n\n"
         . "DB_CONNECTION=mysql\nDB_HOST=127.0.0.1\nDB_PORT=3306\n"
-        . "DB_DATABASE=meridian_prod\nDB_USERNAME=devuser\nDB_PASSWORD=DevPass2024!\n\n"
+        . "DB_DATABASE=" . FAKE_DB_NAME . "\nDB_USERNAME=" . FAKE_DB_USER
+        . "\nDB_PASSWORD=" . FAKE_DB_PASSWORD . "\n\n"
         . "REDIS_HOST=127.0.0.1\nREDIS_PASSWORD=null\nREDIS_PORT=6379\n\n"
         . "MAIL_MAILER=smtp\nMAIL_HOST=mail." . ($identity['fake_hostname'] ?? 'srv-01')
-        . "\nMAIL_PORT=587\nMAIL_USERNAME=noreply@meridiandigital.example\n"
-        . "MAIL_PASSWORD=Staging#Pass99\nMAIL_ENCRYPTION=tls\n\n"
-        . "AWS_ACCESS_KEY_ID=AKIA4MRDN2QX7VLPWZ3T\n"
+        . "\nMAIL_PORT=587\nMAIL_USERNAME=noreply@" . COMPANY_DOMAIN . "\n"
+        . "MAIL_PASSWORD=" . FAKE_MAIL_PASSWORD . "\nMAIL_ENCRYPTION=tls\n\n"
+        . "AWS_ACCESS_KEY_ID=" . FAKE_AWS_KEY_ID . "\n"
         . "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY\n"
-        . "AWS_DEFAULT_REGION=us-east-2\nAWS_BUCKET=meridian-prod-assets\n";
+        . "AWS_DEFAULT_REGION=us-east-2\nAWS_BUCKET=" . COMPANY_SLUG . "-prod-assets\n";
 }
 
 function fake_git_config(): string
@@ -258,29 +262,30 @@ function fake_git_config(): string
     return "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
         . "\tlogallrefupdates = true\n"
         . "[remote \"origin\"]\n"
-        . "\turl = https://deploy:ghp_8Kx2mN9pQ4rT7yU1iO3pAsDfGhJkLzXcVbNm@git.meridiandigital.example/web/meridian-site.git\n"
+        . "\turl = https://deploy:ghp_8Kx2mN9pQ4rT7yU1iO3pAsDfGhJkLzXcVbNm@git."
+        . COMPANY_DOMAIN . "/web/" . COMPANY_SLUG . "-site.git\n"
         . "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
         . "[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n"
-        . "[user]\n\tname = Deploy Bot\n\temail = deploy@meridiandigital.example\n";
+        . "[user]\n\tname = Deploy Bot\n\temail = deploy@" . COMPANY_DOMAIN . "\n";
 }
 
 function fake_wp_config_file(array $identity): string
 {
     return "<?php\n/**\n * The base configuration for WordPress\n */\n\n"
-        . "define( 'DB_NAME', 'meridian_prod' );\n"
-        . "define( 'DB_USER', 'devuser' );\n"
-        . "define( 'DB_PASSWORD', 'DevPass2024!' );\n"
+        . "define( 'DB_NAME', '" . FAKE_DB_NAME . "' );\n"
+        . "define( 'DB_USER', '" . FAKE_DB_USER . "' );\n"
+        . "define( 'DB_PASSWORD', '" . FAKE_DB_PASSWORD . "' );\n"
         . "define( 'DB_HOST', '127.0.0.1:3306' );\n"
         . "define( 'DB_CHARSET', 'utf8mb4' );\n"
         . "define( 'DB_COLLATE', '' );\n\n"
-        . "define( 'AUTH_KEY',         'sk-mrd-test-4f8a2c1b9e3d7f6a' );\n"
-        . "define( 'SECURE_AUTH_KEY',  'Staging#Pass99-secure-auth-salt' );\n"
-        . "define( 'LOGGED_IN_KEY',    'mrd-logged-in-2024-key-x9f2' );\n"
-        . "define( 'NONCE_KEY',        'mrd-nonce-2024-key-b7k1' );\n\n"
+        . "define( 'AUTH_KEY',         '" . FAKE_HONEYTOKEN_KEY . "' );\n"
+        . "define( 'SECURE_AUTH_KEY',  '" . FAKE_MAIL_PASSWORD . "-secure-auth-salt' );\n"
+        . "define( 'LOGGED_IN_KEY',    '" . COMPANY_SLUG . "-logged-in-2024-key-x9f2' );\n"
+        . "define( 'NONCE_KEY',        '" . COMPANY_SLUG . "-nonce-2024-key-b7k1' );\n\n"
         . "\$table_prefix = 'wp_';\n\n"
         . "define( 'WP_DEBUG', false );\n"
         . "define( 'FS_METHOD', 'direct' );\n\n"
-        . "/* Staging box: 10.0.1.47 admin:Staging#Pass99 */\n\n"
+        . "/* Staging box: " . FAKE_STAGING_IP . " admin:" . FAKE_MAIL_PASSWORD . " */\n\n"
         . "if ( ! defined( 'ABSPATH' ) ) {\n"
         . "\tdefine( 'ABSPATH', __DIR__ . '/' );\n}\n\n"
         . "require_once ABSPATH . 'wp-settings.php';\n";
@@ -294,7 +299,7 @@ function fake_phpinfo_page(array $identity): string
         'System' => "Linux {$hostname} {$kernel} #1 SMP Debian x86_64",
         'Build Date' => 'Nov  2 2023 12:41:22',
         'Server API' => 'FPM/FastCGI',
-        'Loaded Configuration File' => '/etc/php/7.4/fpm/php.ini',
+        'Loaded Configuration File' => '/etc/php/' . FAKE_PHP_SERIES . '/fpm/php.ini',
         'PHP API' => '20190902',
         'Thread Safety' => 'disabled',
         'IPv6 Support' => 'enabled',
@@ -303,7 +308,7 @@ function fake_phpinfo_page(array $identity): string
         'allow_url_fopen' => 'On',
         'open_basedir' => 'no value',
         'upload_max_filesize' => '20M',
-        'DB_PASSWORD' => 'DevPass2024!',
+        'DB_PASSWORD' => FAKE_DB_PASSWORD,
     ];
     $body = '';
     foreach ($rows as $key => $value) {
@@ -374,7 +379,7 @@ function render_wordpress_404(): void
     header('X-Powered-By: PHP/' . FAKE_PHP_VERSION);
     echo '<!DOCTYPE html><html lang="en-US"><head><meta charset="UTF-8">'
         . '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        . '<title>Page not found &#8211; Meridian Digital Solutions</title>'
+        . '<title>Page not found &#8211; ' . sb_html(COMPANY_NAME) . '</title>'
         . '<meta name="generator" content="WordPress 6.4.3">'
         . '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
         . 'max-width:700px;margin:0 auto;padding:3rem 2rem;color:#1a2744;line-height:1.6}'
@@ -388,6 +393,6 @@ function render_wordpress_404(): void
         . '<form role="search" method="get" action="/">'
         . '<input type="search" name="s" placeholder="Search &hellip;">'
         . '<input type="submit" value="Search"></form>'
-        . '<p style="margin-top:2rem"><a href="/">&larr; Back to Meridian Digital Solutions</a></p>'
+        . '<p style="margin-top:2rem"><a href="/">&larr; Back to ' . sb_html(COMPANY_NAME) . '</a></p>'
         . '</body></html>';
 }

@@ -70,7 +70,7 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'POST') {
         . "your email address instead.";
 }
 
-$host = sb_html((string)($_SERVER['HTTP_HOST'] ?? 'meridiandigital.example'));
+$host = sb_html((string)($_SERVER['HTTP_HOST'] ?? COMPANY_DOMAIN));
 
 header('Content-Type: text/html; charset=UTF-8');
 header('X-Powered-By: PHP/' . FAKE_PHP_VERSION);
@@ -80,7 +80,7 @@ header('X-Frame-Options: SAMEORIGIN');
 <html lang="en-US">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-<title>Log In &lsaquo; Meridian Digital Solutions &#8212; WordPress</title>
+<title>Log In &lsaquo; <?= sb_html(COMPANY_NAME) ?> &#8212; WordPress</title>
 <meta name='robots' content='max-image-preview:large, noindex, noarchive' />
 <meta name="viewport" content="width=device-width" />
 <link rel='stylesheet' id='dashicons-css'  href='/wp-includes/css/dashicons.min.css?ver=6.4.3' media='all' />
@@ -139,7 +139,7 @@ body.login{background:#f0f0f1;color:#3c434a;font-family:-apple-system,BlinkMacSy
 			<a href="/wp-login.php?action=lostpassword">Lost your password?</a>
 		</p>
 		<p id="backtoblog">
-			<a href="/">&larr; Go to Meridian Digital Solutions</a>
+			<a href="/">&larr; Go to <?= sb_html(COMPANY_NAME) ?></a>
 		</p>
 	</div>
 	<script>

@@ -14,13 +14,15 @@ import sys
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity  # noqa: E402
+from shared import alerting, identity, persona  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "33306"))
 SERVICE = "mysql"
 
-SERVER_VERSION = os.getenv("FAKE_MYSQL_VERSION", "5.7.38-0ubuntu0.22.04.1")
+# Must match what the web shell's fake MySQL console reports; both read the
+# deployment's persona so the two halves tell the same story.
+SERVER_VERSION = os.getenv("FAKE_MYSQL_VERSION") or persona.get("mysql_version")
 MAX_SLEEP_SECONDS = float(os.getenv("MYSQL_MAX_SLEEP", "10"))
 IDLE_TIMEOUT = int(os.getenv("MYSQL_IDLE_TIMEOUT", "300"))
 MAX_PACKET = 1 << 20
@@ -83,7 +85,7 @@ def eof_packet(sequence: int) -> bytes:
 
 def column_def(name: str, table: str = "", col_type: int = TYPE_VAR_STRING,
                length: int = 255) -> bytes:
-    return (lenenc_str("def") + lenenc_str("wordpress") + lenenc_str(table)
+    return (lenenc_str("def") + lenenc_str(DB_NAME) + lenenc_str(table)
             + lenenc_str(table) + lenenc_str(name) + lenenc_str(name)
             + b"\x0c" + struct.pack("<H", 33) + struct.pack("<I", length)
             + bytes([col_type]) + struct.pack("<H", 0) + b"\x00" + b"\x00\x00")
@@ -136,12 +138,23 @@ FAKE_TABLES = [
     "wp_terms", "wp_usermeta", "wp_users",
 ]
 
+_DOMAIN = persona.get("company_domain")
+# Same schema and login the web shell's fake MySQL console reports. These used
+# to be hardcoded to "wordpress"/"wp_user" here and something else there, which
+# is precisely the seam an attacker probing both looks for.
+DB_NAME = persona.get("db_name")
+DB_USER = persona.get("db_user")
+# The staff account comes from the same pool the SSH honeypot uses, so a name
+# harvested here belongs to a user that "exists" on the rest of the machine.
+_STAFF = (persona.pool("user_pool") or [["jmarsh"]])[0][0]
+_STAFF_DISPLAY = f"{_STAFF[0].upper()}. {_STAFF[1:].capitalize()}"
+
 FAKE_USERS = [
-    (1, "admin", "$P$BqZ7vK2nR8xLmYcD4wF6tG9hJ1sA0e/", "admin@meridiandigital.example",
+    (1, "admin", "$P$BqZ7vK2nR8xLmYcD4wF6tG9hJ1sA0e/", f"admin@{_DOMAIN}",
      "Site Administrator"),
-    (2, "jmarsh", "$P$B4kL9mN2pQ7rS5tU8vW1xY3zA6bC0d.", "jmarsh@meridiandigital.example",
-     "Jordan Marsh"),
-    (3, "editor", "$P$BvX2cV5bN8mQ1wE4rT7yU0iO3pA6sD/", "editor@meridiandigital.example",
+    (2, _STAFF, "$P$B4kL9mN2pQ7rS5tU8vW1xY3zA6bC0d.", f"{_STAFF}@{_DOMAIN}",
+     _STAFF_DISPLAY),
+    (3, "editor", "$P$BvX2cV5bN8mQ1wE4rT7yU0iO3pA6sD/", f"editor@{_DOMAIN}",
      "Content Editor"),
 ]
 
@@ -169,7 +182,7 @@ async def answer_query(ip: str, sql: str) -> bytes:
     if XPCMD_RE.search(low):
         identity.score_named_event(ip, "SQLI_OOB", payload=stripped[:300], service=SERVICE)
         return err_packet(1, 1305, "42000",
-                          "PROCEDURE wordpress.xp_cmdshell does not exist")
+                          f"PROCEDURE {DB_NAME}.xp_cmdshell does not exist")
 
     match = SLEEP_RE.search(low)
     if match:
@@ -195,15 +208,15 @@ async def answer_query(ip: str, sql: str) -> bytes:
     if low.startswith("show databases"):
         return result_set(["Database"],
                           [["information_schema"], ["mysql"], ["performance_schema"],
-                           ["sys"], ["wordpress"]], 1)
+                           ["sys"], [DB_NAME]], 1)
 
     if low.startswith("show tables"):
-        return result_set(["Tables_in_wordpress"], [[t] for t in FAKE_TABLES], 1)
+        return result_set([f"Tables_in_{DB_NAME}"], [[t] for t in FAKE_TABLES], 1)
 
     if low.startswith("show grants"):
         return result_set(
-            ["Grants for wp_user@localhost"],
-            [["GRANT ALL PRIVILEGES ON `wordpress`.* TO 'wp_user'@'localhost'"]], 1)
+            [f"Grants for {DB_USER}@localhost"],
+            [[f"GRANT ALL PRIVILEGES ON `{DB_NAME}`.* TO '{DB_USER}'@'localhost'"]], 1)
 
     if low.startswith("grant "):
         return ok_packet(1)
@@ -221,11 +234,11 @@ async def answer_query(ip: str, sql: str) -> bytes:
     if "information_schema.tables" in low:
         identity.score_named_event(ip, "RECON_LS", payload=stripped[:300], service=SERVICE)
         return result_set(["table_schema", "table_name"],
-                          [["wordpress", t] for t in FAKE_TABLES], 1)
+                          [[DB_NAME, t] for t in FAKE_TABLES], 1)
 
     if "information_schema.schemata" in low:
         return result_set(["schema_name"],
-                          [["information_schema"], ["mysql"], ["wordpress"]], 1)
+                          [["information_schema"], ["mysql"], [DB_NAME]], 1)
 
     if "wp_users" in low:
         identity.score_named_event(ip, "SQLI_BASIC", payload=stripped[:300], service=SERVICE)
@@ -237,10 +250,10 @@ async def answer_query(ip: str, sql: str) -> bytes:
         return result_set(["version()"], [[SERVER_VERSION]], 1)
 
     if low.startswith("select") and ("user()" in low or "current_user" in low):
-        return result_set(["user()"], [["wp_user@localhost"]], 1)
+        return result_set(["user()"], [[f"{DB_USER}@localhost"]], 1)
 
     if low.startswith("select") and "database()" in low:
-        return result_set(["database()"], [["wordpress"]], 1)
+        return result_set(["database()"], [[DB_NAME]], 1)
 
     if low.startswith("select"):
         return result_set(["result"], [["1"]], 1)

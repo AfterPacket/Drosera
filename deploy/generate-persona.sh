@@ -74,6 +74,37 @@ WORDS = ["Meridian", "Northgate", "Clearwater", "Ironbridge", "Blackwood",
 SECTORS = ["Digital Solutions", "Systems Group", "Technologies", "Consulting",
            "Data Services", "IT Partners", "Networks", "Managed Services"]
 
+STREETS = ["Commerce Drive", "Lakeview Parkway", "Foundry Street", "Kingsway",
+           "Aldgate Road", "Riverside Avenue", "Beacon Court", "Mill Lane",
+           "Cedar Boulevard", "Quarry Road", "Innovation Way", "Hartley Street"]
+CITIES = [("Austin", "TX", "787"), ("Denver", "CO", "802"), ("Raleigh", "NC", "276"),
+          ("Portland", "OR", "972"), ("Columbus", "OH", "432"), ("Tampa", "FL", "336"),
+          ("Boise", "ID", "837"), ("Madison", "WI", "537")]
+
+DB_USERS = ["devuser", "wpuser", "appuser", "webadmin", "deploy", "svc_web"]
+DB_SUFFIX = ["_prod", "_live", "_db", "_main", "_wp"]
+
+# Password shapes that look like something a hurried admin actually typed.
+PW_WORDS = ["Summer", "Winter", "Staging", "Deploy", "Backup", "Server",
+            "Admin", "Launch", "Secure", "Prod"]
+PW_SYMBOLS = ["!", "#", "$", "@", "%", "&"]
+
+DOCUMENTS = ["strategic-plan-{y}.pdf", "invoice-template.xlsx", "org-chart.pdf",
+             "onboarding-checklist.docx", "q{q}-forecast.xlsx", "msa-signed.pdf",
+             "network-diagram-{y}.png", "pricing-sheet-{y}.pdf",
+             "incident-postmortem.docx", "vendor-list.csv"]
+
+
+def password():
+    return "{}{}{}{}".format(
+        rng.choice(PW_WORDS), rng.randint(2020, 2025),
+        rng.choice(PW_SYMBOLS), rng.choice(["", str(rng.randint(1, 99))]),
+    )
+
+
+def token(alphabet, length):
+    return "".join(rng.choice(alphabet) for _ in range(length))
+
 def hostname():
     qualifier = rng.choice(QUALIFIERS)
     role = rng.choice(ROLES)
@@ -91,9 +122,45 @@ for surname in rng.sample(LAST, rng.randint(5, 8)):
     name = rng.choice(FIRST) + surname
     users.append([name, f"/home/{name}"])
 
-company = f"{rng.choice(WORDS)} {rng.choice(SECTORS)}"
+word = rng.choice(WORDS)
+sector = rng.choice(SECTORS)
+company = f"{word} {sector}"
+company_short = f"{word} {sector.split()[0]}"
+slug = word.lower()
+domain = f"{company_short.replace(' ', '').lower()}.example"
+
 php = rng.choice(PHP)
 db = rng.choice(MYSQL)
+
+db_user = rng.choice(DB_USERS)
+db_name = slug + rng.choice(DB_SUFFIX)
+db_password = password()
+mail_password = password()
+
+# Honeytokens. Planted in the fake .env, wp-config and the homepage comments;
+# nothing accepts them. Uniqueness is the whole value: a token that turns up in
+# a paste dump or a credential-stuffing run names the box it was scraped from.
+abbrev = (word[0] + "".join(c for c in word[1:].lower() if c not in "aeiou"))[:3].lower()
+honeytoken = f"sk-{abbrev}-test-{token('0123456789abcdef', 16)}"
+aws_key = "AKIA" + token("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16)
+aws_key_staging = "AKIA" + token("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16)
+
+city, state, zip3 = rng.choice(CITIES)
+address = "{} {}, Suite {}, {}, {} {}{:02d}".format(
+    rng.randint(100, 4999), rng.choice(STREETS), rng.randint(100, 940),
+    city, state, zip3, rng.randint(1, 99),
+)
+
+# The uploads directory and the documents in it. Dated consistently: a file
+# called strategic-plan-2024.pdf sitting under uploads/2019/03 is a tell.
+upload_year = rng.randint(2022, 2025)
+upload_month = "{:02d}".format(rng.randint(1, 12))
+documents = [
+    doc.format(y=upload_year, q=rng.randint(1, 4))
+    for doc in rng.sample(DOCUMENTS, rng.randint(1, 3))
+]
+backup_name = "db-backup-{}-{}-{:02d}.sql.gz".format(
+    upload_year, upload_month, rng.randint(1, 28))
 
 # Shell history is a strong tell: an attacker who sees the same eight commands
 # on two unrelated hosts knows what both of them are.
@@ -104,7 +171,7 @@ history_pool = [
     "systemctl status nginx", "sudo apt-get update", "sudo apt-get upgrade",
     "vim wp-config.php", "nano /etc/nginx/nginx.conf", "crontab -l",
     "docker ps", "git pull", "netstat -tulpn", "journalctl -xe",
-    f"mysql -u devuser -p {rng.choice(['app', 'wp', 'prod', 'main'])}_db",
+    f"mysql -u {db_user} -p {db_name}",
     "certbot renew --dry-run", "du -sh /var/log/*",
 ]
 
@@ -121,6 +188,23 @@ persona = {
     "php_version": php,
     "mysql_version": db,
     "company_name": company,
+    "company_short": company_short,
+    "company_domain": domain,
+    "company_slug": slug,
+    "company_address": address,
+    "company_founded": rng.randint(2009, 2019),
+    "db_name": db_name,
+    "db_user": db_user,
+    "db_password": db_password,
+    "honeytoken_key": honeytoken,
+    "aws_access_key_id": aws_key,
+    "aws_access_key_id_staging": aws_key_staging,
+    "mail_password": mail_password,
+    "staging_ip": f"10.0.{rng.randint(0, 40)}.{rng.randint(2, 250)}",
+    "document_pool": documents,
+    "backup_name": backup_name,
+    "upload_path": [str(upload_year), upload_month],
+    "fs_seed": rng.randrange(1, 2 ** 31),
     "hostname_pool": sorted(hostnames),
     "kernel_pool": sorted(kernels),
     "os_pool": sorted(distros),
@@ -138,13 +222,22 @@ persona = {
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(persona, handle, indent=2)
 
-print(f"  company   {persona['company_name']}")
+print(f"  company   {persona['company_name']} ({persona['company_domain']})")
 print(f"  ssh       {persona['ssh_banner']}")
-print(f"  http      {persona['http_server']}")
+print(f"  http      {persona['http_server']} / PHP {persona['php_version']}")
+print(f"  database  {persona['db_user']}@{persona['db_name']}")
 print(f"  hostnames {', '.join(persona['hostname_pool'][:4])} ...")
+print(f"  tokens    {persona['honeytoken_key']}")
+print(f"            {persona['aws_access_key_id']}")
 PY
 
 chmod 0644 "$TARGET"
 echo
 echo "Wrote ${TARGET} (gitignored)."
+echo
+echo "The tokens above are honeytokens: planted in the fake .env, wp-config and"
+echo "the homepage comments, accepted by nothing. If one ever surfaces in a"
+echo "credential dump or a login attempt elsewhere, it was scraped from here."
+echo "Back this file up -- regenerating changes the machine attackers see."
+echo
 echo "Restart the services to apply:  docker compose up -d"

@@ -150,7 +150,14 @@ def _build_filesystem() -> Dict[str, Any]:
         return node
 
     def f(size, mode="-rw-r--r--"):
-        return {"type": "file", "mode": mode, "size": size}
+        # Sizes are scaled by a per-deployment factor. Byte-identical `ls -la`
+        # output across two hosts is as good a fingerprint as a banner, and the
+        # numbers below are published in this repository.
+        return {"type": "file", "mode": mode, "size": persona.jitter(size, str(size))}
+
+    documents = persona.pool("document_pool") or ["strategic-plan-2024.pdf"]
+    year, month = (persona.pool("upload_path") + ["2024", "01"])[:2]
+    backup = persona.get("backup_name")
 
     return {
         "type": "dir",
@@ -171,9 +178,10 @@ def _build_filesystem() -> Dict[str, Any]:
                         ".htaccess": f(235),
                         "wp-content": d(**{
                             "uploads": d(**{
-                                "2024": d(**{
-                                    "01": d(**{
-                                        "strategic-plan-2024.pdf": f(284918),
+                                year: d(**{
+                                    month: d(**{
+                                        name: f(284918 + 9137 * index)
+                                        for index, name in enumerate(documents)
                                     }),
                                 }),
                             }),
@@ -183,7 +191,7 @@ def _build_filesystem() -> Dict[str, Any]:
                     }),
                 }),
                 "log": d(**{"syslog": f(1048576), "auth.log": f(204800)}),
-                "backups": d(**{"db-backup-2024-01-14.sql.gz": f(48211904)}),
+                "backups": d(**{backup: f(48211904)}),
             }),
             "home": d(),
             "root": d(**{".bash_history": f(1841), ".ssh": d(**{"id_rsa": f(1679, "-rw-------")})}),

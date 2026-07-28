@@ -12,7 +12,7 @@ import time
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, tarpit  # noqa: E402
+from shared import alerting, identity, persona, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -170,7 +170,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
         motd = (f"Welcome to {ident.get('fake_os', 'Ubuntu 22.04.3 LTS')} "
                 f"(GNU/Linux {ident.get('fake_kernel', '5.15.0-86-generic')} x86_64)\r\n\r\n"
-                f"Last login: Mon Jan 15 08:14:02 UTC 2024 from 10.0.1.9 on pts/0\r\n")
+                f"Last login: {persona.get('last_login_at')} "
+                f"from {persona.get('last_login_from')} on pts/0\r\n")
         writer.write(motd.encode())
         await writer.drain()
         recorder.write_output(motd)

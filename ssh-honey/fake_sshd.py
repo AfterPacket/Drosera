@@ -265,13 +265,16 @@ def interactive_session(channel, ip: str, ident: dict, username: str,
     shell = FakeShell(ip, ident, score=identity.score_named_event,
                       service=SERVICE, username=username)
 
+    # The last-login line is per-deployment: a fixed timestamp and source IP
+    # published in this repository would identify every host still using them.
     motd = (
         f"Welcome to {ident.get('fake_os', 'Ubuntu 22.04.3 LTS')} "
         f"(GNU/Linux {ident.get('fake_kernel', '5.15.0-86-generic')} x86_64)\r\n\r\n"
         " * Documentation:  https://help.ubuntu.com\r\n"
         " * Management:     https://landscape.canonical.com\r\n"
         " * Support:        https://ubuntu.com/advantage\r\n\r\n"
-        "Last login: Mon Jan 15 08:14:02 2024 from 10.0.1.9\r\n"
+        f"Last login: {persona.get('last_login_at')} "
+        f"from {persona.get('last_login_from')}\r\n"
     )
     channel.sendall(motd.encode())
     recorder.write_output(motd)

@@ -98,7 +98,7 @@ header('X-Powered-By: PHP/' . FAKE_PHP_VERSION);
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Thank You &ndash; Meridian Digital Solutions</title>
+<title>Thank You &ndash; <?= sb_html(COMPANY_NAME) ?></title>
 <meta name="generator" content="WordPress 6.4.3">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
@@ -121,7 +121,7 @@ footer{border-top:1px solid #e2e6ee;margin-top:4rem;padding:2rem;text-align:cent
 </head>
 <body>
 <header>
-  <div class="logo">Meridian<span>Digital</span></div>
+  <div class="logo"><?= sb_company_logo() ?></div>
   <nav>
     <a href="/">Home</a><a href="/#services">Services</a><a href="/#about">About</a>
     <a href="/blog/">Blog</a><a href="/#contact">Contact</a>
@@ -131,13 +131,13 @@ footer{border-top:1px solid #e2e6ee;margin-top:4rem;padding:2rem;text-align:cent
   <div class="card">
     <h1>Thank you, <?= sb_html($displayName) ?>!</h1>
     <p>We&rsquo;ve received your message and a member of our team will be in touch within one business day.</p>
-    <p>Your reference number is <span class="ref">MRD-<?= sb_html(strtoupper(substr(md5($ip . gmdate('Ymd')), 0, 8))) ?></span>. Please quote it if you need to follow up.</p>
+    <p>Your reference number is <span class="ref"><?= sb_html(sb_company_ref()) ?>-<?= sb_html(strtoupper(substr(md5($ip . gmdate('Ymd')), 0, 8))) ?></span>. Please quote it if you need to follow up.</p>
     <p>If your enquiry is urgent, call us on <strong>(512) 555-0147</strong> during business hours (Mon&ndash;Fri, 9am&ndash;6pm CT).</p>
     <a class="btn" href="/">&larr; Back to homepage</a>
   </div>
 </main>
 <footer>
-  &copy; 2019&ndash;2024 Meridian Digital Solutions LLC &middot; 847 Commerce Drive, Suite 210, Austin, TX 78701
+  &copy; <?= COMPANY_FOUNDED ?>&ndash;2024 <?= sb_html(COMPANY_NAME) ?> LLC &middot; <?= sb_html(COMPANY_ADDRESS) ?>
 </footer>
 </body>
 </html>

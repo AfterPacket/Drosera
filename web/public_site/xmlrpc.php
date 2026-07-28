@@ -133,7 +133,7 @@ if (strcasecmp($methodName, 'system.listMethods') === 0) {
 header('Content-Type: text/xml; charset=UTF-8');
 header('X-Powered-By: PHP/' . FAKE_PHP_VERSION);
 echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
-    . '<methodResponse><params><param><value><string>Meridian Digital</string>'
+    . '<methodResponse><params><param><value><string>' . sb_html(COMPANY_SHORT) . '</string>'
     . '</value></param></params></methodResponse>';
 exit;
 
