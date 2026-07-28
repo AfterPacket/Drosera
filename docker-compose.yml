@@ -180,6 +180,7 @@ services:
       TARPIT_MAX_SECONDS: ${TARPIT_MAX_SECONDS:-900}
       CAM_WEB_IDLE_SECONDS: ${CAM_WEB_IDLE_SECONDS:-900}
       RICKROLL_URL: ${RICKROLL_URL:-https://www.youtube.com/watch?v=dQw4w9WgXcQ}
+      RICKROLL_FILE: /rickroll.txt
       SERVER_NAME: ${DOMAIN:-localhost}
     ports:
       - "80:8080"
@@ -196,7 +197,13 @@ services:
       # and nothing else of ours, and that is worth keeping. Without this mount
       # sb_rickroll() cannot find the art and quietly falls back to the 302 --
       # deploy/preflight.sh asserts the mount for that reason.
-      - ./shared/rickroll.txt:/var/www/html/lib/rickroll.txt:ro
+      #
+      # Mounted at the root, NOT under /var/www/html. That path is itself a
+      # read-only bind mount, and Docker cannot create a mountpoint inside one:
+      # the container fails to start with "make mountpoint: read-only file
+      # system". A top-level path is on the container's own rootfs, where the
+      # mountpoint can still be created -- the same reason /persona works.
+      - ./shared/rickroll.txt:/rickroll.txt:ro
     tmpfs:
       # nginx and php-fpm scratch space. noexec matters most here: this is the
       # internet-facing container and the only writable path it has.

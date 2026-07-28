@@ -188,7 +188,7 @@ if have docker; then
     # including the scanners that ignore redirects and are the reason the text
     # payload exists. Checked here because the logs will never tell you.
     if docker compose config 2>/dev/null \
-        | grep -q '/var/www/html/lib/rickroll.txt'; then
+        | grep -q 'shared/rickroll.txt:/rickroll.txt'; then
         pass "rickroll.txt mounted into web"
     else
         fail "shared/rickroll.txt is not mounted into the web container; \

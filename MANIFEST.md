@@ -28,7 +28,7 @@ services were stubs.
 | `loot.py` | Content-addressed quarantine for dropped payloads. Files land 0400 under `storage/loot/`, named by SHA-256 so an attacker never influences a path; per-file and total size caps; deduplicated by hash with a bounded sighting list. Nothing here opens or interprets a sample |
 | `persona.py` | Reads `/persona/persona.json`: the machine this deployment pretends to be. Banners, hostname/kernel/user pools, shell history, honeytoken credentials, fake-file sizes. Falls back to published defaults so a fresh clone runs |
 | `rickroll.py` | Loads `rickroll.txt` for the SSH and telnet ban paths, which drip it through `tarpit.drip`/`drip_sync` rather than sending it at once. `HONEYPOT_RICKROLL=0` restores the silent drop |
-| `rickroll.txt` | The art itself, read by all three tiers. LF in the repository; converted to CRLF for the terminal services because a socket has no line discipline. Bind-mounted into the web container as `lib/rickroll.txt` — `web/` is the only thing that container gets, so this one file is mounted explicitly and `deploy/preflight.sh` asserts it |
+| `rickroll.txt` | The art itself, read by all three tiers. LF in the repository; converted to CRLF for the terminal services because a socket has no line discipline. Bind-mounted into the web container at `/rickroll.txt` — `web/` is the only thing that container gets, so this one file is mounted explicitly, at the root rather than under the read-only `/var/www/html` mount. `deploy/preflight.sh` asserts it |
 | `__init__.py` | Re-exports the public surface |
 
 ## `web/` — public site, webshell, tarpit

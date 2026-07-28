@@ -32,12 +32,15 @@ define('RICKROLL_ENABLED', !in_array(
     strtolower(trim((string)getenv('HONEYPOT_RICKROLL'))),
     ['0', 'false', 'no', 'off'], true));
 define('RICKROLL_DRIP_SECONDS', (float)(getenv('HONEYPOT_RICKROLL_DRIP_SECONDS') ?: 120));
-// shared/rickroll.txt, bind-mounted in beside this file. The web container
-// mounts ./web and not ./shared, so this one file is mounted explicitly --
-// see the `web` service in docker-compose.yml. Absent the mount the redirect
-// still happens, which is why its absence is a preflight check rather than
-// something you would notice in the logs.
-define('RICKROLL_FILE', __DIR__ . '/rickroll.txt');
+// shared/rickroll.txt, bind-mounted into this container. It cannot live beside
+// this file: /var/www/html is a read-only bind mount and Docker cannot create a
+// mountpoint inside one, so the container would refuse to start. It is mounted
+// at the root instead -- see the `web` service in docker-compose.yml.
+//
+// The __DIR__ fallback is for running the site outside compose. Absent the file
+// entirely the redirect still happens, which is why its absence is a preflight
+// check rather than something you would notice in the logs.
+define('RICKROLL_FILE', getenv('RICKROLL_FILE') ?: __DIR__ . '/rickroll.txt');
 
 // The machine this deployment pretends to be. Not hardcoded: these strings are
 // the most-observed thing the honeypot emits, and a value published in this
