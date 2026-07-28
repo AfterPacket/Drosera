@@ -334,7 +334,14 @@ def interactive_session(channel, ip: str, ident: dict, username: str,
     channel.sendall(motd.encode())
     recorder.write_output(motd)
 
-    buffer = ""
+    buffer = ""       # the line being typed
+    # Input received but not yet consumed. Without this, everything after the
+    # first newline in a packet was dropped on the floor: a human types one
+    # character at a time so it never showed, but automation pipes an entire
+    # script in one write. A worm sending `uname -a\ncat /etc/passwd\nwget ...`
+    # got its first command answered and the rest silently discarded, then
+    # disconnected when its next expectation went unmet.
+    pending = ""
     channel.settimeout(SESSION_IDLE_TIMEOUT)
     try:
         while not shell.exit_requested:
@@ -344,34 +351,41 @@ def interactive_session(channel, ip: str, ident: dict, username: str,
 
             line = None
             while line is None:
-                data = channel.recv(4096)
-                if not data:
-                    return
-                text = data.decode("utf-8", "replace")
-                recorder.write_input(text)
-                for char in text:
-                    if char in ("\r", "\n"):
-                        channel.sendall(b"\r\n")
-                        recorder.write_output("\r\n")
-                        line = buffer
-                        buffer = ""
-                        break
-                    if char in ("\x7f", "\b"):
-                        if buffer:
-                            buffer = buffer[:-1]
-                            channel.sendall(b"\b \b")
-                        continue
-                    if char == "\x03":
-                        channel.sendall(b"^C\r\n")
-                        line = ""
-                        buffer = ""
-                        break
-                    if char == "\x04":
-                        shell.exit_requested = True
-                        line = "exit"
-                        break
-                    buffer += char
-                    channel.sendall(char.encode())
+                if not pending:
+                    data = channel.recv(4096)
+                    if not data:
+                        return
+                    pending = data.decode("utf-8", "replace")
+                    recorder.write_input(pending)
+
+                char, pending = pending[0], pending[1:]
+
+                if char in ("\r", "\n"):
+                    # Swallow the \n of a CRLF pair so a pasted script does not
+                    # produce a blank command and a spurious prompt per line.
+                    if char == "\r" and pending.startswith("\n"):
+                        pending = pending[1:]
+                    channel.sendall(b"\r\n")
+                    recorder.write_output("\r\n")
+                    line = buffer
+                    buffer = ""
+                    continue
+                if char in ("\x7f", "\b"):
+                    if buffer:
+                        buffer = buffer[:-1]
+                        channel.sendall(b"\b \b")
+                    continue
+                if char == "\x03":
+                    channel.sendall(b"^C\r\n")
+                    line = ""
+                    buffer = ""
+                    continue
+                if char == "\x04":
+                    shell.exit_requested = True
+                    line = "exit"
+                    continue
+                buffer += char
+                channel.sendall(char.encode())
 
             if line is None:
                 continue

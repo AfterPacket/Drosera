@@ -128,6 +128,20 @@ honeypot container is a member of.
 | `preflight.sh` | Static validation before deploying: Python/PHP/shell syntax, `docker compose config` on both profiles, `.env` sanity, git-safety of secret paths, host RAM and `vm.max_map_count` |
 | `smoke-test.sh` | Post-deploy functional checks: container health, every honeypot port, SSH banner, dashboard `/healthz`, a real GIF rendered from a synthetic recording, Elasticsearch doc count and ILM state, and an explicit assertion that honeypot containers cannot reach the internet while session-cam can |
 
+## `intel/`
+
+| File | Purpose |
+|---|---|
+| `vt.py` | VirusTotal hash lookups for quarantined payloads. Runs on `cam-egress` with no listening ports. Reads the JSON sidecars and the hash in the filename, never a captured sample, so the one container with internet access never opens attacker input. Sends a hash and not the file — see the module docstring for why that is a decision rather than a default |
+| `Dockerfile` | stdlib only. Depends on `shared/__init__.py` importing lazily; an eager import there lands here |
+
+## `persona/`
+
+| File | Purpose |
+|---|---|
+| `README.md` | Why the persona is generated rather than committed, and why to back it up |
+| `persona.json` | This deployment's identity. Gitignored. Created by `deploy/generate-persona.sh` |
+
 ## `ssh-real/`
 
 | File | Purpose |

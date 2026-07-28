@@ -21,7 +21,7 @@ Internet
    │                     ├─► crawler trap       (/blog/…, effectively infinite)
    │                     └─► scanner-path traps (.env, wp-config.php, backup.sql…)
    │
-   ├─ :22   ─► fake sshd     (+ endlessh tarpit, SFTP sink, session recording)
+   ├─ :22   ─► fake sshd     (+ endlessh tarpit, SFTP quarantine, session recording)
    ├─ :21   ─► fake ftpd
    ├─ :23   ─► fake telnetd
    ├─ :25   ─► fake smtpd    (advertises an open relay, delivers nothing)
@@ -34,12 +34,20 @@ Operator only, via SSH tunnel:
    ├─ 127.0.0.1:8443 ─► dashboard (separate app, separate Redis, password + TOTP)
    └─ 127.0.0.1:5601 ─► Kibana    (own internal network, no honeypot access)
 
-Session camera (the only container with egress, on no other network):
+Egress side (cam-egress: no listening ports, on no other network, reached
+only over the storage volume — never a socket):
    storage/sessions/*.cast ─► session-cam ─► Telegram / email / dashboard
+   storage/loot/*.json      ─► intel       ─► VirusTotal (hash lookups only)
 
 Analytics (internal only, fed off the volume rather than over the network):
    storage/logs/*.jsonl ─► elastic-shipper ─► Elasticsearch ─► Kibana
 ```
+
+The asymmetry in that fourth block is the containment model in one line: the
+honeypots have no route out, the egress containers have no route in, and work
+crosses between them as files. `intel` in particular reads the JSON sidecars
+and the hash in a filename — never a captured sample — so the one container
+with internet access never opens attacker input.
 
 ## Core principle
 
@@ -59,8 +67,17 @@ Three tiers, driven by a cumulative per-IP score:
 
 Scores accumulate across *every* service. An attacker who probes the web shell
 and then tries SSH is one profile, with one consistent fake machine identity —
-same hostname, same kernel, same users, same filesystem. Redis is the single
-source of truth shared by the PHP engine and the Python services.
+same hostname, same kernel, same users, same filesystem, same company name on
+the website, same database credentials in the fake `wp-config.php`. Redis is
+the single source of truth shared by the PHP engine and the Python services,
+and [the persona](#optional-extras) supplies the constants to both halves so
+they cannot drift apart.
+
+The fake shell answers well enough to get past a worm's capability check —
+`bash -c` chains are unwrapped and run, written scripts execute, and pipelined
+input is processed in full — because passing that check is what convinces the
+worm to go on and drop its real payload, which is [the thing actually worth
+capturing](#how-loot-works).
 
 ## The session camera
 
@@ -146,10 +163,13 @@ recordings, an HTML report, and a suggested fail2ban line.
 ## Layout
 
 ```
-shared/           Python: identity, scoring, alerting, tarpit, fake shell
+shared/           Python: identity, persona, scoring, alerting, tarpit,
+                  loot quarantine, fake shell
+persona/          This deployment's identity. Generated, gitignored
 web/              nginx + PHP-FPM, public site, webshell, tarpit engine
 {ssh,ftp,telnet,smtp,mysql,smb,rdp}-honey/   protocol emulators
 session-cam/      renders sessions to video and delivers them
+intel/            VirusTotal hash lookups for quarantined payloads
 elastic/          ships events to Elasticsearch; Kibana stats
 admin-dashboard/  Flask operator UI
 nginx/            site config
@@ -256,32 +276,7 @@ works while the values are yours alone.
 Keep a backup alongside your `.env`. An attacker who saw one machine last week
 and a different one on the same address this week has learnt something.
 
-**Payload capture** — dropped files are quarantined in `storage/loot/`, named by
-SHA-256, mode `0400`, on no PATH and under no document root. Nothing in the
-honeypot opens, unpacks or runs them; the filename is a hash, so an attacker
-never influences a path. Both drop routes are covered: SFTP uploads, and shell
-writes (a base64 blob piped through `base64 -d` never touches SFTP, so it is
-often the only copy you get).
-
-The `intel` container looks each one up on VirusTotal and alerts on hits. It
-runs on `cam-egress` — the honeypots have no outbound route and cannot do this
-themselves — and it has no listening ports, so neither side's compromise
-reaches the other.
-
-**It sends a hash, never the file.** That distinction is worth understanding
-before you change it: VirusTotal distributes submitted samples to its paying
-customers, and that market includes the people who write the malware, who
-routinely monitor VT for their own payloads. Uploading a targeted implant tells
-its operator it was caught and roughly when, can publish whatever the binary
-embeds, and burns the visibility you were collecting. For commodity botnet junk
-none of that matters and the hash is already known. Submit by hand if and when
-you have decided it is safe.
-
-An "unknown to VirusTotal" verdict is the interesting one, not the boring one —
-nobody has submitted it, which for a live drop means new or targeted.
-
-Detonation is deliberately not here. Copy the sample to a machine you are
-willing to lose.
+**Payload capture (loot)** — see [How loot works](#how-loot-works) below.
 
 **Scan-back** — `nmap`, `masscan`, `zmap` and `rustscan` in either fake shell
 ignore the target given and report on the attacker's own address, ending with
@@ -451,6 +446,116 @@ design.
 a CDN. A blank page after an update is a stale cached script — hard-refresh
 (Ctrl+Shift+R).
 
+## How loot works
+
+"Loot" is whatever an attacker hands you: a dropper, a miner, a persistence
+script, a base64 blob. It is the most valuable thing they give up, and the most
+dangerous thing to have on disk. The design keeps those two facts apart.
+
+### The path a payload takes
+
+```
+attacker drops a file
+   │
+   ├─ SFTP put ────────────► QuarantineHandle   (ssh-honey)
+   └─ shell redirect ──────► _write_file         (any fake shell)
+                                   │
+                                   ▼
+                        shared/loot.py: capture()
+                        hash → dedupe → size check → write
+                                   │
+                                   ▼
+              storage/loot/<sha256>.bin    the bytes, 0400
+              storage/loot/<sha256>.json   metadata + sightings
+                                   │
+                                   ▼  (filesystem, never a socket)
+                        intel container, on cam-egress
+                        reads the .json and the filename only
+                                   │
+                                   ▼
+                        VirusTotal hash lookup → verdict
+                        written back into the .json, alert on hit
+```
+
+Two capture routes, because attackers use both. SFTP is the obvious one.
+The other matters more in practice: a payload delivered as a heredoc or a
+base64 blob piped through `base64 -d` never touches SFTP, so the shell write is
+often the only copy you get.
+
+### Why it is safe to have on the box
+
+- **Content-addressed.** The filename is the SHA-256 of the content. Their
+  filename is recorded as metadata and never used to build a path. This is the
+  one that matters most — otherwise a filename of `../../etc/cron.d/x` is a
+  real write primitive.
+- **Never executable.** Files land `0400`, the directory `0700`, on no PATH and
+  under no document root. nginx already refuses everything under `storage/`.
+- **Nothing parses it.** Bytes and a hash. The moment a honeypot starts
+  *understanding* attacker input it inherits the attack surface of whatever
+  library does the understanding.
+- **Bounded.** Per-file and total caps checked before writing, and the SFTP
+  handler buffers to the same limit, so neither the file nor the buffer becomes
+  a way to fill your disk on purpose.
+- **Deduplicated.** The same payload from fifty hosts is one file and fifty
+  sightings — which is also the more useful shape for "who else dropped this".
+
+The intel container is the only one with internet access, and **it never opens
+a sample.** It reads the JSON sidecars and the hash in the filename; the bytes
+are hashed at capture time inside a container with no route out. So attacker
+bytes and the internet route never meet in the same process.
+
+### Reading your loot
+
+```bash
+ls -la storage/loot/                        # hashes, sizes, timestamps
+jq . storage/loot/<sha256>.json             # sightings and scan verdict
+jq -r 'select(.scan.malicious > 0)
+       | "\(.sha256[0:16]) \(.scan.malicious) \(.scan.label)"' \
+   storage/loot/*.json                      # everything flagged
+jq -r 'select(.scan.known == false) | .sha256' storage/loot/*.json   # unknown to VT
+```
+
+A sidecar looks like this:
+
+```json
+{
+  "sha256": "9f2c…", "size": 4211,
+  "first_seen": "2026-07-28T16:35:55+00:00",
+  "sighting_count": 3,
+  "sightings": [{"at": "…", "ip": "195.178.110.228", "service": "ssh",
+                 "origin": "sftp-put", "filename": "/tmp/.x/redis.sh"}],
+  "scan": {"known": true, "malicious": 41, "label": "trojan.xmrig/miner"}
+}
+```
+
+### VirusTotal: it sends a hash, never the file
+
+Set `VT_API_KEY` and the intel container looks each sample up. Leave it empty
+and quarantine still works — you just do not get verdicts.
+
+The hash-not-file distinction is worth understanding before you change it.
+VirusTotal redistributes submitted samples to its paying customers, and that
+market includes the people who write the malware; monitoring VT for your own
+payloads is standard practice. Uploading a targeted implant tells its operator
+it was caught and roughly when, can publish whatever the binary embeds — a
+hardcoded C2, a victim identifier, credentials that are not yours to disclose —
+and burns the visibility you were collecting. For commodity botnet junk none of
+that matters and the hash is already known. Submit by hand if and when you have
+decided it is safe.
+
+**"Unknown to VirusTotal" is the interesting verdict, not the boring one.**
+Nobody has submitted it, which for a live drop means new or targeted. That
+alerts as `LOOT_UNKNOWN`.
+
+Free-tier keys allow 4 requests/minute and 500/day; `VT_REQUEST_INTERVAL`
+defaults to 20 seconds to stay well inside that.
+
+### What is deliberately not here
+
+Detonation. Copy the hash-named file to a machine you are willing to lose.
+Running attacker code on the box that is taking the attacks defeats the point
+of every other control in this repository.
+
 ## Requirements
 
 Ubuntu 22.04/24.04, Docker 24+ with Compose v2, 2 vCPU / 4 GB / 40 GB, a domain
@@ -458,6 +563,23 @@ on Cloudflare, and a VPS dedicated entirely to this.
 
 ## Verification status
 
-The code has not been executed. It was written and reviewed statically; the
-build, container startup, and end-to-end behaviour still need to be confirmed on
-the VPS. Work through `deploy/README.md` §9 and §12 before relying on it.
+Running on a live VPS taking real internet traffic. Confirmed in production:
+
+- Containment, in both directions. `smoke-test.sh` asserts that honeypot
+  containers cannot reach the internet and that `session-cam` can.
+- Session recording end to end, including the login, from real attacker
+  sessions rather than synthetic input.
+- The tarpit. One source accumulated 79 holds averaging ~63 seconds; the
+  aggregate lands around 2,200 attacker-minutes per day at roughly 1.6
+  concurrent holds, with the HTTP tarpit contributing about 60%.
+- Ban and tarpit thresholds, after recalibration against real scanner volume.
+- The dashboard, stats, day-scoping and the attack map.
+
+Not yet confirmed in production, because they are recent: the persona layer,
+payload quarantine and VirusTotal enrichment, scan-back, and the two fixes that
+stop worms disconnecting early (`bash -c` unwrapping and pipelined input).
+Watch `docker compose logs -f intel` and your loot directory after deploying
+those, and run `./deploy/preflight.sh` first — it catches the import and syntax
+faults that otherwise surface as a restart loop.
+
+Nothing here has been through an external audit.
