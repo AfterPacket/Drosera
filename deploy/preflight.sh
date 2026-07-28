@@ -61,6 +61,38 @@ else
     warn "python3 not found; skipped"
 fi
 
+# --------------------------------------------------------- undefined names
+
+head2 "Python name resolution"
+
+# ast.parse above proves the file is syntactically valid, which is not the same
+# as correct: a missing import only fails when the function using it is called,
+# so `tarpit.begin_hold(...)` inside an error path can sit undetected until an
+# attacker triggers it in production. pyflakes catches exactly this class --
+# undefined names and unused imports -- and nothing else, which makes it fast
+# and free of style noise.
+if have python3 && python3 -c "import pyflakes" 2>/dev/null; then
+    if out=$(python3 -m pyflakes shared session-cam elastic admin-dashboard \
+                 ssh-honey ftp-honey telnet-honey smtp-honey mysql-honey \
+                 smb-honey rdp-honey 2>&1); then
+        pass "no undefined names"
+    else
+        # Unused imports are noise here; undefined names are the point.
+        undefined=$(printf '%s\n' "$out" | grep "undefined name" || true)
+        if [ -n "$undefined" ]; then
+            fail "undefined names found"
+            printf '%s\n' "$undefined" | sed 's/^/        /'
+        else
+            pass "no undefined names"
+            printf '%s\n' "$out" | grep -c "imported but unused" >/dev/null 2>&1 \
+                && warn "$(printf '%s\n' "$out" | grep -c 'imported but unused') unused import(s)"
+        fi
+    fi
+else
+    warn "pyflakes not installed; undefined names will not be caught"
+    warn "  pip3 install --user pyflakes"
+fi
+
 # ------------------------------------------------------------------ php syntax
 
 head2 "PHP syntax"

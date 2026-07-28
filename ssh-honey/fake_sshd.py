@@ -20,7 +20,7 @@ import paramiko
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, scoring  # noqa: E402
+from shared import alerting, identity, scoring, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
