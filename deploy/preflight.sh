@@ -93,6 +93,37 @@ else
     warn "  pip3 install --user pyflakes"
 fi
 
+# -------------------------------------------------------- stdlib-only imports
+
+head2 "Egress container dependencies"
+
+# The intel container has internet access and installs no third-party packages,
+# so everything it imports must resolve with stdlib alone. This broke once:
+# shared/__init__.py imported every submodule eagerly, so `from shared import
+# loot` pulled in identity.py and therefore redis, and the container
+# crash-looped on a package it never calls.
+#
+# Poisoning sys.modules is the honest test -- it fails exactly where the
+# container would, rather than passing because redis happens to be installed
+# on the machine running preflight.
+if have python3; then
+    STDLIB_ONLY_CHECK='
+import sys
+for blocked in ("redis", "paramiko", "flask", "PIL", "pyte"):
+    sys.modules[blocked] = None
+sys.path.insert(0, ".")
+import shared.loot, shared.alerting, shared.persona
+'
+    if out=$(python3 -c "$STDLIB_ONLY_CHECK" 2>&1); then
+        pass "shared.loot / alerting / persona import without third-party packages"
+    else
+        fail "intel container would crash-loop: a stdlib-only import pulled in a dependency"
+        printf '%s\n' "$out" | tail -5 | sed 's/^/        /'
+    fi
+else
+    warn "python3 not found; skipped"
+fi
+
 # ------------------------------------------------------------------ php syntax
 
 head2 "PHP syntax"
