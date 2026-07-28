@@ -151,6 +151,99 @@ def split_stages(line: str):
     return [(op, stage) for op, stage in stages if stage]
 
 
+def scan_redirects(stage: str):
+    """Strip redirections that are outside quotes.
+
+    Returns (cleaned_stage, operator, target); operator and target are None
+    when the stage redirects nothing to stdout.
+
+    Quote-awareness is the entire point. A plain regex substitution reached
+    inside `bash -c 'printf ... > filter && ./filter'` and deleted the inner
+    `> filter`, so the script the attacker asked us to run lost the write it
+    depended on, `./filter` found nothing, and their capability probe failed --
+    which is the moment a worm gives up and never drops the real payload.
+
+    Only `>` and `>>` to a filename are reported. `2>/dev/null` and `2>&1` are
+    noise suppression and are removed without being mistaken for a file write.
+    """
+    kept = []
+    operator = target = None
+    quote = None
+    index = 0
+    last = 0
+    length = len(stage)
+
+    while index < length:
+        char = stage[index]
+
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < length:
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+
+        if char in ("'", '"'):
+            quote = char
+            index += 1
+            continue
+
+        if char != ">":
+            index += 1
+            continue
+
+        # A single digit immediately before the `>` is a file descriptor, but
+        # only when it stands alone: in `echo abc1> f` the 1 is part of the
+        # word, and bash writes "abc1". Requiring whitespace or start-of-stage
+        # in front of it is what separates the two.
+        start = index
+        descriptor = ""
+        if (index - 1 >= last and stage[index - 1].isdigit()
+                and (index - 2 < last or stage[index - 2].isspace())):
+            descriptor = stage[index - 1]
+            start = index - 1
+
+        cursor = index + 1
+        this_operator = ">"
+        if cursor < length and stage[cursor] == ">":
+            this_operator = ">>"
+            cursor += 1
+
+        if cursor < length and stage[cursor] == "&":
+            # `2>&1`: a duplication, never a file.
+            cursor += 1
+            while cursor < length and stage[cursor].isdigit():
+                cursor += 1
+            kept.append(stage[last:start])
+            last = index = cursor
+            continue
+
+        while cursor < length and stage[cursor].isspace():
+            cursor += 1
+        target_start = cursor
+        while cursor < length and not stage[cursor].isspace():
+            cursor += 1
+        this_target = stage[target_start:cursor]
+
+        # First stdout redirection wins, as in a real shell.
+        if descriptor in ("", "1") and this_target and target is None:
+            operator, target = this_operator, this_target
+
+        kept.append(stage[last:start])
+        last = index = cursor
+
+    kept.append(stage[last:])
+    return "".join(kept).strip(), operator, target
+
+
+# Shells, for the wrapper check in _run_stage. `bash -c '<script>'` must be
+# dispatched before anything scans the stage for `./payload`, or the pattern
+# inside the quoted script matches and the wrapper is never reached.
+SHELL_COMMANDS = ("bash", "sh", "dash", "ash", "zsh", "ksh")
+
+
 class FakeShell:
     """Stateful fake bash for one attacker session."""
 
@@ -175,6 +268,8 @@ class FakeShell:
         # Contents of files they have written this session, so that running one
         # back can produce what it would actually have printed.
         self.written: Dict[str, str] = {}
+        # Bounds nested `bash -c` and self-invoking scripts. See _run_script.
+        self._script_depth = 0
 
     # ---------------------------------------------------------------- helpers
 
@@ -300,10 +395,9 @@ class FakeShell:
         return "\n".join(outputs)
 
     _ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
-    _REDIRECT_RE = re.compile(r"\s*\d?>>?\s*\S+|\s*\d?>&\d")
-    # stdout only. `2>/dev/null` is noise suppression and must not be mistaken
-    # for a file write.
-    _REDIRECT_TARGET_RE = re.compile(r"(?:^|\s)1?(>>?)\s*(\S+)")
+    # Redirections are found by scan_redirects(), not a regex: a regex cannot
+    # tell a `>` inside `bash -c '... > file ...'` from one that belongs to the
+    # stage, and stripping the inner one broke the script it was part of.
     _SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
     _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -415,6 +509,20 @@ class FakeShell:
         thousand-line drop should not become a thousand dispatches, so only
         the first handful of lines are honoured.
         """
+        # Nesting guard. `depth` below only limits the expander; it does not
+        # bound this. Without a counter, `bash -c 'bash -c "..."'` and a script
+        # that writes and runs itself both recurse until Python's own limit
+        # trips, which costs a session and a stack trace for one cheap line of
+        # attacker input.
+        if self._script_depth >= 4:
+            return ""
+        self._script_depth += 1
+        try:
+            return self._run_script_inner(script)
+        finally:
+            self._script_depth -= 1
+
+    def _run_script_inner(self, script: str) -> str:
         outputs = []
         stages = 0
         for line in script.splitlines()[:20]:
@@ -469,12 +577,12 @@ class FakeShell:
 
     def _run_stage(self, stage: str, depth: int = 0) -> str:
         """Dispatch a single command, with pipes left as arguments to it."""
-        # Captured before stripping. Without this, `echo 'ssh-rsa AAAA...' >>
-        # ~/.ssh/authorized_keys` echoed the key straight back at the attacker,
-        # where a real shell writes it silently -- a plain tell at the exact
-        # moment they are deciding whether the box is real.
-        redirect = self._REDIRECT_TARGET_RE.search(stage)
-        stage = self._REDIRECT_RE.sub("", stage).strip()
+        # The target is captured, not just discarded. Without it, `echo
+        # 'ssh-rsa AAAA...' >> ~/.ssh/authorized_keys` echoed the key straight
+        # back at the attacker, where a real shell writes it silently -- a
+        # plain tell at the exact moment they are deciding whether the box is
+        # real. _finish() applies it once the command has produced output.
+        stage, redirect_op, redirect_target = scan_redirects(stage)
         if not stage:
             return ""
 
@@ -488,6 +596,26 @@ class FakeShell:
         stage = self._expand(stage, depth)
         if not stage.strip():
             return ""
+
+        try:
+            tokens = shlex.split(stage)
+        except ValueError:
+            tokens = stage.split()
+
+        command = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+        args = tokens[1:]
+        if command == "busybox" and args:        # busybox uname -m -> uname -m
+            command, args = args[0], args[1:]
+
+        # Shell wrappers are dispatched before the dropped-binary scan below.
+        # That scan is a regex over the whole stage, so for
+        # `bash -c '... && ./filter'` it matched the `./filter` inside the
+        # quoted script and answered "Exec format error" without ever running
+        # the script -- the wrapper handler could never be reached for the one
+        # payload shape it exists to handle.
+        if command in SHELL_COMMANDS and args:
+            result = self._cmd_sh(args, stage)
+            return self._finish(result, redirect_op, redirect_target, depth)
 
         # Per stage, not per line: `printf ... > filter && ./filter` used to
         # match on the whole line and return one error for everything, so a
@@ -510,30 +638,23 @@ class FakeShell:
             return (f"bash: {name}: cannot execute binary file: "
                     "Exec format error")
 
-        try:
-            tokens = shlex.split(stage)
-        except ValueError:
-            tokens = stage.split()
         if not tokens:
             return ""
-
-        command = tokens[0].rsplit("/", 1)[-1]   # /bin/uname -> uname
-        args = tokens[1:]
-        if command == "busybox" and args:        # busybox uname -m -> uname -m
-            command, args = args[0], args[1:]
 
         handler = self._HANDLERS.get(command)
         if handler is None:
             return f"bash: {command}: command not found"
 
-        result = handler(self, args, stage)
+        return self._finish(handler(self, args, stage),
+                            redirect_op, redirect_target, depth)
 
-        if redirect:
-            operator, target = redirect.group(1), redirect.group(2)
-            self._write_file(self._expand(target, depth), result or "",
-                             append=(operator == ">>"))
-            return ""      # a redirected command prints nothing
-        return result
+    def _finish(self, result: str, operator, target, depth: int) -> str:
+        """Apply a stdout redirection, if the stage had one."""
+        if not target:
+            return result
+        self._write_file(self._expand(target, depth), result or "",
+                         append=(operator == ">>"))
+        return ""          # a redirected command prints nothing
 
     # -------------------------------------------------------------- commands
 

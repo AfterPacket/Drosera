@@ -127,9 +127,12 @@ def capture(data: bytes, *, ip: str, service: str, origin: str,
                 "scan": None,
             }
             meta["last_seen"] = sighting["at"]
-            # Bounded: one popular sample seen ten thousand times must not grow
-            # a sidecar until it is the disk problem the cap exists to prevent.
-            meta["sightings"] = (meta.get("sightings") or [])[:199] + [sighting]
+            # Bounded, keeping the most recent: one popular sample seen ten
+            # thousand times must not grow a sidecar until it is the disk
+            # problem the cap exists to prevent. Trimming from the front kept
+            # the oldest 199 and discarded everything since, so a sample that
+            # went quiet a month ago and came back today looked unchanged.
+            meta["sightings"] = ((meta.get("sightings") or []) + [sighting])[-200:]
             meta["sighting_count"] = int(meta.get("sighting_count") or 0) + 1
             _write_meta(digest, meta)
         except OSError:
@@ -148,9 +151,18 @@ def _read_meta(digest: str) -> Optional[Dict[str, Any]]:
 def _write_meta(digest: str, meta: Dict[str, Any]) -> None:
     path = LOOT_DIR / f"{digest}.json"
     handle, temp = tempfile.mkstemp(dir=str(LOOT_DIR), suffix=".part")
-    with os.fdopen(handle, "w", encoding="utf-8") as fh:
-        json.dump(meta, fh, separators=(",", ":"))
-    os.replace(temp, path)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, separators=(",", ":"))
+        os.replace(temp, path)
+    except Exception:
+        # Otherwise a failed serialisation leaves a .part behind on every
+        # attempt, and the loot directory slowly fills with them.
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
 
 
 def read_meta(digest: str) -> Optional[Dict[str, Any]]:
@@ -185,8 +197,22 @@ def pending_scan():
     """Digests captured but not yet scanned, oldest first."""
     if not LOOT_DIR.is_dir():
         return []
+
+    # stat() inside the sort key raced with a honeypot writing a new sidecar:
+    # one missing file raised, and this runs in the intel container's only
+    # loop, so a transient race became a crash and a restart.
+    def mtime(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
     out = []
-    for meta_file in sorted(LOOT_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime):
+    try:
+        files = sorted(LOOT_DIR.glob("*.json"), key=mtime)
+    except OSError:
+        return []
+    for meta_file in files:
         digest = meta_file.stem
         if not _is_digest(digest):
             continue

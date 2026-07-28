@@ -37,6 +37,11 @@ if [[ "${1:-}" != "--yes" ]]; then
 
   Dashboard credentials, .env, certs and the audit log are left alone.
 
+  storage/loot/ is deliberately NOT deleted. Captured payloads are the one
+  thing here that cannot be recollected -- the attacker who dropped it is not
+  coming back to drop it again -- and resetting statistics is no reason to
+  destroy them. Remove them by hand if you actually mean to.
+
   Re-run with --yes to proceed.
 
 EOF
