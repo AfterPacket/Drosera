@@ -32,6 +32,7 @@ from .scoring import (
     is_bannable,
     should_tarpit,
 )
+from . import persona
 from .tarpit import deadline, drip, log_hold, stall
 
 __all__ = [
@@ -61,6 +62,7 @@ __all__ = [
     "get_score",
     "is_bannable",
     "should_tarpit",
+    "persona",
     "deadline",
     "drip",
     "log_hold",

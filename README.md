@@ -228,6 +228,23 @@ touching those containers, or Compose behaves as though they do not exist.
 
 ## Optional extras
 
+**Persona** — do this before going live. The engine is public, so every
+observable constant shipped as source is a fingerprint: the SSH version string,
+the hostname and kernel pools, the shell history, the company name. Anyone with
+this repository can compare a live host against the defaults and identify it in
+a few lines — which is exactly why stock Cowrie is trivially detected.
+
+```bash
+./deploy/generate-persona.sh
+docker compose up -d
+```
+
+That writes a randomised, gitignored `persona/persona.json`, so two deployments
+of the same release are two different machines. `preflight.sh` warns while you
+are still running the published defaults. Keep a backup: an attacker who saw
+one machine last week and a different one on the same address this week has
+learnt something.
+
 **GeoIP** — country and city on every attacker, and coordinates for the Kibana
 map. Needs a free [MaxMind](https://www.maxmind.com/en/geolite2/signup)
 GeoLite2 database, which is licensed and cannot ship here:
@@ -353,6 +370,16 @@ docker exec hp-redis-honeypot redis-cli DEL "hp:identity:$MD5" "hp:banned:$MD5"
 A blank terminal when you connect to your own honeypot is the SSH tarpit
 working — it drips the version banner one byte per second, so the client waits
 forever for a complete string.
+
+**Ad-hoc log analysis under-counts.** The event log has two producers, PHP and
+Python, and until recently they wrote different JSON spacing — `"service":"web"`
+versus `"service": "web"`. A grep pattern written against one skipped every line
+from the other, silently. New events are uniform; log files written before the
+fix still contain both. Match either way, or parse the JSON:
+
+```bash
+grep -o '"service": *"[a-z]*"' storage/logs/*.jsonl | tr -d ' ' | sort | uniq -c
+```
 
 **Clips render but never arrive.** `no channels configured` on the Sessions page
 means no delivery is set up. Only `session-cam` can reach the internet; the

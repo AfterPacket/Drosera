@@ -20,14 +20,16 @@ import paramiko
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, scoring, tarpit  # noqa: E402
+from shared import alerting, identity, persona, scoring, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "2222"))
 SERVICE = "ssh"
 HOST_KEY_PATH = os.getenv("SSH_HOST_KEY", "/app/state/ssh_host_key")
-SSH_BANNER = "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6"
+# The very first bytes any scanner sees, and so the cheapest fingerprint there
+# is. Comes from the deployment's persona rather than the published source.
+SSH_BANNER = persona.get("ssh_banner")
 
 MAX_CONNECTIONS = int(os.getenv("SSH_MAX_CONNECTIONS", "200"))
 TARPIT_MAX_SECONDS = int(os.getenv("SSH_TARPIT_MAX_SECONDS", "1800"))

@@ -134,7 +134,13 @@ def _write_jsonl(event: Dict[str, Any]) -> None:
     _ensure_dirs()
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with open(LOG_DIR / f"{day}.jsonl", "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, default=str) + "\n")
+        # Compact separators to match PHP's json_encode, which writes
+        # `"service":"web"` while Python's default writes `"service": "web"`.
+        # The two producers share this file, and the inconsistency silently
+        # breaks grep-based analysis: a pattern written against one producer's
+        # spacing skips every line from the other, under-counting without any
+        # sign that it has. Anything parsing the JSON properly was unaffected.
+        handle.write(json.dumps(event, default=str, separators=(",", ":")) + "\n")
 
 
 def _write_fail2ban(record: Dict[str, Any]) -> None:

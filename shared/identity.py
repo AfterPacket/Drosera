@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 import redis
 
+from . import persona
+
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 IDENTITY_TTL = 7 * 24 * 3600
@@ -39,27 +41,13 @@ IGNORE_IPS = {
     if item.strip()
 }
 
-HOSTNAME_POOL = [
-    "prod-web-01", "prod-web-02", "prod-db-01", "prod-cache-01",
-    "mail-srv-01", "api-gateway-01", "proxy-01", "app-node-03",
-    "backup-srv", "monitoring-01", "vpn-gateway", "srv-colo-04",
-]
-
-KERNEL_POOL = [
-    "5.15.0-86-generic", "5.15.0-91-generic", "5.10.0-21-amd64",
-    "5.4.0-150-generic", "4.19.0-23-amd64", "6.1.0-13-amd64",
-]
-
-OS_POOL = [
-    "Ubuntu 22.04.3 LTS", "Ubuntu 20.04.6 LTS", "Debian GNU/Linux 11 (bullseye)",
-    "Debian GNU/Linux 12 (bookworm)", "CentOS Linux 7 (Core)", "AlmaLinux 8.9",
-]
-
-HUMAN_USERS = [
-    ("jmarsh", "/home/jmarsh"), ("dkowalski", "/home/dkowalski"),
-    ("rchen", "/home/rchen"), ("aokafor", "/home/aokafor"),
-    ("tbergman", "/home/tbergman"), ("lnguyen", "/home/lnguyen"),
-]
+# Read from the deployment's persona rather than hardcoded, because these are
+# exactly what an attacker compares against a published default to identify a
+# honeypot. See shared/persona.py and deploy/generate-persona.sh.
+HOSTNAME_POOL = persona.pool("hostname_pool")
+KERNEL_POOL = persona.pool("kernel_pool")
+OS_POOL = persona.pool("os_pool")
+HUMAN_USERS = [tuple(entry) for entry in persona.pool("user_pool")]
 
 _local_cache: Dict[str, Dict[str, Any]] = {}
 _local_lock = threading.Lock()

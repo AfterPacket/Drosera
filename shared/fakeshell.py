@@ -13,6 +13,8 @@ import re
 import shlex
 import time
 import zlib
+
+from . import persona
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -20,16 +22,10 @@ FAST = 0.0
 MEDIUM = 0.15
 SLOW_MIN, SLOW_MAX = 1.5, 3.0
 
-SEEDED_HISTORY = [
-    "cd /var/www/html",
-    "ls -la",
-    "tail -f /var/log/nginx/error.log",
-    "systemctl restart php7.4-fpm",
-    "mysql -u wp_user -p wordpress",
-    "df -h",
-    "sudo apt-get update",
-    "vim wp-config.php",
-]
+# The same eight commands appearing in .bash_history on two unrelated hosts
+# tells an attacker exactly what both of them are, so this comes from the
+# deployment's persona.
+SEEDED_HISTORY = persona.pool("seeded_history")
 
 CRONTAB = """# m h  dom mon dow   command
 */5 * * * * /usr/bin/php /opt/monitoring/check.php > /dev/null 2>&1

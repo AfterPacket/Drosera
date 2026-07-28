@@ -72,6 +72,9 @@ x-python-service: &python-service
   volumes:
     - ./shared:/app/shared:ro
     - ./storage:/var/honeypot/storage
+    # This deployment's persona -- the machine it pretends to be. Generated,
+    # gitignored, read-only here.
+    - ./persona:/persona:ro
   tmpfs:
     # noexec,nosuid,nodev: with a read-only rootfs, /tmp is the only writable
     # path in the container. Leaving it executable would hand an attacker who
@@ -205,6 +208,7 @@ services:
     volumes:
       - ./shared:/app/shared:ro
       - ./storage:/var/honeypot/storage
+      - ./persona:/persona:ro
       # Persisted so the host key fingerprint stays stable across restarts --
       # a changing fingerprint is an obvious tell.
       - ssh-host-key:/app/state

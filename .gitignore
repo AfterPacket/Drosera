@@ -5,6 +5,11 @@
 intial.md
 IMPLEMENTATION_SUMMARY.md
 
+# This deployment's persona: the machine the honeypot pretends to be.
+# Deliberately not shared. Publishing it would hand anyone the fingerprint --
+# banner, hostnames, kernels, shell history -- needed to identify this host.
+persona/persona.json
+
 # Agent tooling config. Local to whoever is working on the checkout, and not
 # something a public clone should inherit.
 .claude/

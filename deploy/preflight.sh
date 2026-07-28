@@ -189,6 +189,14 @@ else
     warn ".env not present (cp .env.example .env)"
 fi
 
+if [ -f persona/persona.json ]; then
+    pass "persona generated (this deployment has its own fingerprint)"
+else
+    warn "no persona: running the PUBLISHED defaults from this repo."
+    warn "  Anyone with the source can fingerprint this host in a few lines."
+    warn "  ./deploy/generate-persona.sh"
+fi
+
 if [ -f certs/origin.pem ] && [ -f certs/origin.key ]; then
     pass "TLS origin material present"
     perms=$(stat -c '%a' certs/origin.key 2>/dev/null || echo "?")
