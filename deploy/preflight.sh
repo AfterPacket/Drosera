@@ -47,7 +47,7 @@ if bad:
     print("\n".join(bad))
     sys.exit(1)
 '
-    for dir in shared session-cam elastic admin-dashboard ssh-honey ftp-honey \
+    for dir in shared session-cam elastic intel admin-dashboard ssh-honey ftp-honey \
                telnet-honey smtp-honey mysql-honey smb-honey rdp-honey; do
         [ -d "$dir" ] || continue
         if out=$(python3 -c "$PY_SYNTAX_CHECK" "$dir" 2>&1); then
@@ -72,7 +72,7 @@ head2 "Python name resolution"
 # undefined names and unused imports -- and nothing else, which makes it fast
 # and free of style noise.
 if have python3 && python3 -c "import pyflakes" 2>/dev/null; then
-    if out=$(python3 -m pyflakes shared session-cam elastic admin-dashboard \
+    if out=$(python3 -m pyflakes shared session-cam elastic intel admin-dashboard \
                  ssh-honey ftp-honey telnet-honey smtp-honey mysql-honey \
                  smb-honey rdp-honey 2>&1); then
         pass "no undefined names"

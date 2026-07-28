@@ -256,6 +256,33 @@ works while the values are yours alone.
 Keep a backup alongside your `.env`. An attacker who saw one machine last week
 and a different one on the same address this week has learnt something.
 
+**Payload capture** — dropped files are quarantined in `storage/loot/`, named by
+SHA-256, mode `0400`, on no PATH and under no document root. Nothing in the
+honeypot opens, unpacks or runs them; the filename is a hash, so an attacker
+never influences a path. Both drop routes are covered: SFTP uploads, and shell
+writes (a base64 blob piped through `base64 -d` never touches SFTP, so it is
+often the only copy you get).
+
+The `intel` container looks each one up on VirusTotal and alerts on hits. It
+runs on `cam-egress` — the honeypots have no outbound route and cannot do this
+themselves — and it has no listening ports, so neither side's compromise
+reaches the other.
+
+**It sends a hash, never the file.** That distinction is worth understanding
+before you change it: VirusTotal distributes submitted samples to its paying
+customers, and that market includes the people who write the malware, who
+routinely monitor VT for their own payloads. Uploading a targeted implant tells
+its operator it was caught and roughly when, can publish whatever the binary
+embeds, and burns the visibility you were collecting. For commodity botnet junk
+none of that matters and the hash is already known. Submit by hand if and when
+you have decided it is safe.
+
+An "unknown to VirusTotal" verdict is the interesting one, not the boring one —
+nobody has submitted it, which for a live drop means new or targeted.
+
+Detonation is deliberately not here. Copy the sample to a machine you are
+willing to lose.
+
 **Scan-back** — `nmap`, `masscan`, `zmap` and `rustscan` in either fake shell
 ignore the target given and report on the attacker's own address, ending with
 what this honeypot has actually recorded about them:

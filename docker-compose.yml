@@ -341,6 +341,37 @@ services:
     pids_limit: 128
     cpus: 1.0
 
+  # --------------------------------------------------------- sample enrichment
+
+  # Looks up quarantined payloads on VirusTotal by hash. Same asymmetry as
+  # session-cam: it reads storage/loot over the filesystem and reaches the
+  # internet, but the honeypots that filled it cannot, and nothing can reach
+  # this. It sends a SHA-256 and nothing else -- see intel/vt.py for why
+  # uploading the sample itself is a decision rather than a default.
+  intel:
+    build: { context: ./intel, dockerfile: Dockerfile }
+    container_name: hp-intel
+    <<: *hardening
+    environment:
+      LOOT_DIR: /var/honeypot/storage/loot
+      STORAGE_DIR: /var/honeypot/storage
+      VT_API_KEY: ${VT_API_KEY:-}
+      VT_POLL_SECONDS: ${VT_POLL_SECONDS:-300}
+      VT_REQUEST_INTERVAL: ${VT_REQUEST_INTERVAL:-20}
+      VT_MAX_PER_RUN: ${VT_MAX_PER_RUN:-20}
+      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    volumes:
+      - ./shared:/app/shared:ro
+      - ./storage:/var/honeypot/storage
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    networks: [cam-egress]
+    mem_limit: 256m
+    pids_limit: 64
+    cpus: 0.25
+
   # ------------------------------------------------------------ TLS automation
 
   # Optional. Without it, drop a Cloudflare Origin Certificate into certs/ and

@@ -25,6 +25,7 @@ services were stubs.
 | `alerting.py` | JSONL, fail2ban, webhook, Telegram, RFC 5424 syslog, and the asciinema v2 recorder. Bounded queue on a worker thread. Writes the `.meta.json` sidecar that tells `session-cam` a recording is finished |
 | `tarpit.py` | Slow-drain helpers for the asyncio services: byte-at-a-time PDU dripping and randomised per-response stalls, both deadline-bounded |
 | `fakeshell.py` | Simulated bash. Table-driven; executes nothing |
+| `loot.py` | Content-addressed quarantine for dropped payloads. Files land 0400 under `storage/loot/`, named by SHA-256 so an attacker never influences a path; per-file and total size caps; deduplicated by hash with a bounded sighting list. Nothing here opens or interprets a sample |
 | `persona.py` | Reads `/persona/persona.json`: the machine this deployment pretends to be. Banners, hostname/kernel/user pools, shell history, honeytoken credentials, fake-file sizes. Falls back to published defaults so a fresh clone runs |
 | `__init__.py` | Re-exports the public surface |
 

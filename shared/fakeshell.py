@@ -15,7 +15,7 @@ import shlex
 import time
 import zlib
 
-from . import persona
+from . import loot, persona
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -358,6 +358,21 @@ class FakeShell:
         previous = self.written.get(resolved, "") if append else ""
         self.written[resolved] = (previous + content)[:8192]
 
+        # Quarantine it too. A dropper delivered as a heredoc or a base64 blob
+        # piped through `base64 -d` never touches SFTP, so this is often the
+        # only copy of the payload we get. loot.capture filters out the
+        # sub-24-byte capability probes and deduplicates the rest.
+        try:
+            loot.capture(
+                self.written[resolved].encode("utf-8", "replace"),
+                ip=self.ip, service=self.service,
+                origin="shell-write", filename=resolved,
+            )
+        except Exception:
+            # Capture is a bonus. It must never break the illusion by turning
+            # a redirection into a traceback in the attacker's session.
+            pass
+
         lowered = resolved.lower()
         if "authorized_keys" in lowered:
             self._score_always("PERSISTENCE_ATTEMPT",
@@ -401,16 +416,56 @@ class FakeShell:
         the first handful of lines are honoured.
         """
         outputs = []
+        stages = 0
         for line in script.splitlines()[:20]:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue          # shebang and comments
-            # depth=3 caps how far a script that writes and runs another can
-            # recurse before the expander refuses to go deeper.
-            result = self._run_stage(line, depth=3)
-            if result:
-                outputs.append(result)
+            # Split on `&&`/`;` as well as newlines. A one-line probe is the
+            # common shape -- `printf ... > filter && chmod +x filter &&
+            # ./filter` -- and running it as a single stage meant the write
+            # never happened, so `./filter` had nothing to run.
+            failed = False
+            for operator, stage in split_stages(line):
+                if operator == "&&" and failed:
+                    continue
+                if operator == "||" and not failed:
+                    continue
+                stages += 1
+                if stages > 40:
+                    return "\n".join(outputs)
+                # depth=3 caps how far a script that writes and runs another
+                # can recurse before the expander refuses to go deeper.
+                result = self._run_stage(stage, depth=3)
+                failed = result.startswith("bash:")
+                if result:
+                    outputs.append(result)
         return "\n".join(outputs)
+
+    def _cmd_sh(self, args: List[str], _line: str) -> str:
+        """Run `bash -c '<script>'` instead of shrugging at it.
+
+        Worms wrap their whole capability probe in one `bash -c`, so treating
+        it as a single opaque stage meant `printf ... > filter && ./filter`
+        never wrote anything, `./filter` produced no output, and their
+        `case "$out" in *xxxxxx*` check failed. They then disconnect without
+        dropping the real payload -- the only part actually worth capturing.
+        """
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg == "-c":
+                if index + 1 < len(args):
+                    return self._run_script(args[index + 1])
+                return ""
+            if arg.startswith("-"):
+                index += 1
+                continue
+            script = self.written.get(self._resolve(arg))
+            if script is not None:
+                return self._run_script(script)
+            return f"bash: {arg}: No such file or directory"
+        return ""
 
     def _run_stage(self, stage: str, depth: int = 0) -> str:
         """Dispatch a single command, with pipes left as arguments to it."""
@@ -1151,6 +1206,8 @@ FakeShell._HANDLERS = {
     "ifconfig": FakeShell._cmd_ifconfig,
     "ip": FakeShell._cmd_ip,
     "arp": FakeShell._cmd_arp,
+    "bash": FakeShell._cmd_sh, "sh": FakeShell._cmd_sh,
+    "dash": FakeShell._cmd_sh, "ash": FakeShell._cmd_sh, "zsh": FakeShell._cmd_sh,
     "nmap": FakeShell._cmd_nmap, "masscan": FakeShell._cmd_nmap,
     "zmap": FakeShell._cmd_nmap, "rustscan": FakeShell._cmd_nmap,
     "docker": FakeShell._cmd_docker,

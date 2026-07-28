@@ -20,7 +20,7 @@ import paramiko
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, persona, scoring, tarpit  # noqa: E402
+from shared import alerting, identity, loot, persona, scoring, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -173,6 +173,55 @@ class HoneypotServer(paramiko.ServerInterface):
         return result
 
 
+class QuarantineHandle(paramiko.SFTPHandle):
+    """Accepts an SFTP upload into memory, then quarantines it.
+
+    Buffered rather than streamed to disk: the file only becomes real once it
+    is content-addressed by hash, so an attacker-controlled path never touches
+    the filesystem even transiently. Capped at the same size shared/loot.py
+    would truncate to, so the buffer cannot itself become the disk attack.
+    """
+
+    def __init__(self, ip: str, path: str):
+        super().__init__(0)
+        self.ip = ip
+        self.path = path
+        self._chunks = []
+        self._size = 0
+
+    def write(self, offset, data):
+        if self._size < loot.MAX_FILE_BYTES:
+            self._chunks.append(data)
+            self._size += len(data)
+        return paramiko.SFTP_OK
+
+    def read(self, offset, length):
+        # Upload sink only. Reading back would let them verify their own drop,
+        # and there is nothing to gain by helping with that.
+        return paramiko.SFTP_PERMISSION_DENIED
+
+    def close(self):
+        try:
+            digest = loot.capture(
+                b"".join(self._chunks), ip=self.ip, service="sftp",
+                origin="sftp-put", filename=self.path,
+            )
+            if digest:
+                identity.score_named_event(
+                    self.ip, "FILE_UPLOAD", service="sftp",
+                    payload=f"quarantined {digest[:16]} ({self._size}B) {self.path}"[:200],
+                )
+                alerting.alert_event(
+                    self.ip, "LOOT_CAPTURED", service="sftp",
+                    payload=f"{digest} {self._size}B via sftp {self.path}"[:200],
+                )
+        except Exception:
+            pass
+        finally:
+            self._chunks = []
+        return paramiko.SFTP_OK
+
+
 class SFTPSink(paramiko.SFTPServerInterface):
     """Logs every SFTP path and discards all content."""
 
@@ -202,6 +251,12 @@ class SFTPSink(paramiko.SFTPServerInterface):
         identity.score_named_event(
             self.ip, "FILE_UPLOAD", payload=f"sftp put {path}"[:200], service="sftp",
         )
+        # Denying the write logs that an upload was attempted and throws the
+        # payload away. Accepting it into quarantine is the whole point: the
+        # binary is the most valuable thing an attacker ever gives you, and
+        # refusing it also tells them the box is not real.
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND):
+            return QuarantineHandle(self.ip, path)
         return paramiko.SFTP_PERMISSION_DENIED
 
     def remove(self, path):
