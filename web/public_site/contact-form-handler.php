@@ -132,12 +132,12 @@ footer{border-top:1px solid #e2e6ee;margin-top:4rem;padding:2rem;text-align:cent
     <h1>Thank you, <?= sb_html($displayName) ?>!</h1>
     <p>We&rsquo;ve received your message and a member of our team will be in touch within one business day.</p>
     <p>Your reference number is <span class="ref"><?= sb_html(sb_company_ref()) ?>-<?= sb_html(strtoupper(substr(md5($ip . gmdate('Ymd')), 0, 8))) ?></span>. Please quote it if you need to follow up.</p>
-    <p>If your enquiry is urgent, call us on <strong>(512) 555-0147</strong> during business hours (Mon&ndash;Fri, 9am&ndash;6pm CT).</p>
+    <p>If your enquiry is urgent, call us on <strong><?= sb_html(COMPANY_PHONE) ?></strong> during business hours (Mon&ndash;Fri, 9am&ndash;6pm).</p>
     <a class="btn" href="/">&larr; Back to homepage</a>
   </div>
 </main>
 <footer>
-  &copy; <?= COMPANY_FOUNDED ?>&ndash;2024 <?= sb_html(COMPANY_NAME) ?> LLC &middot; <?= sb_html(COMPANY_ADDRESS) ?>
+  &copy; <?= COMPANY_FOUNDED ?>&ndash;<?= gmdate('Y') ?> <?= sb_html(COMPANY_NAME) ?> <?= sb_html(COMPANY_ENTITY) ?> &middot; <?= sb_html(COMPANY_ADDRESS) ?>
 </footer>
 </body>
 </html>

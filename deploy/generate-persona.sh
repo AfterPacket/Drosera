@@ -90,9 +90,36 @@ SECTORS = ["Digital Solutions", "Systems Group", "Technologies", "Consulting",
 STREETS = ["Commerce Drive", "Lakeview Parkway", "Foundry Street", "Kingsway",
            "Aldgate Road", "Riverside Avenue", "Beacon Court", "Mill Lane",
            "Cedar Boulevard", "Quarry Road", "Innovation Way", "Hartley Street"]
-CITIES = [("Austin", "TX", "787"), ("Denver", "CO", "802"), ("Raleigh", "NC", "276"),
-          ("Portland", "OR", "972"), ("Columbus", "OH", "432"), ("Tampa", "FL", "336"),
-          ("Boise", "ID", "837"), ("Madison", "WI", "537")]
+# (city, state, ZIP prefix, area code). The area code is carried so the phone
+# number in the footer agrees with the address above it -- an Austin address
+# beside a Denver number is the kind of detail that reads as fake.
+CITIES = [("Austin", "TX", "787", "512"), ("Denver", "CO", "802", "303"),
+          ("Raleigh", "NC", "276", "919"), ("Portland", "OR", "972", "503"),
+          ("Columbus", "OH", "432", "614"), ("Tampa", "FL", "336", "813"),
+          ("Boise", "ID", "837", "208"), ("Madison", "WI", "537", "608")]
+
+ENTITIES = ["LLC", "Inc.", "Ltd.", "Group", "Partners", "Co."]
+
+# One tagline per sector, so the headline agrees with the company name rather
+# than every deployment claiming to be an IT consultancy.
+TAGLINES = {
+    "Digital Solutions": ("Digital Solutions for Modern Business",
+                          "web development, digital strategy, cloud migration"),
+    "Systems Group":     ("Systems Engineering That Scales",
+                          "systems integration, infrastructure, automation"),
+    "Technologies":      ("Technology That Works the Way You Do",
+                          "software development, integration, IT strategy"),
+    "Consulting":        ("Practical Consulting for Growing Teams",
+                          "IT consulting, advisory, digital transformation"),
+    "Data Services":     ("Data Infrastructure You Can Rely On",
+                          "data warehousing, analytics, ETL, reporting"),
+    "IT Partners":       ("Your IT Department, Without the Overhead",
+                          "managed IT, helpdesk, IT support, outsourcing"),
+    "Networks":          ("Networks Built for Uptime",
+                          "network design, connectivity, SD-WAN, monitoring"),
+    "Managed Services":  ("Managed Services, Measured Results",
+                          "managed services, monitoring, backup, support"),
+}
 
 DB_USERS = ["devuser", "wpuser", "appuser", "webadmin", "deploy", "svc_web"]
 DB_SUFFIX = ["_prod", "_live", "_db", "_main", "_wp"]
@@ -158,11 +185,17 @@ honeytoken = f"sk-{abbrev}-test-{token('0123456789abcdef', 16)}"
 aws_key = "AKIA" + token("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16)
 aws_key_staging = "AKIA" + token("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16)
 
-city, state, zip3 = rng.choice(CITIES)
+city, state, zip3, area = rng.choice(CITIES)
 address = "{} {}, Suite {}, {}, {} {}{:02d}".format(
     rng.randint(100, 4999), rng.choice(STREETS), rng.randint(100, 940),
     city, state, zip3, rng.randint(1, 99),
 )
+# 555-01xx is the block reserved for fiction, so the number cannot ring anyone.
+phone = "({}) 555-{:04d}".format(area, rng.randint(100, 199))
+entity = rng.choice(ENTITIES)
+tagline, keywords = TAGLINES.get(
+    sector, ("Expert IT Solutions for Modern Business",
+             "IT consulting, managed services, infrastructure"))
 
 # The uploads directory and the documents in it. Dated consistently: a file
 # called strategic-plan-2024.pdf sitting under uploads/2019/03 is a tell.
@@ -206,6 +239,10 @@ persona = {
     "company_slug": slug,
     "company_address": address,
     "company_founded": rng.randint(2009, 2019),
+    "company_phone": phone,
+    "company_entity": entity,
+    "company_tagline": tagline,
+    "company_keywords": keywords,
     "db_name": db_name,
     "db_user": db_user,
     "db_password": db_password,
@@ -253,7 +290,13 @@ if ! python3 -c "
 import json, sys
 required = ['ssh_banner', 'company_name', 'company_domain', 'db_name',
             'honeytoken_key', 'hostname_pool', 'user_pool', 'seeded_history',
-            'fs_seed', 'upload_path']
+            'fs_seed', 'upload_path',
+            # Site copy. Absent from personas generated before these existed,
+            # and the web tier silently falls back to the shipped defaults --
+            # which is exactly the shared fingerprint the persona exists to
+            # avoid, so it is worth failing loudly on instead.
+            'company_phone', 'company_entity', 'company_tagline',
+            'company_keywords']
 data = json.load(open(sys.argv[1], encoding='utf-8'))
 missing = [k for k in required if not data.get(k)]
 if missing:

@@ -39,6 +39,13 @@ $replacements = [
     '{{COMPANY_ADDRESS}}'  => sb_html(COMPANY_ADDRESS),
     '{{COMPANY_DOMAIN}}'   => sb_html(COMPANY_DOMAIN),
     '{{COMPANY_FOUNDED}}'  => (string)COMPANY_FOUNDED,
+    '{{COMPANY_PHONE}}'    => sb_html(COMPANY_PHONE),
+    '{{COMPANY_ENTITY}}'   => sb_html(COMPANY_ENTITY),
+    '{{COMPANY_TAGLINE}}'  => sb_html(COMPANY_TAGLINE),
+    '{{COMPANY_KEYWORDS}}' => sb_html(COMPANY_KEYWORDS),
+    // Current year, not a baked one. A copyright notice frozen two years in the
+    // past is exactly the sort of thing that reads as an abandoned site.
+    '{{YEAR}}'             => gmdate('Y'),
     // Honeytokens. Nothing accepts them, so their appearance anywhere else is
     // evidence of where they were scraped from -- provided they are unique to
     // this deployment.

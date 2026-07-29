@@ -52,6 +52,12 @@ function sb_persona(string $key, $default = null)
         'company_short'   => 'Meridian Digital',
         'company_address' => '847 Commerce Drive, Suite 210, Austin, TX 78701',
         'company_founded' => 2019,
+        // 555-01xx is the block reserved for fiction; the area code matches the
+        // fallback address above.
+        'company_phone'   => '(512) 555-0123',
+        'company_entity'  => 'LLC',
+        'company_tagline' => 'Expert IT Solutions for Modern Business',
+        'company_keywords' => 'IT consulting, managed services, infrastructure',
         'company_domain'  => 'meridiandigital.example',
         'company_slug'    => 'meridian',
         'db_name'         => 'meridian_prod',
