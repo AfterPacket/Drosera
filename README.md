@@ -767,6 +767,15 @@ Running on a live VPS taking real internet traffic. Confirmed in production:
   concurrent holds, with the HTTP tarpit contributing about 60%.
 - Ban and tarpit thresholds, after recalibration against real scanner volume.
 - The dashboard, stats, day-scoping and the attack map.
+- Daily history. The event log is one file per UTC day and past days recompute
+  from their own file, so the day picker walks the whole retention window.
+
+Built and booting in production, but not yet exercised against real traffic:
+session playback stitching, live session viewing, the reworked evidence bundles,
+SMB and RDP recording, lifetime stats, and sortable tables. `preflight.sh` and a
+clean container start confirm they import and serve; they do not confirm that a
+stitched recording plays correctly or that a bulk export completes on a large
+storage tree. Open one of each and check.
 
 Not yet confirmed in production, because they are recent: the persona layer,
 payload quarantine and VirusTotal enrichment, scan-back, and the two fixes that
