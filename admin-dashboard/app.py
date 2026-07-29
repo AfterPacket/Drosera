@@ -2238,12 +2238,6 @@ def admin_settings():
         "cam_format": os.getenv("CAM_FORMAT", "gif"),
         "cam_retention_days": os.getenv("CAM_RETENTION_DAYS", "14"),
         "clips_stored": clips_stored,
-        # Surfaced because an operator should be able to see whether this box
-        # talks to anyone without reading .env on the host. It is off unless
-        # both the flag and the compose profile were set.
-        "telemetry_enabled": os.getenv("TELEMETRY_ENABLED", "false").strip().lower()
-        in ("1", "true", "yes"),
-        "telemetry_url": os.getenv("TELEMETRY_URL", "").strip() or "not configured",
     }
     return render_template("settings.html", channels=channels, settings=settings,
                            csrf_token=g.csrf_token)

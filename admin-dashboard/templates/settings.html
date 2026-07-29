@@ -52,17 +52,6 @@
     <tr><th>Camera clip format</th><td class="mono">{{ settings.cam_format }}</td></tr>
     <tr><th>Camera retention</th><td class="mono">{{ settings.cam_retention_days }} days</td></tr>
     <tr><th>Clips stored</th><td class="mono">{{ settings.clips_stored }}</td></tr>
-    <tr><th>Project telemetry</th><td>
-      {% if settings.telemetry_enabled %}
-      <span class="pill on">ENABLED</span>
-      <div class="sub mono">{{ settings.telemetry_url }}</div>
-      <div class="sub">Aggregate counts only. No address, credential or payload
-        leaves this box.</div>
-      {% else %}
-      <span class="pill off">OFF</span>
-      <div class="sub">This deployment reports nothing to anyone.</div>
-      {% endif %}
-    </td></tr>
   </table>
   <p class="hint subtle">
     Thresholds come from the environment. Edit <span class="mono">.env</span> and

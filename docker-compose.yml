@@ -404,50 +404,6 @@ services:
     pids_limit: 64
     cpus: 0.25
 
-  # ------------------------------------------------------------ telemetry
-
-  # Reports aggregate counts to the Drosera project collector. OPT-IN TWICE:
-  # the profile has to be requested AND TELEMETRY_ENABLED has to be true.
-  #
-  #   TELEMETRY_ENABLED=true docker compose --profile telemetry up -d
-  #
-  # Off by default and it stays off. This project's premise is that no honeypot
-  # container can reach the internet, and people deploy it because they want a
-  # box that talks to nobody; a security appliance that phoned home on its own
-  # would be trading away the exact property it was chosen for.
-  #
-  # What leaves: counts, and a random instance id generated locally. What never
-  # leaves, because it is never read into the process: addresses, credentials,
-  # payloads, recordings, commands, loot, hostnames, operator identity, .env.
-  # telemetry/aggregate.py is the whole list and it is one short function.
-  #
-  # On cam-egress because that is the only network in the appliance with a way
-  # out, and on no other -- so it can reach the collector and cannot reach a
-  # honeypot. Storage is read-only apart from the instance-id file.
-  telemetry:
-    profiles: [telemetry]
-    build: { context: ./telemetry, dockerfile: Dockerfile }
-    container_name: hp-telemetry
-    <<: *hardening
-    environment:
-      STORAGE_DIR: /var/honeypot/storage
-      TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
-      TELEMETRY_URL: ${TELEMETRY_URL:-https://drosera.lol/api/report}
-      TELEMETRY_TOKEN: ${TELEMETRY_TOKEN:-}
-      TELEMETRY_LABEL: ${TELEMETRY_LABEL:-}
-      TELEMETRY_INTERVAL: ${TELEMETRY_INTERVAL:-3600}
-      DROSERA_VERSION: ${DROSERA_VERSION:-unknown}
-    volumes:
-      # Read-write only because the instance id is persisted here; nothing else
-      # in this container writes.
-      - ./storage:/var/honeypot/storage
-    tmpfs:
-      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
-    networks: [cam-egress]
-    mem_limit: 256m
-    pids_limit: 64
-    cpus: 0.5
-
   # ------------------------------------------------------------ TLS automation
 
   # Optional. Without it, drop a Cloudflare Origin Certificate into certs/ and

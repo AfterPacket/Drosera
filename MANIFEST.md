@@ -125,18 +125,6 @@ honeypot container is a member of.
 | `generate-persona.sh` | Writes `persona/persona.json`: randomised banners, hostnames, kernels, company, credentials and file sizes. Run once before going live; the result is gitignored and worth backing up |
 | `watchdog.sh` | Cron fail-safe: enforces the 90-day event-log retention, prunes storage under disk pressure, restarts dead or unhealthy containers |
 | `logrotate-drosera` | Retention policy for the evidence and audit logs. Deliberately does **not** cover `storage/logs/*.jsonl`, which is already one file per day |
-
-## `telemetry/`
-
-Optional and off by default. Requires both `TELEMETRY_ENABLED=true` and the
-`telemetry` compose profile; neither alone does anything.
-
-| File | Purpose |
-|---|---|
-| `aggregate.py` | The complete set of fields that can leave a honeypot box, in one short function. Counts only |
-| `reporter.py` | Honeypot side. POSTs the aggregate hourly to the project collector. On `cam-egress`, the only network with a way out, and on no other. Refuses a non-HTTPS collector rather than downgrading |
-| `collector.py` | Project side (drosera.lol). Sums reports across instances, serves one JSON for the website. Copies out only whitelisted numeric fields, clamped |
-| `compose.collector.yml` | For the project host, not a honeypot |
 | `update-geoip.sh` | Fetches the MaxMind GeoLite2 database with the operator's credentials. Run from cron; MaxMind refreshes weekly |
 | `update-worldmap.sh` | Fetches the Natural Earth land outline for the attack map. Public domain, so the result can be committed |
 | `preflight.sh` | Static validation before deploying: Python/PHP/shell syntax, `docker compose config` on both profiles, `.env` sanity, git-safety of secret paths, host RAM and `vm.max_map_count` |
