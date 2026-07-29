@@ -223,9 +223,13 @@
     var plotW = box.w - pad.l - pad.r;
     var plotH = box.h - pad.t - pad.b;
     var max = niceMax(Math.max.apply(null, rows.map(function (r) { return r.value; })));
-    // 2px of surface between bars keeps adjacent marks legible.
+    // 2px of surface between bars keeps adjacent marks legible; the ceiling
+    // keeps a short series from turning into blocks of colour. Three days of
+    // history across a wide card gave three 600px bars, which is a fill, not a
+    // comparison. Bars stay centred in their slot, so the spacing still reads
+    // as evenly sampled.
     var slot = plotW / rows.length;
-    var width = Math.max(slot - 2, 3);
+    var width = Math.max(Math.min(slot - 2, opts.maxBar || 72), 3);
     var colour = opts.colour || C.series;
 
     [0, 0.5, 1].forEach(function (fraction) {
