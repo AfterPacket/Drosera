@@ -90,10 +90,18 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
     identity.get_or_create_identity(ip)
 
+    # RDP is binary, so its recording can only be a written account of the
+    # negotiation. That is still worth having: without one this service and SMB
+    # were the only two whose sessions never appeared on the dashboard and were
+    # missing from every evidence bundle.
+    recorder = alerting.SessionRecorder(ip, SERVICE, title=f"rdp from {ip}")
+    recorder.write_output(f"RDP connection from {ip}\r\n")
+
     try:
         pdu = await asyncio.wait_for(read_tpkt(reader), timeout=IDLE_TIMEOUT)
 
         if len(pdu) < 6 or pdu[5] != X224_CR:
+            recorder.write_output("non-X.224 probe; dropping\r\n")
             identity.score_named_event(
                 ip, "RDP_CONNECT", payload="non-X.224 probe", service=SERVICE)
             writer.close()
@@ -104,6 +112,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         protocol_label = PROTOCOL_NAMES.get(protocols, f"0x{protocols:08x}") \
             if protocols is not None else "unspecified"
 
+        recorder.write_output(
+            f"X.224 Connection Request\r\n"
+            f"  mstshash: {info['cookie'] or '(none)'}\r\n"
+            f"  protocols: {protocol_label}\r\n")
         identity.score_named_event(
             ip, "RDP_CONNECT",
             payload=f"mstshash={info['cookie']} protocols={protocol_label}"[:200],
@@ -133,10 +145,13 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             # care to hold it, because it cannot know the PDU has not arrived.
             identity.score_named_event(ip, "TARPIT_ENGAGED", payload="rdp tarpit",
                                        service=SERVICE)
+            recorder.write_output("tarpit: dripping Connection Confirm\r\n")
             held = await tarpit.drip(writer, connection_confirm(),
                                      tarpit.deadline(TARPIT_MAX_SECONDS))
             tarpit.log_hold(ip, SERVICE, held)
+            recorder.write_output(f"tarpit held this connection {held:.0f}s\r\n")
         else:
+            recorder.write_output("-> Connection Confirm (negotiation failure)\r\n")
             writer.write(connection_confirm())
             await writer.drain()
 
@@ -146,6 +161,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         except asyncio.TimeoutError:
             extra = b""
         if extra:
+            recorder.write_output(
+                f"client sent {len(extra)} more byte(s) after the failure\r\n")
             alerting.alert_event(
                 ip=ip, event_type="RDP_POST_NEGOTIATION", service=SERVICE,
                 reason="Client continued after negotiation failure",
@@ -155,6 +172,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             ConnectionResetError, struct.error):
         pass
     finally:
+        recorder.write_output("session closed\r\n")
+        recorder.close()
         try:
             writer.close()
         except OSError:

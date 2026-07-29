@@ -214,6 +214,13 @@ only and cannot tell you what Tuesday looked like. The day picker walks the
 whole retention window, and a history strip across the top plots events per day;
 click a bar to open that day.
 
+An **all-time** panel sits above the per-day view: unique addresses, addresses
+blocked, events, attacker-hours wasted, countries and the busiest day across the
+whole retention window. Distinct counts are unions rather than sums — an address
+that came back on six days counts once, and summing the daily figures would
+report six attackers where there was one, an error that grows with the retention
+window rather than staying constant.
+
 Alongside the totals: top IP and top country, the busiest service and hour,
 credential attempts split into distinct usernames and passwords (the ratio is
 what separates a brute force from a spray), the usernames and passwords most
@@ -227,6 +234,24 @@ without ever appearing in the first table.
 > `copytruncate` it empties each finished day in place, leaving the day listed
 > in the picker but reading as zero. Retention is enforced instead by
 > `deploy/watchdog.sh`, which expires whole days past `RETENTION_DAYS`.
+
+Tables throughout are click-to-sort. IP columns sort by octet rather than
+lexically — without that, `9.0.0.1` sorts after `100.0.0.1` and every /8
+interleaves with every other.
+
+### Live sessions
+
+The live feed lists connections being recorded at this moment and lets you watch
+one as it happens. It is read-only by construction: the dashboard reads the
+`.cast` file another container is appending to, and there is no socket to the
+honeypot and no route that sends anything toward an attacker. Watching a session
+cannot become interfering with one.
+
+Every interactive service is recorded — SSH, telnet, FTP, SMTP, MySQL, and now
+SMB and RDP. Those two are binary protocols, so their recordings are a written
+account of the negotiation (commands, share names, NTLM attempts, the X.224
+cookie) rather than a terminal replay, but they appear on the dashboard and in
+evidence bundles like everything else.
 
 ### Session playback
 
@@ -302,6 +327,7 @@ web/              nginx + PHP-FPM, public site, webshell, tarpit engine
 session-cam/      renders sessions to video and delivers them
 intel/            VirusTotal hash lookups for quarantined payloads
 elastic/          ships events to Elasticsearch; Kibana stats
+telemetry/        optional aggregate reporting, and the project collector
 admin-dashboard/  Flask operator UI
 nginx/            site config
 fail2ban/         filter, jail, ufw action
@@ -507,6 +533,38 @@ is 15 years and no renewal machinery, and is the better choice.
 **Telegram delivery** — set `ALERT_TELEGRAM_BOT_TOKEN` and
 `ALERT_TELEGRAM_CHAT_ID`. Message the bot once first; bots cannot open a
 conversation.
+
+## Telemetry (optional, off by default)
+
+The project keeps public counters at [drosera.lol](https://drosera.lol). A
+deployment can contribute to them, and contributes nothing unless you turn it on
+**twice** — the flag and the compose profile:
+
+```bash
+# .env
+TELEMETRY_ENABLED=true
+
+docker compose --profile telemetry up -d --build
+```
+
+Neither alone does anything, deliberately. This project's premise is that no
+honeypot container can reach the internet, and people deploy it because they
+want a box that talks to nobody; an appliance that phoned home on its own would
+be trading away the exact property it was chosen for. The Settings page shows
+whether it is on.
+
+**Sent:** counts — addresses seen, addresses blocked, events, minutes wasted, a
+country count, per-service totals — plus a random instance id generated locally
+so a redeploy does not double-count you.
+
+**Never sent, because it is never read into the process:** addresses,
+credentials, payloads, recordings, commands, loot, hostnames, your identity, the
+allowed-IP list, anything from `.env`. [`telemetry/aggregate.py`](telemetry/aggregate.py)
+is the complete list and it is one short function — read it before enabling.
+
+The reporter runs on `cam-egress`, the only network in the appliance with a way
+out, and on no other. The collector half runs on the project host, not on a
+honeypot; see [`telemetry/README.md`](telemetry/README.md).
 
 ## Troubleshooting
 

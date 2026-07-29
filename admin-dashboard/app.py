@@ -796,6 +796,57 @@ def api_holds():
     return jsonify(live_holds())
 
 
+# A recording is in progress when the writer has not written its sidecar yet.
+# The .meta.json only appears on close, which makes its absence an exact signal
+# rather than a guess -- but a container killed mid-session leaves one absent
+# forever, so recency is required too.
+LIVE_SESSION_WINDOW = 120
+
+
+def live_sessions():
+    """Recordings still being written to right now.
+
+    Read off the filesystem, like everything else the dashboard knows about
+    sessions. There is no socket to the honeypot and no way to send anything
+    towards the attacker from here: this observes a file that another container
+    happens to be appending to, which is why watching a live session cannot
+    become interfering with one.
+    """
+    directory = STORAGE_DIR / "sessions"
+    if not directory.is_dir():
+        return []
+    now = time.time()
+    out = []
+    for path in directory.glob("*.cast"):
+        if path.with_suffix(".meta.json").exists():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        idle = now - stat.st_mtime
+        if idle > LIVE_SESSION_WINDOW:
+            continue
+        stem = path.stem
+        parts = stem.split("_")
+        out.append({
+            "name": path.name,
+            "ip": parts[0] if parts else "unknown",
+            "service": parts[-1] if len(parts) > 2 else "",
+            "bytes": stat.st_size,
+            "idle_seconds": round(idle, 1),
+            "started": datetime.fromtimestamp(stat.st_ctime, timezone.utc).isoformat(),
+        })
+    # Most recently active first: that is the one worth opening.
+    return sorted(out, key=lambda s: s["idle_seconds"])
+
+
+@app.route("/api/sessions/live")
+@require_auth
+def api_sessions_live():
+    return jsonify(live_sessions())
+
+
 def status_of(identity: dict) -> str:
     if identity.get("banned"):
         return "BANNED"
@@ -1359,26 +1410,30 @@ def api_stats():
     return Response(body, mimetype="application/json")
 
 
-# Tolerant of both producers' spacing. Python and PHP both write compact JSON
-# here now, but lines predating that fix are still on disk with `": "`.
-IP_RE = re.compile(r'"real_ip"\s*:\s*"([^"]*)"')
 
 
-def day_digest(day: str, today: str):
-    """Cheap per-day totals for the trend chart: {events, ips}.
+# Cap on the addresses carried in a day's facts. Only ever used to union days
+# into a lifetime distinct count -- the lists never leave this module.
+DAY_IP_CAP = 50000
 
-    Deliberately not read_day(): the trend spans a month, and fully parsing
-    2.4M events to draw thirty points is an absurd trade. Counting lines and
-    pulling the address out with a regex gets the same two numbers for a small
-    fraction of the work. A finished day is then cached for a week, so the scan
-    happens once per day per box no matter how often the page is opened.
 
-    Only the two figures a line count can get exactly right. Anything needing
-    the event type -- bans, tarpits -- is left to /api/stats, which parses: a
-    substring test for "BAN" also matches a payload that merely mentions it,
-    and a headline number that is quietly wrong is worse than no number.
+def day_facts(day: str, today: str):
+    """One day reduced to the facts every other view is built from.
+
+    Parsed properly rather than pattern-matched. An earlier version counted
+    lines and pulled the address out with a regex, which is much faster but can
+    only answer questions a substring can answer -- it could not tell a BAN
+    event from a payload that merely mentions the word, and a headline number
+    that is quietly wrong is worse than no number.
+
+    Paying for a real parse is affordable because it happens once: a finished
+    day never changes, so it is cached for a week and the cost is one scan per
+    day per box however often the pages are opened.
+
+    Carries the day's addresses, not just how many, because a lifetime distinct
+    count is a union across days and cannot be recovered from per-day totals.
     """
-    cache_key = f"admin:digest:v1:{day}"
+    cache_key = f"admin:facts:v1:{day}"
     try:
         cached = _redis_admin().get(cache_key)
         if cached:
@@ -1386,28 +1441,114 @@ def day_digest(day: str, today: str):
     except (redis.RedisError, json.JSONDecodeError):
         pass
 
-    events = 0
+    events = read_day(day)
     addresses = set()
-    for path in day_files(day):
-        try:
-            with _open_day_file(path) as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    events += 1
-                    match = IP_RE.search(line)
-                    if match:
-                        addresses.add(match.group(1))
-        except (OSError, EOFError, gzip.BadGzipFile):
-            continue
+    banned = set()
+    tarpitted = set()
+    tarpit_seconds = 0.0
 
-    digest = {"day": day, "events": events, "ips": len(addresses)}
+    for event in events:
+        address = event.get("real_ip")
+        if address and len(addresses) < DAY_IP_CAP:
+            addresses.add(address)
+        kind = event.get("event_type")
+        if kind == "BAN" and address:
+            banned.add(address)
+        elif kind == "TARPIT_ENGAGED" and address:
+            tarpitted.add(address)
+        # Closing frame only; keepalives report elapsed-since-start, so summing
+        # them counts the same seconds over and over.
+        elif kind == "TARPIT_HELD":
+            tarpit_seconds += float(event.get("held_seconds") or 0)
+
+    facts = {
+        "day": day,
+        "events": len(events),
+        "ips": len(addresses),
+        "banned": len(banned),
+        "tarpitted": len(tarpitted),
+        "minutes_wasted": round(tarpit_seconds / 60, 1),
+        "ip_list": sorted(addresses),
+        "banned_list": sorted(banned),
+    }
     try:
-        _redis_admin().setex(cache_key, STATS_CACHE_TTL if day == today else 7 * 86400,
-                             json.dumps(digest))
+        _redis_admin().setex(cache_key,
+                             STATS_CACHE_TTL if day == today else 7 * 86400,
+                             json.dumps(facts))
     except redis.RedisError:
         pass
-    return digest
+    return facts
+
+
+def lifetime_stats(max_days: int = 400):
+    """Every retained day folded into one all-time picture.
+
+    Distinct counts are unions of the per-day address lists, so an address that
+    came back on six days counts once -- summing the daily figures would report
+    six attackers where there was one, and that error grows with the retention
+    window rather than staying constant.
+    """
+    cache_key = "admin:lifetime:v1"
+    try:
+        cached = _redis_admin().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except (redis.RedisError, json.JSONDecodeError):
+        pass
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    days = available_days()[:max_days]
+
+    addresses = set()
+    banned = set()
+    events = 0
+    minutes = 0.0
+    busiest = {"day": None, "events": 0}
+
+    for day in days:
+        facts = day_facts(day, today)
+        addresses.update(facts.get("ip_list") or [])
+        banned.update(facts.get("banned_list") or [])
+        events += facts.get("events", 0)
+        minutes += facts.get("minutes_wasted", 0)
+        if facts.get("events", 0) > busiest["events"]:
+            busiest = {"day": day, "events": facts["events"]}
+
+    countries = Counter()
+    for address in addresses:
+        record = geoip.lookup(address)
+        code = (record or {}).get("country_code")
+        if code:
+            countries[code] += 1
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "days_observed": len(days),
+        "first_day": days[-1] if days else None,
+        "last_day": days[0] if days else None,
+        "unique_ips": len(addresses),
+        "ips_blocked": len(banned),
+        "events": events,
+        "minutes_wasted": round(minutes, 1),
+        "countries": len(countries),
+        "busiest_day": busiest["day"],
+        "busiest_day_events": busiest["events"],
+        "top_countries": [{"country": code, "ips": n}
+                          for code, n in countries.most_common(10)],
+    }
+    try:
+        # Short: today's contribution is still moving. The per-day facts under
+        # it are what is actually expensive, and those stay cached for a week.
+        _redis_admin().setex(cache_key, 300, json.dumps(payload))
+    except redis.RedisError:
+        pass
+    return payload
+
+
+@app.route("/api/stats/lifetime")
+@require_auth
+def api_stats_lifetime():
+    return jsonify(lifetime_stats())
 
 
 @app.route("/api/stats/trend")
@@ -1422,7 +1563,13 @@ def api_stats_trend():
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     # available_days() is newest-first; the chart reads left to right in time.
     wanted = list(reversed(available_days()[:days]))
-    return jsonify({"days": [day_digest(day, today) for day in wanted]})
+    # Counts only. day_facts carries each day's addresses so lifetime can union
+    # them, and a chart of thirty points has no use for fifty thousand of them.
+    return jsonify({"days": [
+        {key: value for key, value in day_facts(day, today).items()
+         if not key.endswith("_list")}
+        for day in wanted
+    ]})
 
 
 @app.route("/api/events")
@@ -2091,6 +2238,12 @@ def admin_settings():
         "cam_format": os.getenv("CAM_FORMAT", "gif"),
         "cam_retention_days": os.getenv("CAM_RETENTION_DAYS", "14"),
         "clips_stored": clips_stored,
+        # Surfaced because an operator should be able to see whether this box
+        # talks to anyone without reading .env on the host. It is off unless
+        # both the flag and the compose profile were set.
+        "telemetry_enabled": os.getenv("TELEMETRY_ENABLED", "false").strip().lower()
+        in ("1", "true", "yes"),
+        "telemetry_url": os.getenv("TELEMETRY_URL", "").strip() or "not configured",
     }
     return render_template("settings.html", channels=channels, settings=settings,
                            csrf_token=g.csrf_token)

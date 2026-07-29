@@ -175,6 +175,11 @@ a:hover{text-decoration:underline}
   font-variant-numeric:tabular-nums}
 .tile .sub{font-size:.74rem;margin-top:var(--s1)}
 
+/* A tile grid nested inside a card: no shadow or bottom margin, since the card
+   already provides both. */
+.tiles.compact{margin-bottom:0;gap:var(--s3)}
+.tiles.compact .tile{box-shadow:none;background:var(--raised)}
+
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
   padding:var(--s5);margin-bottom:var(--s5);box-shadow:var(--shadow);min-width:0}
 .card h2{font-size:.95rem;margin-bottom:var(--s3);font-weight:600;letter-spacing:.1px;
@@ -212,6 +217,17 @@ th{color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;
 tbody tr:hover{background:var(--hover)}
 tbody tr:last-child td{border-bottom:0}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+
+/* Sortable headers. The arrow is reserved with a fixed-width slot whether or
+   not the column is the active one, so sorting does not shift every other
+   heading sideways. */
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text)}
+th.sortable::after{content:"";display:inline-block;width:.9em;margin-left:.15em;
+  color:var(--dim)}
+th.sortable[data-dir="1"]::after{content:"\2191";color:var(--accent)}
+th.sortable[data-dir="-1"]::after{content:"\2193";color:var(--accent)}
+th.sortable[data-dir]{color:var(--text)}
 td.mono,.mono{font-family:var(--mono);font-size:.82rem}
 .wrap{word-break:break-word;max-width:520px}
 .nowrap{white-space:nowrap}

@@ -63,3 +63,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Project website. Deployed from its own host, not from this repo -- and kept
+# out of it so the marketing page and the appliance are never entangled.
+site/

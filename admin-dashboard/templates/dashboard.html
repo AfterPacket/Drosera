@@ -4,6 +4,25 @@
 
 {% block content %}
 <div class="card">
+  <h2>Live sessions <span class="pill off" id="live-count">0</span></h2>
+  <p class="hint">
+    Connections being recorded at this moment. Watching one is strictly
+    read-only &mdash; the dashboard reads the recording file another container
+    is appending to, and has no path back towards the attacker.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>IP</th><th>Service</th><th>Started</th>
+                 <th class="num">Bytes</th><th>Last write</th><th></th></tr></thead>
+      <tbody id="live-rows">
+        <tr><td colspan="6" class="muted">Nothing being recorded right now.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="player-slot" id="live-player"></div>
+</div>
+
+<div class="card">
   <h2>Tracked source addresses
     <span class="count">{{ rows | length }}</span>
     <span class="count" id="refreshed"></span>
@@ -55,5 +74,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='castplayer.js') }}"></script>
 <script src="{{ url_for('static', filename='feed.js') }}" defer></script>
+<script src="{{ url_for('static', filename='live.js') }}" defer></script>
 {% endblock %}

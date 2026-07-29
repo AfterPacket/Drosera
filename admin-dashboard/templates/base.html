@@ -44,6 +44,8 @@
   </main>
 </div>
 <meta name="csrf-token" content="{{ csrf_token }}">
+{# Outside the block so a child template overriding scripts cannot drop it. #}
+<script src="{{ url_for('static', filename='sortable.js') }}" defer></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

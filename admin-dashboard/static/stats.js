@@ -167,6 +167,31 @@
     if (trend.length) { drawTrend(); }
   }
 
+  // All-time totals. Independent of the day selection, so it is fetched once
+  // and never redrawn -- these are plain numbers, not sized-to-container SVG.
+  function loadLifetime() {
+    return fetch("/api/stats/lifetime", { credentials: "same-origin" })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        set("lt-ips", (data.unique_ips || 0).toLocaleString());
+        set("lt-blocked", (data.ips_blocked || 0).toLocaleString());
+        set("lt-events", (data.events || 0).toLocaleString());
+        set("lt-hours", Math.round((data.minutes_wasted || 0) / 60).toLocaleString());
+        set("lt-countries", data.countries || 0);
+        set("lt-busiest", data.busiest_day || "—");
+        var sub = document.getElementById("lt-busiest-sub");
+        if (sub && data.busiest_day) {
+          sub.textContent = plural(data.busiest_day_events || 0, "event");
+        }
+        var range = document.getElementById("lt-range");
+        if (range && data.first_day) {
+          range.textContent = data.first_day + " → " + data.last_day
+            + " · " + plural(data.days_observed || 0, "day");
+        }
+      })
+      .catch(function () { /* the day view is unaffected */ });
+  }
+
   function loadTrend() {
     return fetch("/api/stats/trend?days=30", { credentials: "same-origin" })
       .then(function (response) { return response.json(); })
@@ -349,6 +374,7 @@
 
   load();
   loadTrend();
+  loadLifetime();
   pollHolds();
   setInterval(pollHolds, 5000);
 })();

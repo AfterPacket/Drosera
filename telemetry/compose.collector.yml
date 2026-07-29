@@ -1,0 +1,45 @@
+# Collector for the PROJECT host (drosera.lol) -- not for a honeypot box.
+#
+#   docker compose -f telemetry/compose.collector.yml up -d --build
+#
+# Put a TLS terminator in front of it. This speaks plain HTTP on purpose and
+# binds loopback by default, so publishing it is a deliberate act rather than
+# something that happens because a default was left alone.
+
+services:
+  collector:
+    build: { context: ., dockerfile: Dockerfile }
+    container_name: drosera-collector
+    command: ["python3", "collector.py"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      COLLECTOR_DATA_DIR: /data
+      COLLECTOR_PORT: 8080
+      # Set this. Without it anyone on the internet can POST numbers that end up
+      # on the front page, and the totals become a claim about who found the
+      # endpoint rather than about how much traffic anyone has seen.
+      TELEMETRY_TOKEN: ${TELEMETRY_TOKEN:-}
+      COLLECTOR_CORS_ORIGIN: ${COLLECTOR_CORS_ORIGIN:-https://drosera.lol}
+      COLLECTOR_STALE_DAYS: ${COLLECTOR_STALE_DAYS:-14}
+    ports:
+      - "${COLLECTOR_BIND_ADDR:-127.0.0.1}:${COLLECTOR_PUBLIC_PORT:-8090}:8080"
+    volumes:
+      - collector-data:/data
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    mem_limit: 256m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)\""]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  collector-data:

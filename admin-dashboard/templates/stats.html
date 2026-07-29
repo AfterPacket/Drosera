@@ -34,6 +34,30 @@
 </div>
 
 <div class="card">
+  <h2>All time <span class="count" id="lt-range"></span></h2>
+  <p class="hint">
+    Every retained day together. Distinct counts are unions, so an address that
+    came back on six days counts once &mdash; summing the daily figures would
+    report six attackers where there was one.
+  </p>
+  <div class="tiles compact">
+    <div class="tile"><div class="label">Unique IPs</div>
+      <div class="value" id="lt-ips">&mdash;</div></div>
+    <div class="tile"><div class="label">IPs blocked</div>
+      <div class="value" id="lt-blocked">&mdash;</div></div>
+    <div class="tile"><div class="label">Events</div>
+      <div class="value" id="lt-events">&mdash;</div></div>
+    <div class="tile"><div class="label">Attacker-hours wasted</div>
+      <div class="value" id="lt-hours">&mdash;</div></div>
+    <div class="tile"><div class="label">Countries</div>
+      <div class="value" id="lt-countries">&mdash;</div></div>
+    <div class="tile"><div class="label">Busiest day</div>
+      <div class="value text" id="lt-busiest">&mdash;</div>
+      <div class="sub" id="lt-busiest-sub"></div></div>
+  </div>
+</div>
+
+<div class="card">
   <h2>History</h2>
   <p class="hint">
     Events per day across the retained log. Click a day to read it; the

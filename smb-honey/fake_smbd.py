@@ -33,6 +33,19 @@ SMB1_MAGIC = b"\xffSMB"
 CMD_NEGOTIATE, CMD_SESSION_SETUP, CMD_LOGOFF = 0x0000, 0x0001, 0x0002
 CMD_TREE_CONNECT, CMD_TREE_DISCONNECT, CMD_CREATE = 0x0003, 0x0004, 0x0005
 
+# For the session transcript. SMB is binary, so a recording of it can only ever
+# be a written account of what happened -- but "what happened" is the part an
+# operator reads anyway, and without one this service was the only one whose
+# sessions were invisible on the dashboard and absent from evidence bundles.
+CMD_NAMES = {
+    CMD_NEGOTIATE: "NEGOTIATE",
+    CMD_SESSION_SETUP: "SESSION_SETUP",
+    CMD_LOGOFF: "LOGOFF",
+    CMD_TREE_CONNECT: "TREE_CONNECT",
+    CMD_TREE_DISCONNECT: "TREE_DISCONNECT",
+    CMD_CREATE: "CREATE",
+}
+
 STATUS_SUCCESS = 0x00000000
 STATUS_MORE_PROCESSING = 0xC0000016
 STATUS_LOGON_FAILURE = 0xC000006D
@@ -203,6 +216,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     tree_counter = 1
     trees = {}
 
+    recorder = alerting.SessionRecorder(ip, SERVICE, title=f"smb from {ip}")
+    recorder.write_output(
+        f"SMB session from {ip} on {'139/netbios' if netbios else '445'}\r\n")
+
     # Share enumeration is chatty -- an SMB client sends NEGOTIATE, SESSION_SETUP
     # and a TREE_CONNECT per share. Delaying each response turns a scan that took
     # under a second into one that takes minutes, and SMB clients wait patiently
@@ -226,11 +243,13 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
 
             # NetBIOS session request on 139 -> positive session response.
             if netbios and msg_type == 0x81:
+                recorder.write_output("NetBIOS session request -> accepted\r\n")
                 writer.write(b"\x82\x00\x00\x00")
                 await writer.drain()
                 continue
 
             if payload.startswith(SMB1_MAGIC):
+                recorder.write_output("SMB1 NEGOTIATE -> steering client to SMB2\r\n")
                 identity.score_named_event(
                     ip, "SMB_ENUM", payload="SMB1 negotiate", service=SERVICE)
                 # Steer SMB1 clients to SMB2 by answering the wildcard dialect.
@@ -244,6 +263,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
             command, = struct.unpack("<H", payload[12:14])
             message_id, = struct.unpack("<Q", payload[24:32])
             body = payload[64:]
+            recorder.write_output(
+                f"SMB2 {CMD_NAMES.get(command, f'0x{command:04x}')}\r\n")
 
             alerting.alert_event(
                 ip=ip, event_type="SMB_PDU", service=SERVICE,
@@ -264,6 +285,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                     msg = struct.unpack("<I", blob[index + 8:index + 12])[0] \
                         if len(blob) >= index + 12 else 1
                     if msg == 3:
+                        recorder.write_output("  NTLMSSP_AUTH -> STATUS_LOGON_FAILURE\r\n")
                         parse_ntlm_auth(blob, ip)
                         # Slow the failure too: this is the branch a password
                         # spray hits over and over, so it is the one where a
@@ -287,6 +309,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                 except (struct.error, IndexError):
                     pass
                 leaf = share.rstrip("\\").split("\\")[-1] or "IPC$"
+                recorder.write_output(f"  share {share or leaf}\r\n")
                 identity.score_named_event(
                     ip, "SMB_ENUM", payload=f"TREE_CONNECT {share}"[:200],
                     service=SERVICE)
@@ -320,6 +343,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     finally:
         tarpit.end_hold(hold_key)
         tarpit.log_hold(ip, SERVICE, held)
+        if held:
+            recorder.write_output(f"tarpit held this connection {held:.0f}s\r\n")
+        recorder.write_output("session closed\r\n")
+        recorder.close()
         try:
             writer.close()
         except OSError:
