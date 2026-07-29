@@ -1,6 +1,25 @@
-// Ban/unban actions and session playback for the IP detail page.
+// Ban/unban actions, the service timeline, and session playback for the IP
+// detail page.
 (function () {
   "use strict";
+
+  // Timeline points are rendered into a data attribute rather than fetched:
+  // the server already had them to build the page, and a second round trip over
+  // the operator's SSH tunnel to redraw what it just sent is a wasted wait.
+  var host = document.getElementById("c-timeline");
+  if (host && window.DroseraCharts) {
+    var draw = function () {
+      try {
+        window.DroseraCharts.timeline(host,
+          JSON.parse(host.getAttribute("data-points") || "[]"));
+      } catch (error) { /* leave the box empty rather than break the page */ }
+    };
+    draw();
+    // Both handlers redraw the same SVG: it is sized against its container and
+    // coloured from CSS variables, so neither survives on its own.
+    window.addEventListener("resize", draw);
+    window.addEventListener("drosera:themechange", draw);
+  }
 
   var meta = document.querySelector('meta[name="csrf-token"]');
   var csrf = meta ? meta.getAttribute("content") : "";
@@ -33,24 +52,30 @@
     });
   });
 
-  // Mount on demand rather than on load: an IP with a dozen recordings would
-  // otherwise fetch and replay all of them at once.
-  document.querySelectorAll(".player[data-src]").forEach(function (node) {
+  // Mount on demand rather than on load. The stitched recording is every
+  // connection this address ever made, so it is the one thing on the page worth
+  // not fetching until somebody asks for it.
+  document.querySelectorAll(".player-shell[data-src]").forEach(function (node) {
     var button = document.createElement("button");
-    button.className = "act";
-    button.textContent = "Play";
+    button.type = "button";
+    button.className = "act primary";
+    button.textContent = "Play engagement";
     node.parentNode.insertBefore(button, node);
 
     button.addEventListener("click", function () {
       if (node.dataset.mounted === "1") {
         window.DroseraCast.stop(node);
         node.dataset.mounted = "0";
-        button.textContent = "Play";
+        button.textContent = "Play engagement";
         return;
       }
       window.DroseraCast.play(node.getAttribute("data-src"), node);
       node.dataset.mounted = "1";
-      button.textContent = "Hide";
+      button.textContent = "Close player";
+      // The player takes the keyboard once it exists, so hand focus over
+      // rather than making the operator click into it.
+      var screen = node.querySelector(".cast-screen");
+      if (screen) { screen.focus(); }
     });
   });
 })();

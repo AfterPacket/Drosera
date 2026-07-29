@@ -9,7 +9,9 @@ Auth is two-stage and both stages are required. A session is only created after
 TOTP succeeds -- there is no intermediate state that grants access.
 """
 
+import csv
 import fnmatch
+import gzip
 import hashlib
 import hmac
 import io
@@ -31,7 +33,7 @@ import redis
 
 import geoip
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
-                   request, send_file, url_for)
+                   request, send_file, stream_with_context, url_for)
 
 app = Flask(__name__)
 
@@ -411,39 +413,66 @@ def resolve_identity(ip: str):
         return None
 
 
-def log_files():
-    directory = STORAGE_DIR / "logs"
-    if not directory.is_dir():
-        return []
-    return sorted(directory.glob("*.jsonl"), reverse=True)
+def log_files(max_days: int = 7):
+    """Event-log files for the newest days, newest day first.
+
+    Counted in days rather than files: a day displaced by the old logrotate
+    stanza spans several files, and a flat file count would have silently
+    narrowed the live feed's window to two or three days.
+    """
+    return [path for day in available_days()[:max_days] for path in day_files(day)]
 
 
 def tail_lines(path: Path, max_bytes: int = 8 * 1024 * 1024) -> list:
     """Return the last max_bytes of a file as lines.
 
-    Log files can reach 100MB between rotations; reading one whole would blow
-    the container's memory limit. Seek instead and drop the first (likely
-    partial) line.
+    A single day's log can reach 100MB under a sustained scan; reading one whole
+    would blow the container's memory limit. Seek instead and drop the first
+    (likely partial) line.
     """
     try:
-        size = path.stat().st_size
-        with open(path, "rb") as handle:
-            if size > max_bytes:
-                handle.seek(size - max_bytes)
+        if path.suffix == ".gz":
+            # No seeking to an offset in a compressed stream, so decompress
+            # forward and keep a sliding window of the tail. Held as a list of
+            # chunks rather than one buffer that is concatenated and re-sliced
+            # every megabyte, which would turn a 100MB archive into gigabytes
+            # of copying to read its last 8MB.
+            chunks = []
+            kept = 0
+            partial = False
+            with gzip.open(path, "rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    kept += len(chunk)
+                    while chunks and kept - len(chunks[0]) >= max_bytes:
+                        kept -= len(chunks.pop(0))
+                        partial = True
+            raw = b"".join(chunks)
+            if len(raw) > max_bytes:
+                raw = raw[-max_bytes:]
                 partial = True
-            else:
-                partial = False
-            raw = handle.read()
-    except OSError:
+        else:
+            size = path.stat().st_size
+            with open(path, "rb") as handle:
+                if size > max_bytes:
+                    handle.seek(size - max_bytes)
+                    partial = True
+                else:
+                    partial = False
+                raw = handle.read()
+    except (OSError, EOFError, gzip.BadGzipFile):
         return []
     lines = raw.decode("utf-8", "replace").splitlines()
     return lines[1:] if partial and lines else lines
 
 
-def read_events(limit=200, ip_filter=None, since=None, max_files=7):
+def read_events(limit=200, ip_filter=None, since=None, max_days=7):
     """Read newest-first across daily JSONL files, stopping once limit is met."""
     events = []
-    for path in log_files()[:max_files]:
+    for path in log_files(max_days):
         lines = tail_lines(path)
         for line in reversed(lines):
             line = line.strip()
@@ -501,6 +530,176 @@ def session_files(ip=None):
             **info,
         })
     return out
+
+
+# Idle time between two connections is collapsed to this many seconds of
+# playback. Matches the player's own MAX_GAP, so dead air inside a connection
+# and dead air between two connections squeeze to the same length.
+STITCH_GAP = 2.0
+
+
+def _read_cast_header(path: Path) -> dict:
+    """Just the leading header object, so segments can be ordered cheaply."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                parsed = json.loads(line)
+                return parsed if isinstance(parsed, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _read_cast_frames(path: Path, budget: int):
+    """Up to `budget` frames from one asciicast v2 file.
+
+    Budgeted by the caller rather than read whole: an attacker with fifty
+    connections has a hundred megabytes of recordings, and inflating all of it
+    into Python lists at once would exceed this container's memory limit before
+    a single frame reached the browser.
+    """
+    frames = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if len(frames) >= budget:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, list) and len(parsed) >= 3:
+                    try:
+                        frames.append([float(parsed[0]), str(parsed[1]), str(parsed[2])])
+                    except (TypeError, ValueError):
+                        continue
+    except OSError:
+        pass
+    return frames
+
+
+def _human_gap(seconds: float) -> str:
+    seconds = int(max(seconds, 0))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    if seconds < 86400:
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+    return f"{seconds // 86400}d {(seconds % 86400) // 3600}h"
+
+
+def stitch_sessions(ip: str, max_frames: int = 40000):
+    """Every recording for one attacker as a single continuous asciicast.
+
+    The honeypot opens a new .cast per TCP connection, which is the right way to
+    record it and the wrong way to watch it: an attacker who reconnects nine
+    times becomes nine players, and the operator has to reassemble the
+    engagement in their head from nine separate start buttons.
+
+    Segments are laid end to end on one clock. The real idle time between
+    connections is deliberately NOT preserved -- someone who came back four
+    hours later would otherwise leave four hours of dead air in the middle of
+    the timeline. Each gap collapses to STITCH_GAP behind a banner naming the
+    true interval, so the elapsed time is still readable without being sat
+    through. The banner is an ordinary output frame rather than a protocol-level
+    marker: the player would need a second frame type to carry one, and this
+    way the seam is legible in a plain `cat` of the stitched file too.
+
+    Returns (header, frames, segments); header is None when nothing is recorded.
+    """
+    directory = STORAGE_DIR / "sessions"
+    if not directory.is_dir():
+        return None, [], []
+
+    # Headers first. Ordering the segments needs only each file's start time,
+    # and reading headers is cheap enough to do for all of them before deciding
+    # how much of the frame budget each one gets.
+    found = []
+    for path in sorted(directory.glob(f"{ip.replace(':', '_')}_*.cast")):
+        head = _read_cast_header(path)
+        try:
+            fallback = path.stat().st_mtime
+        except OSError:
+            continue
+        found.append({
+            "path": path,
+            "header": head,
+            "start": float(head.get("timestamp") or fallback),
+            # "1.2.3.4_20260728T091412_ssh.cast" -> "ssh"
+            "service": path.stem.rsplit("_", 1)[-1],
+        })
+    if not found:
+        return None, [], []
+
+    found.sort(key=lambda s: s["start"])
+
+    out = []
+    segments = []
+    base = 0.0
+    previous_end = None
+    truncated = False
+    used = 0
+
+    for position, segment in enumerate(found):
+        frames = _read_cast_frames(segment["path"], max_frames - used)
+        if not frames:
+            # Either empty, or the budget is gone and later segments cannot be
+            # shown at all -- which is itself worth saying.
+            if used >= max_frames:
+                truncated = True
+                break
+            continue
+        used += len(frames)
+        duration = frames[-1][0]
+
+        if position and previous_end is not None:
+            idle = max(segment["start"] - previous_end, 0)
+            started = datetime.fromtimestamp(segment["start"], timezone.utc)
+            out.append([round(base, 6), "o",
+                        f"\r\n\r\n--- reconnected {started.strftime('%H:%M:%S')} UTC"
+                        f" · {segment['service']} · after {_human_gap(idle)} idle ---\r\n\r\n"])
+            base += STITCH_GAP
+
+        segments.append({
+            "name": segment["path"].name,
+            "service": segment["service"],
+            "offset": round(base, 1),
+            "duration": round(duration, 1),
+            "started": datetime.fromtimestamp(segment["start"], timezone.utc).isoformat(),
+        })
+
+        for offset, stream, data in frames:
+            out.append([round(base + offset, 6), stream, data])
+
+        base += duration
+        previous_end = segment["start"] + duration
+
+    if truncated:
+        out.append([round(base, 6), "o",
+                    f"\r\n\r\n--- playback truncated at {max_frames} frames; "
+                    f"the complete recordings are in the evidence export ---\r\n"])
+
+    if not out:
+        return None, [], []
+
+    header = {
+        "version": 2,
+        # The widest segment, so a later wide terminal is not clipped to an
+        # earlier narrow one.
+        "width": max((s["header"].get("width") or 80) for s in found),
+        "height": max((s["header"].get("height") or 24) for s in found),
+        "timestamp": int(found[0]["start"]),
+        "title": f"{len(segments)} connection(s) from {ip}",
+        "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"},
+    }
+    return header, out, segments
 
 
 def clip_info(stem: str) -> dict:
@@ -626,6 +825,76 @@ def dashboard():
     return render_template("dashboard.html", rows=rows, csrf_token=g.csrf_token)
 
 
+# Wrappers an attacker types before the command that matters. Counting the
+# first token blindly would report a top command of "sudo" for a host that ran
+# sudo once against five different binaries.
+COMMAND_PREFIXES = {"sudo", "doas", "env", "nohup", "time", "exec", "command"}
+
+
+def top_commands(commands, limit: int = 12):
+    """The programs this attacker actually invoked, most-used first.
+
+    Counted by executable rather than by whole command line: `cat /etc/passwd`
+    and `cat /etc/shadow` are one behaviour worth seeing as "cat (2)", and a
+    list of distinct full command lines is just the transcript again.
+    """
+    counter = Counter()
+    for entry in commands:
+        payload = (entry.get("payload") or "").strip()
+        if not payload:
+            continue
+        # Take the first pipeline stage; `curl x | sh` is a curl.
+        head = re.split(r"[|;&]", payload, 1)[0].strip()
+        for token in head.split():
+            # Skip leading VAR=value assignments and wrapper commands.
+            if "=" in token.split("/")[-1] and not token.startswith("-"):
+                continue
+            name = token.split("/")[-1]
+            if name in COMMAND_PREFIXES:
+                continue
+            if name.startswith("-"):
+                continue
+            counter[name[:32]] += 1
+            break
+    return counter.most_common(limit)
+
+
+def service_timeline(history, limit: int = 400):
+    """Scored events as points on a clock, grouped into per-service lanes.
+
+    Lanes rather than one row of coloured dots: which service an event belongs
+    to is then carried by position, so it survives being read by someone who
+    cannot separate two hues -- the same reason nothing else on this dashboard
+    encodes identity in colour alone.
+    """
+    points = []
+    for entry in history[-limit:]:
+        stamp = str(entry.get("timestamp") or "")
+        if not stamp:
+            continue
+        try:
+            when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        points.append({
+            "t": when.timestamp(),
+            "label": when.strftime("%H:%M:%S"),
+            "service": entry.get("service") or "web",
+            "event": entry.get("event_type") or "",
+            "points": float(entry.get("points") or 0),
+        })
+    points.sort(key=lambda p: p["t"])
+    return points
+
+
+@app.route("/api/ip/<path:ip>/timeline")
+@require_auth
+def api_ip_timeline(ip):
+    ip = safe_ip(ip)
+    identity = resolve_identity(ip) or {}
+    return jsonify({"points": service_timeline(identity.get("session_history") or [])})
+
+
 @app.route("/ip/<path:ip>")
 @require_auth
 def ip_detail(ip):
@@ -654,27 +923,43 @@ def ip_detail(ip):
     per_page = 50
     start = (page - 1) * per_page
 
+    # Every event carrying a command line, not just WEBSHELL_CMD. Filtering on
+    # that one type hid the most interesting entries an attacker produces:
+    # DROPPED_BINARY_EXEC, PERSISTENCE_ATTEMPT and FILE_UPLOAD all record what
+    # was actually run or written, and none showed up under "commands issued".
+    commands = [e for e in history
+                if e.get("event_type") in COMMAND_EVENTS
+                and (e.get("payload") or "").strip()]
+
+    credentials = identity.get("credentials") or []
+    recordings = session_files(ip)
+
+    # Time this address spent held in the tarpit. The closing TARPIT_HELD frame
+    # carries the true total; keepalives report elapsed-since-start and summing
+    # those counts the same seconds repeatedly.
+    wasted = sum(float(e.get("held_seconds") or 0) for e in events
+                 if e.get("event_type") == "TARPIT_HELD")
+
     return render_template(
         "ip_detail.html",
         ip=ip, identity=identity, status=status_of(identity), country=country,
         breakdown=sorted(breakdown.items(), key=lambda kv: -kv[1]["points"]),
-        credentials=(identity.get("credentials") or [])[-100:],
-        # Every event carrying a command line, not just WEBSHELL_CMD. Filtering
-        # on that one type hid the most interesting entries an attacker
-        # produces: DROPPED_BINARY_EXEC, PERSISTENCE_ATTEMPT and FILE_UPLOAD
-        # all record what was actually run or written, and none of them showed
-        # up in the list titled "commands issued".
-        commands=[e for e in history
-                  if e.get("event_type") in COMMAND_EVENTS
-                  and (e.get("payload") or "").strip()][-100:],
+        credentials=credentials[-100:],
+        commands=commands[-100:],
+        top_commands=top_commands(commands),
+        usernames=sorted({c.get("username") for c in credentials if c.get("username")}),
+        passwords=sorted({c.get("password") for c in credentials if c.get("password")}),
+        persistence=sum(1 for e in history
+                        if e.get("event_type") == "PERSISTENCE_ATTEMPT"),
+        wasted_minutes=round(wasted / 60, 1),
         payloads=[e for e in history
                   if e.get("event_type") in ("SQLI_BASIC", "SQLI_UNION_BLIND", "SQLI_OOB",
                                              "PHP_EVAL_ATTEMPT", "FILE_UPLOAD",
                                              "REVERSE_SHELL")][-100:],
-        timeline=history[-200:],
+        timeline=service_timeline(history),
         events=events[start:start + per_page],
         page=page, total_pages=max(1, (len(events) + per_page - 1) // per_page),
-        sessions=session_files(ip), csrf_token=g.csrf_token,
+        sessions=recordings, csrf_token=g.csrf_token,
     )
 
 
@@ -694,6 +979,28 @@ def session_raw(name):
         abort(404)
     return Response(path.read_text(encoding="utf-8", errors="replace"),
                     mimetype="application/x-asciicast")
+
+
+@app.route("/sessions/by-ip/<path:ip>/raw")
+@require_auth
+def session_stitched(ip):
+    """One attacker's whole engagement as a single playable recording."""
+    ip = safe_ip(ip)
+    header, frames, _ = stitch_sessions(ip)
+    if header is None:
+        abort(404)
+    body = "\n".join([json.dumps(header)]
+                     + [json.dumps(frame) for frame in frames])
+    return Response(body + "\n", mimetype="application/x-asciicast")
+
+
+@app.route("/api/sessions/<path:ip>/segments")
+@require_auth
+def api_session_segments(ip):
+    """Where each connection begins on the stitched timeline."""
+    ip = safe_ip(ip)
+    _, _, segments = stitch_sessions(ip)
+    return jsonify({"ip": ip, "segments": segments})
 
 
 @app.route("/clips/<path:name>")
@@ -746,34 +1053,82 @@ def stats():
     return render_template("stats.html", csrf_token=g.csrf_token)
 
 
+DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.jsonl")
+
+
+def day_files(day: str):
+    """Every file holding events for one UTC day, live file first.
+
+    Normally that is the single file the writer appends to. It is a list because
+    older deployments ran a logrotate stanza over this tree, and `copytruncate`
+    moved finished days into numbered siblings -- 2026-07-28.jsonl.1, then
+    .2.gz as later rotations shuffled them along -- while leaving an empty
+    2026-07-28.jsonl behind. That stanza is gone (see deploy/logrotate-drosera),
+    but the displaced archives are still on disk on every box that ran it, and
+    they are recoverable: copytruncate copies the *content* of a file already
+    named for its day, so every sibling of 2026-07-28.jsonl* holds 07-28 events
+    and nothing else. Reading them back is the whole repair.
+    """
+    directory = STORAGE_DIR / "logs"
+    if not directory.is_dir():
+        return []
+    live = directory / f"{day}.jsonl"
+    rotated = sorted(p for p in directory.glob(f"{day}.jsonl.*") if p.is_file())
+    return ([live] if live.is_file() else []) + rotated
+
+
+def _open_day_file(path: Path):
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return open(path, "r", encoding="utf-8", errors="replace")
+
+
 def read_day(day: str, limit: int = 80000):
     """Every event from one UTC day.
 
     The event log is already one file per day, so daily history needs no extra
-    storage and no rollup job -- logrotate's retention *is* the retention. This
-    reads one file rather than tailing the most recent few, which is what makes
-    an arbitrary past day as cheap to render as today.
+    storage and no rollup job -- expiring a day is deleting its file. This reads
+    that day directly rather than tailing the most recent few, which is what
+    makes an arbitrary past day as cheap to render as today.
     """
-    path = STORAGE_DIR / "logs" / f"{day}.jsonl"
     events = []
-    if not path.is_file():
-        return events
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if len(events) >= limit:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    parsed = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(parsed, dict):
-                    events.append(parsed)
-    except OSError:
-        pass
+    paths = day_files(day)
+    # Only pay for de-duplication when a day actually spans several files.
+    # copytruncate loses writes across the copy/truncate seam rather than
+    # duplicating them, but a forced rotation on top of a scheduled one can
+    # leave the same lines in two siblings, and double-counting a day is a
+    # worse failure than the cost of a set.
+    seen = set() if len(paths) > 1 else None
+
+    for path in paths:
+        if len(events) >= limit:
+            break
+        try:
+            with _open_day_file(path) as handle:
+                for line in handle:
+                    if len(events) >= limit:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if seen is not None:
+                        if line in seen:
+                            continue
+                        seen.add(line)
+                    try:
+                        parsed = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, dict):
+                        events.append(parsed)
+        except (OSError, EOFError, gzip.BadGzipFile):
+            # A truncated .gz still yields everything before the damage.
+            continue
+
+    if len(paths) > 1:
+        # Siblings are read newest-file-first but hold older events, so the
+        # merged list is only in order once it is sorted.
+        events.sort(key=lambda e: str(e.get("timestamp", "")))
     return events
 
 
@@ -781,7 +1136,14 @@ def available_days():
     directory = STORAGE_DIR / "logs"
     if not directory.is_dir():
         return []
-    days = [p.stem for p in directory.glob("*.jsonl") if len(p.stem) == 10]
+    # Matched on the prefix, not the stem: a day whose only surviving copy is a
+    # rotated sibling has a stem of "2026-07-28.jsonl" and would otherwise drop
+    # out of the picker entirely.
+    days = set()
+    for path in directory.glob("*.jsonl*"):
+        match = DAY_RE.match(path.name)
+        if match:
+            days.add(match.group(1))
     return sorted(days, reverse=True)
 
 
@@ -794,7 +1156,7 @@ def api_stats():
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
         day = today
 
-    cache_key = f"admin:stats:v2:{day}"
+    cache_key = f"admin:stats:v3:{day}"
     try:
         cached = _redis_admin().get(cache_key)
         if cached:
@@ -808,6 +1170,10 @@ def api_stats():
     by_service = Counter()
     tools = Counter()
     countries = Counter()
+    events_by_ip = Counter()
+    usernames = Counter()
+    passwords = Counter()
+    event_types = Counter()
     tarpit_seconds = 0.0
 
     # Every figure is derived from that day's events rather than from Redis,
@@ -825,8 +1191,24 @@ def api_stats():
         if len(stamp) >= 13:
             hourly[stamp[11:13]] += 1
 
+        kind = event.get("event_type")
+        if kind:
+            event_types[kind] += 1
+        if kind == "CREDENTIAL_ATTEMPT":
+            # Producers write the pair as "user:pass" into the payload excerpt.
+            # Split on the FIRST colon only: a password containing one is
+            # ordinary, a username containing one is not.
+            excerpt = str(event.get("payload_excerpt") or "")
+            if ":" in excerpt:
+                user, _, secret = excerpt.partition(":")
+                if user:
+                    usernames[user[:64]] += 1
+                if secret:
+                    passwords[secret[:64]] += 1
+
         address = event.get("real_ip")
         if address:
+            events_by_ip[address] += 1
             seen_ips.add(address)
             score = float(event.get("cumulative_score") or 0)
             if score > peak_score.get(address, 0):
@@ -836,7 +1218,6 @@ def api_stats():
             if event.get("service"):
                 services_by_ip.setdefault(address, set()).add(event["service"])
 
-        kind = event.get("event_type")
         if kind == "BAN" and address:
             banned_ips.add(address)
         elif kind == "TARPIT_ENGAGED" and address:
@@ -857,9 +1238,11 @@ def api_stats():
     # Counted per distinct IP rather than per event, so one noisy scanner does
     # not make its country look like a campaign.
     origins = {}
+    country_of = {}
     for address in seen_ips:
         record = geoip.lookup(address)
         code = (record or {}).get("country_code")
+        country_of[address] = code
         countries[code or "unknown"] += 1
         if not record or record.get("lat") is None:
             continue
@@ -894,6 +1277,24 @@ def api_stats():
         "services_touched": sorted(services_by_ip.get(address, [])),
     } for address, score in top]
 
+    # Volume and score answer different questions. The highest scorer is the one
+    # that did the most alarming thing; the highest-volume host is the one that
+    # made the most noise, and a hammering scanner can stay well under the score
+    # threshold all day. Both belong on the page.
+    noisiest = [{
+        "ip": address,
+        "events": count,
+        "country": country_of.get(address) or "-",
+        "score": round(peak_score.get(address, 0), 1),
+        "status": status_of({"banned": address in banned_ips,
+                             "tarpit_active": address in tarpitted_ips}),
+    } for address, count in events_by_ip.most_common(10)]
+
+    busiest_hour = max(hourly.items(), key=lambda kv: kv[1])[0] if hourly else None
+    # "unknown" is an absence of GeoIP, not a country, so it must never be
+    # announced as the top one.
+    ranked_countries = [(code, n) for code, n in countries.most_common()
+                        if code and code != "unknown"]
 
     payload = {
         "day": day,
@@ -923,6 +1324,29 @@ def api_stats():
                      "status": status_of(i),
                      "services": ", ".join(i.get("services_touched") or [])}
                     for i in identities],
+        "noisiest_ips": noisiest,
+        # Headline single values, resolved server-side so the page does not have
+        # to re-derive "the largest of these" in three different places.
+        "top_ip": noisiest[0]["ip"] if noisiest else None,
+        "top_ip_events": noisiest[0]["events"] if noisiest else 0,
+        "top_country": ranked_countries[0][0] if ranked_countries else None,
+        "top_country_ips": ranked_countries[0][1] if ranked_countries else 0,
+        # Excludes the "unknown" bucket, which the Countries tile used to count
+        # as a country of its own -- so a day of pure un-geolocated traffic
+        # reported "1 country" next to a Top country of "—".
+        "countries_total": len(ranked_countries),
+        "top_service": by_service.most_common(1)[0][0] if by_service else None,
+        "top_service_events": by_service.most_common(1)[0][1] if by_service else 0,
+        "busiest_hour": busiest_hour,
+        "busiest_hour_events": hourly.get(busiest_hour, 0) if busiest_hour else 0,
+        "credential_attempts": event_types.get("CREDENTIAL_ATTEMPT", 0),
+        # Totals alongside the top ten, because the length of a list capped at
+        # ten is not the number of distinct values and must not be shown as it.
+        "distinct_usernames": len(usernames),
+        "distinct_passwords": len(passwords),
+        "usernames": [{"label": k, "count": v} for k, v in usernames.most_common(10)],
+        "passwords": [{"label": k, "count": v} for k, v in passwords.most_common(10)],
+        "event_types": [{"type": k, "count": v} for k, v in event_types.most_common(12)],
     }
     body = json.dumps(payload, default=str)
     try:
@@ -933,6 +1357,72 @@ def api_stats():
     except redis.RedisError:
         pass
     return Response(body, mimetype="application/json")
+
+
+# Tolerant of both producers' spacing. Python and PHP both write compact JSON
+# here now, but lines predating that fix are still on disk with `": "`.
+IP_RE = re.compile(r'"real_ip"\s*:\s*"([^"]*)"')
+
+
+def day_digest(day: str, today: str):
+    """Cheap per-day totals for the trend chart: {events, ips}.
+
+    Deliberately not read_day(): the trend spans a month, and fully parsing
+    2.4M events to draw thirty points is an absurd trade. Counting lines and
+    pulling the address out with a regex gets the same two numbers for a small
+    fraction of the work. A finished day is then cached for a week, so the scan
+    happens once per day per box no matter how often the page is opened.
+
+    Only the two figures a line count can get exactly right. Anything needing
+    the event type -- bans, tarpits -- is left to /api/stats, which parses: a
+    substring test for "BAN" also matches a payload that merely mentions it,
+    and a headline number that is quietly wrong is worse than no number.
+    """
+    cache_key = f"admin:digest:v1:{day}"
+    try:
+        cached = _redis_admin().get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except (redis.RedisError, json.JSONDecodeError):
+        pass
+
+    events = 0
+    addresses = set()
+    for path in day_files(day):
+        try:
+            with _open_day_file(path) as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    events += 1
+                    match = IP_RE.search(line)
+                    if match:
+                        addresses.add(match.group(1))
+        except (OSError, EOFError, gzip.BadGzipFile):
+            continue
+
+    digest = {"day": day, "events": events, "ips": len(addresses)}
+    try:
+        _redis_admin().setex(cache_key, STATS_CACHE_TTL if day == today else 7 * 86400,
+                             json.dumps(digest))
+    except redis.RedisError:
+        pass
+    return digest
+
+
+@app.route("/api/stats/trend")
+@require_auth
+def api_stats_trend():
+    """Per-day totals across the retained history.
+
+    The point of the day picker is comparison, and comparison needs a shape --
+    one day at a time tells you nothing about whether today is busy.
+    """
+    days = min(max(request.args.get("days", 30, type=int) or 30, 2), 90)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # available_days() is newest-first; the chart reads left to right in time.
+    wanted = list(reversed(available_days()[:days]))
+    return jsonify({"days": [day_digest(day, today) for day in wanted]})
 
 
 @app.route("/api/events")
@@ -1037,37 +1527,451 @@ def api_untarpit(ip):
     return _set_tarpit(safe_ip(ip), False)
 
 
+EXPORT_CHUNK = 256 * 1024
+
+
+class _ZipStream:
+    """Unseekable sink, so an archive can be sent without ever being stored.
+
+    This container has a 384MB memory limit and a 64MB tmpfs, while the storage
+    tree it exports can reach several gigabytes of recordings and clips. There
+    is therefore nowhere to put a finished bulk archive -- not in RAM, not on
+    disk -- so it is generated and streamed a chunk at a time instead. zipfile
+    falls back to data descriptors when the underlying stream reports itself
+    unseekable, which produces exactly the streamable format this needs.
+    """
+
+    def __init__(self):
+        self._buffer = bytearray()
+        self._position = 0
+
+    def write(self, data):
+        self._buffer += data
+        self._position += len(data)
+        return len(data)
+
+    def tell(self):
+        return self._position
+
+    def flush(self):
+        pass
+
+    def seekable(self):
+        return False
+
+    def drain(self) -> bytes:
+        chunk = bytes(self._buffer)
+        del self._buffer[:]
+        return chunk
+
+
+def _stream_archive(build):
+    """Drive a bundle generator, flushing whatever the ZIP has produced.
+
+    Wrapped in stream_with_context by the callers: a streamed response is
+    consumed after the request context would normally have been torn down, and
+    the Redis handles these bundles read from are cached on `g`.
+    """
+    stream = _ZipStream()
+    archive = zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED)
+    try:
+        for _ in build(archive):
+            chunk = stream.drain()
+            if chunk:
+                yield chunk
+    finally:
+        archive.close()
+    yield stream.drain()
+
+
+def _add_bytes(archive, arcname: str, data, ledger: list):
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    archive.writestr(arcname, data)
+    ledger.append((arcname, hashlib.sha256(data).hexdigest(), len(data)))
+
+
+def _add_file(archive, path: Path, arcname: str, ledger: list):
+    """Copy a file in, hashing as it goes and yielding between chunks.
+
+    Chunked rather than archive.write(): a 400MB clip written in one call would
+    inflate the stream buffer to 400MB, which is the exact failure streaming is
+    here to avoid.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with open(path, "rb") as source, archive.open(arcname, "w") as target:
+            while True:
+                block = source.read(EXPORT_CHUNK)
+                if not block:
+                    break
+                digest.update(block)
+                size += len(block)
+                target.write(block)
+                yield
+    except (OSError, ValueError):
+        return
+    ledger.append((arcname, digest.hexdigest(), size))
+
+
+def loot_index():
+    """sha256 -> (metadata, set of IPs that dropped it)."""
+    directory = STORAGE_DIR / "loot"
+    index = {}
+    if not directory.is_dir():
+        return index
+    for meta_path in sorted(directory.glob("*.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        digest = meta.get("sha256") or meta_path.stem
+        addresses = {s.get("ip") for s in (meta.get("sightings") or []) if s.get("ip")}
+        index[digest] = (meta, addresses)
+    return index
+
+
+BULK_EVENT_BUDGET = 150000
+
+
+def events_for(addresses, max_days: int = 90, per_ip: int = 2000,
+               budget: int = BULK_EVENT_BUDGET):
+    """One pass over the retained log, bucketed by address.
+
+    A bulk export would otherwise re-read every retained day once per attacker:
+    O(attackers x days) file reads to answer what a single pass answers. Bounded
+    twice over -- per address and in total -- because this runs inside a 384MB
+    container against a log that has no such limit. Days are walked newest-first
+    so that hitting a bound costs the oldest history rather than the freshest.
+    """
+    wanted = {address for address in addresses if address}
+    out = {address: [] for address in wanted}
+    if not wanted:
+        return out
+
+    held = 0
+    for day in available_days()[:max_days]:
+        if held >= budget:
+            break
+        for event in read_day(day):
+            address = event.get("real_ip")
+            if address not in wanted:
+                continue
+            bucket = out[address]
+            if len(bucket) >= per_ip:
+                continue
+            bucket.append(event)
+            held += 1
+            if held >= budget:
+                break
+
+    for bucket in out.values():
+        bucket.sort(key=lambda e: str(e.get("timestamp", "")))
+    return out
+
+
+def ban_log_index():
+    """IP -> its lines from the fail2ban evidence log.
+
+    Read once and bucketed: a bulk export would otherwise scan the whole ban
+    log once per attacker. The file is the record the firewall actually acted
+    on, so an attacker's own lines belong in their bundle -- an abuse report
+    that shows what was observed but not what was done about it is half a
+    report.
+    """
+    index = defaultdict(list)
+    path = STORAGE_DIR / "evidence" / "fail2ban.log"
+    if not path.is_file():
+        return index
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                match = re.search(r"\bip=(\S+)", line)
+                if match:
+                    index[match.group(1)].append(line.rstrip("\n"))
+    except OSError:
+        pass
+    return index
+
+
+def commands_from(identity, events):
+    """Every command line this attacker ran, from both places they are recorded.
+
+    The identity's session_history is capped and lives in Redis under a TTL, so
+    on its own it silently loses the early part of a long engagement. The event
+    log is the durable copy. Merged and de-duplicated on (timestamp, payload),
+    since the same command legitimately appears in both.
+    """
+    rows = []
+    seen = set()
+    for entry in (identity or {}).get("session_history") or []:
+        if entry.get("event_type") not in COMMAND_EVENTS:
+            continue
+        payload = (entry.get("payload") or "").strip()
+        if not payload:
+            continue
+        key = (str(entry.get("timestamp", "")), payload)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"timestamp": entry.get("timestamp", ""),
+                     "event_type": entry.get("event_type", ""),
+                     "service": entry.get("service", ""),
+                     "payload": payload})
+    for event in events:
+        if event.get("event_type") not in COMMAND_EVENTS:
+            continue
+        payload = (event.get("payload_excerpt") or "").strip()
+        if not payload:
+            continue
+        key = (str(event.get("timestamp", "")), payload)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"timestamp": event.get("timestamp", ""),
+                     "event_type": event.get("event_type", ""),
+                     "service": event.get("service", ""),
+                     "payload": payload})
+    rows.sort(key=lambda r: str(r["timestamp"]))
+    return rows
+
+
+def _commands_csv(rows) -> str:
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["timestamp", "service", "event_type", "command"])
+    for row in rows:
+        writer.writerow([row["timestamp"], row["service"],
+                         row["event_type"], row["payload"]])
+    return out.getvalue()
+
+
+def _credentials_csv(identity) -> str:
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["timestamp", "service", "username", "password"])
+    for cred in (identity or {}).get("credentials") or []:
+        writer.writerow([cred.get("timestamp", ""), cred.get("service", ""),
+                         cred.get("username", ""), cred.get("password", "")])
+    return out.getvalue()
+
+
+def _attacker_bundle(archive, ip: str, root: str, ledger: list, loot, events,
+                     identity=None, ban_lines=None):
+    """Everything held on one attacker. A generator: yields between files."""
+    if identity is None:
+        identity = resolve_identity(ip)
+
+    _add_bytes(archive, f"{root}report.html",
+               _report_html(ip, identity, events), ledger)
+    yield
+    _add_bytes(archive, f"{root}events.jsonl",
+               "\n".join(json.dumps(e, default=str) for e in events), ledger)
+    yield
+
+    # This address's slice of the ban log: what the firewall was told to do and
+    # when. Present even when empty, so its absence reads as "never banned"
+    # rather than "the export forgot".
+    _add_bytes(archive, f"{root}fail2ban.log",
+               ("\n".join(ban_lines) + "\n") if ban_lines
+               else f"# No ban lines recorded for {ip}.\n", ledger)
+    yield
+
+    commands = commands_from(identity, events)
+    if commands:
+        _add_bytes(archive, f"{root}commands.txt", "\n".join(
+            f"[{row['timestamp']}] <{row['event_type']}>"
+            f"{(' ' + row['service']) if row['service'] else ''} {row['payload']}"
+            for row in commands) + "\n", ledger)
+        yield
+        # CSV as well as the transcript: one is for reading, the other is for
+        # sorting and pivoting, and an analyst should not have to reparse the
+        # first to get the second.
+        _add_bytes(archive, f"{root}commands.csv", _commands_csv(commands), ledger)
+        yield
+
+    if identity:
+        _add_bytes(archive, f"{root}identity.json",
+                   json.dumps(identity, indent=2, default=str), ledger)
+        yield
+        _add_bytes(archive, f"{root}credentials.csv",
+                   _credentials_csv(identity), ledger)
+        yield
+
+    # The engagement as one playable file, alongside the per-connection
+    # originals. The originals are the evidence; the stitch is what makes it
+    # watchable, and a reviewer who has neither the dashboard nor a way to
+    # concatenate nine recordings by hand needs both in the bundle.
+    header, frames, segments = stitch_sessions(ip)
+    if header is not None:
+        _add_bytes(archive, f"{root}sessions/engagement.cast",
+                   "\n".join([json.dumps(header)]
+                             + [json.dumps(f) for f in frames]) + "\n", ledger)
+        yield
+        _add_bytes(archive, f"{root}sessions/engagement-index.json",
+                   json.dumps(segments, indent=2), ledger)
+        yield
+
+    for meta in session_files(ip):
+        cast = STORAGE_DIR / "sessions" / meta["name"]
+        if cast.is_file():
+            for _ in _add_file(archive, cast, f"{root}sessions/{meta['name']}", ledger):
+                yield
+        sidecar = STORAGE_DIR / "sessions" / f"{cast.stem}.meta.json"
+        if sidecar.is_file():
+            for _ in _add_file(archive, sidecar, f"{root}sessions/{sidecar.name}", ledger):
+                yield
+        # The rendered clip: the thing an operator actually shows somebody.
+        if meta.get("clip"):
+            clip = CLIP_DIR / Path(meta["clip"]).name
+            if clip.is_file():
+                for _ in _add_file(archive, clip, f"{root}clips/{clip.name}", ledger):
+                    yield
+
+    for digest, (meta, addresses) in loot.items():
+        if ip not in addresses:
+            continue
+        blob = STORAGE_DIR / "loot" / f"{digest}.bin"
+        if blob.is_file():
+            for _ in _add_file(archive, blob, f"{root}loot/{digest}.bin", ledger):
+                yield
+        _add_bytes(archive, f"{root}loot/{digest}.json",
+                   json.dumps(meta, indent=2, default=str), ledger)
+        yield
+
+    _add_bytes(archive, f"{root}suggested-fail2ban.txt",
+               f"# Add to your jail or run directly:\n"
+               f"fail2ban-client set honeypot banip {ip}\n"
+               f"ufw insert 1 deny from {ip} to any\n", ledger)
+    yield
+
+
+def _manifest(ledger, subject: str) -> str:
+    lines = [
+        "Drosera evidence bundle",
+        f"Subject:   {subject}",
+        f"Generated: {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "Every file in this archive with its SHA-256, so the bundle can be shown",
+        "intact later. Verify with:  sha256sum -c MANIFEST-SHA256.txt",
+        "",
+    ]
+    lines += [f"{digest}  {name}" for name, digest, _ in ledger]
+    lines += ["", f"{len(ledger)} files, "
+                  f"{sum(size for _, _, size in ledger)} bytes uncompressed."]
+    return "\n".join(lines) + "\n"
+
+
 @app.route("/api/export/<path:ip>", methods=["POST", "GET"])
 @require_auth
 def api_export(ip):
     if request.method == "POST":
         require_csrf()
-
     ip = safe_ip(ip)
-    identity = resolve_identity(ip)
-    events = read_events(limit=5000, ip_filter=ip)
+    loot = loot_index()
+    # A single subject gets a far larger per-address budget than a bulk run:
+    # this is the bundle that goes to an abuse desk or a lawyer, and it should
+    # be the complete record of that address, not a sample of it.
+    events = events_for([ip], per_ip=20000, budget=20000).get(ip, [])
+    bans = ban_log_index().get(ip, [])
 
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{ip}/events.jsonl",
-                         "\n".join(json.dumps(e, default=str) for e in events))
-        if identity:
-            archive.writestr(f"{ip}/identity.json",
-                             json.dumps(identity, indent=2, default=str))
-        for meta in session_files(ip):
-            path = STORAGE_DIR / "sessions" / meta["name"]
-            if path.is_file():
-                archive.write(path, f"{ip}/sessions/{meta['name']}")
-        archive.writestr(f"{ip}/suggested-fail2ban.txt",
-                         f"# Add to your jail or run directly:\n"
-                         f"fail2ban-client set honeypot banip {ip}\n"
-                         f"ufw insert 1 deny from {ip} to any\n")
-        archive.writestr(f"{ip}/report.html", _report_html(ip, identity, events))
+    def build(archive):
+        ledger = []
+        for _ in _attacker_bundle(archive, ip, f"{ip}/", ledger, loot, events,
+                                  ban_lines=bans):
+            yield
+        _add_bytes(archive, "MANIFEST-SHA256.txt", _manifest(ledger, ip), [])
+        yield
 
-    buffer.seek(0)
-    audit("EVIDENCE_EXPORT", target_ip=ip, event_count=len(events))
-    return send_file(buffer, mimetype="application/zip", as_attachment=True,
-                     download_name=f"evidence-{ip.replace(':', '_')}.zip")
+    audit("EVIDENCE_EXPORT", target_ip=ip)
+    name = f"evidence-{ip.replace(':', '_')}.zip"
+    return Response(stream_with_context(_stream_archive(build)),
+                    mimetype="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.route("/api/export-bulk", methods=["POST", "GET"])
+@require_auth
+def api_export_bulk():
+    """Every attacker in one archive, streamed.
+
+    Optionally narrowed by score, which is the filter that matters: a honeypot
+    accumulates thousands of addresses that knocked once, and a bundle of all of
+    them buries the handful worth reading.
+    """
+    if request.method == "POST":
+        require_csrf()
+
+    minimum = request.args.get("min_score", 0, type=float) or 0
+    targets = []
+    for _, identity in iter_identities():
+        address = identity.get("ip")
+        if not address:
+            continue
+        if float(identity.get("score") or 0) < minimum:
+            continue
+        targets.append((address, identity))
+    targets.sort(key=lambda pair: -float(pair[1].get("score") or 0))
+
+    loot = loot_index()
+    generated = datetime.now(timezone.utc)
+    buckets = events_for([address for address, _ in targets])
+    bans = ban_log_index()
+
+    def build(archive):
+        ledger = []
+        rows = io.StringIO()
+        index = csv.writer(rows)
+        index.writerow(["ip", "score", "status", "first_seen", "last_seen",
+                        "tool", "services", "events_included"])
+        for address, identity in targets:
+            events = buckets.get(address, [])
+            index.writerow([
+                address,
+                identity.get("score", 0),
+                status_of(identity),
+                identity.get("first_seen", ""),
+                identity.get("last_seen", ""),
+                identity.get("tool_detected") or "",
+                " ".join(identity.get("services_touched") or []),
+                len(events),
+            ])
+            for _ in _attacker_bundle(archive, address,
+                                      f"attackers/{address.replace(':', '_')}/",
+                                      ledger, loot, events, identity,
+                                      bans.get(address, [])):
+                yield
+
+        _add_bytes(archive, "index.csv", rows.getvalue(), ledger)
+        yield
+        # The fail2ban log is the record the firewall actually acted on, so it
+        # belongs in a bundle that claims to be the whole picture.
+        evidence_log = STORAGE_DIR / "evidence" / "fail2ban.log"
+        if evidence_log.is_file():
+            for _ in _add_file(archive, evidence_log, "fail2ban.log", ledger):
+                yield
+        _add_bytes(archive, "README.txt",
+                   f"Drosera bulk evidence export\n"
+                   f"Generated: {generated.isoformat()}\n"
+                   f"Attackers: {len(targets)}"
+                   f"{f' (score >= {minimum:g})' if minimum else ''}\n\n"
+                   f"attackers/<ip>/  one complete bundle per address\n"
+                   f"index.csv        every address with score and status\n"
+                   f"fail2ban.log     the ban record the firewall acted on\n\n"
+                   f"All interaction was with emulated services. No real system\n"
+                   f"was accessed and no captured credential was ever validated.\n",
+                   ledger)
+        yield
+        _add_bytes(archive, "MANIFEST-SHA256.txt",
+                   _manifest(ledger, f"{len(targets)} attackers"), [])
+        yield
+
+    audit("EVIDENCE_EXPORT_BULK", attacker_count=len(targets), min_score=minimum)
+    name = f"evidence-bulk-{generated.strftime('%Y%m%dT%H%M%SZ')}.zip"
+    return Response(stream_with_context(_stream_archive(build)),
+                    mimetype="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 def _report_html(ip, identity, events) -> str:
@@ -1087,12 +1991,29 @@ def _report_html(ip, identity, events) -> str:
         f"<td>{_esc(c.get('password'))}</td><td>{_esc(c.get('timestamp'))}</td></tr>"
         for c in (identity.get("credentials") or [])[:200]
     )
+
+    commands = commands_from(identity, events)
+    ranked = "".join(f"<li><code>{_esc(name)}</code> &times; {count}</li>"
+                     for name, count in top_commands(commands))
+    transcript = "\n".join(
+        f"[{row['timestamp']}] <{row['event_type']}> {row['payload']}"
+        for row in commands[:500])
+    # Assembled here rather than inline in the template below: a conditional
+    # nested f-string inside a triple-quoted one parses, but it is the kind of
+    # line that breaks silently on a quoting change nobody reviews closely.
+    ranked_block = (f'<ul class="ranked">{ranked}</ul>' if ranked
+                    else "<p>None recorded.</p>")
+    transcript_block = f"<pre>{_esc(transcript)}</pre>" if transcript else ""
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Evidence report {_esc(ip)}</title>
-<style>body{{font-family:sans-serif;margin:2rem;color:#111}}
+<style>body{{font-family:sans-serif;margin:2rem;color:#111;max-width:60rem}}
 table{{border-collapse:collapse;margin:1rem 0;width:100%}}
 th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:.9rem}}
-th{{background:#eee}}h1{{border-bottom:3px solid #333;padding-bottom:.4rem}}</style>
+th{{background:#eee}}h1{{border-bottom:3px solid #333;padding-bottom:.4rem}}
+code,pre{{font-family:ui-monospace,Menlo,Consolas,monospace}}
+pre{{background:#f6f6f6;border:1px solid #ddd;padding:.8rem;overflow:auto;
+max-height:40rem;font-size:.8rem;white-space:pre-wrap;word-break:break-all}}
+ul.ranked{{columns:3;font-size:.9rem}}</style>
 </head><body>
 <h1>Honeypot evidence report</h1>
 <p><strong>Source IP:</strong> {_esc(ip)}<br>
@@ -1105,7 +2026,13 @@ th{{background:#eee}}h1{{border-bottom:3px solid #333;padding-bottom:.4rem}}</st
 <strong>Tool detected:</strong> {_esc(identity.get('tool_detected') or 'none')}</p>
 <h2>Score breakdown</h2><table><tr><th>Event</th><th>Count</th><th>Points</th></tr>{rows}</table>
 <h2>Credentials attempted</h2><table><tr><th>Service</th><th>Username</th><th>Password</th><th>When</th></tr>{creds}</table>
-<h2>Event count</h2><p>{len(events)} logged events included in events.jsonl.</p>
+<h2>Commands run</h2>
+{ranked_block}
+{transcript_block}
+<p style="font-size:.85rem;color:#666">{len(commands)} command(s) recorded; the
+full list is in commands.txt and commands.csv.</p>
+<h2>Event count</h2><p>{len(events)} logged events included in events.jsonl.
+Ban-log lines for this address are in fail2ban.log.</p>
 <p style="margin-top:2rem;font-size:.85rem;color:#666">
 Generated by Drosera. All interaction was with an emulated service; no real
 system was accessed and no credential shown here was ever validated.</p>

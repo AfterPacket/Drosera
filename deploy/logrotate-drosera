@@ -4,18 +4,19 @@
 # Retention here is the data-protection control referenced in AUTHORIZATION.md.
 # 90 days is the recommended default; shorten it if your policy requires.
 
-__REPO__/storage/logs/*.jsonl {
-    daily
-    rotate 90
-    missingok
-    notifempty
-    compress
-    delaycompress
-    copytruncate
-    su 1000 1000
-    create 0640 1000 1000
-    maxsize 100M
-}
+# storage/logs/*.jsonl is deliberately NOT rotated here, and must not be added
+# back. Those files are already one per UTC day, named YYYY-MM-DD.jsonl by the
+# writer -- the rotation logrotate performs has already happened, by name.
+#
+# Pointing logrotate at them destroyed the archive it was meant to preserve:
+# `copytruncate` copied 2026-07-28.jsonl to 2026-07-28.jsonl.1 and emptied the
+# original in place, so the dashboard -- which reads {day}.jsonl -- showed every
+# past day as zero while the file still existed and still listed in the day
+# picker. `maxsize 100M` did the same thing mid-day to a busy today.
+#
+# Retention is enforced instead by deploy/watchdog.sh, which deletes whole days
+# older than RETENTION_DAYS. That is the same 90-day control referenced in
+# AUTHORIZATION.md; it just expires days rather than hollowing them out.
 
 # fail2ban tails this file. copytruncate keeps the inode stable so the jail
 # does not need restarting after a rotation.

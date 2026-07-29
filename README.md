@@ -193,7 +193,7 @@ ssh -N -L 8443:127.0.0.1:8443 -p 2222 you@your-vps
 
 Password **and** TOTP are both required; the session is created only after the
 TOTP step succeeds. Pages: live feed, per-IP attacker profiles with session
-replay, evidence log, charts, audit trail, settings.
+replay, evidence and export, charts, audit trail, settings.
 
 The charts are inline SVG built from the same `/api/stats` payload — no chart
 library, because the dashboard is reached from a box with no egress and a CDN
@@ -206,8 +206,90 @@ each other, drawn in a single-hue sequential ramp so colour carries magnitude
 and never identity. Hovering still names the individual city and its count — a
 heat bin is a neighbourhood, not a datum.
 
-Evidence export produces a ZIP with the event log, identity record, asciinema
-recordings, an HTML report, and a suggested fail2ban line.
+### Statistics and history
+
+Every figure on the stats page is recomputed from that day's own log file, so
+any retained day reads exactly the way today does — Redis holds current state
+only and cannot tell you what Tuesday looked like. The day picker walks the
+whole retention window, and a history strip across the top plots events per day;
+click a bar to open that day.
+
+Alongside the totals: top IP and top country, the busiest service and hour,
+credential attempts split into distinct usernames and passwords (the ratio is
+what separates a brute force from a spray), the usernames and passwords most
+tried, and two leaderboards — by score, and by volume. They answer different
+questions. The top scorer did the most alarming thing; the top-volume host made
+the most noise, and a steady scanner can stay under the score threshold all day
+without ever appearing in the first table.
+
+> **Note on retention:** `storage/logs/*.jsonl` is already one file per UTC day,
+> so the file *is* the rotation. Never point logrotate at that tree — with
+> `copytruncate` it empties each finished day in place, leaving the day listed
+> in the picker but reading as zero. Retention is enforced instead by
+> `deploy/watchdog.sh`, which expires whole days past `RETENTION_DAYS`.
+
+### Session playback
+
+The honeypot writes one `.cast` per TCP connection, which is the right way to
+record it and the wrong way to watch it: an attacker who reconnects nine times
+becomes nine separate players. The attacker profile stitches their connections
+onto a single timeline, marking each reconnection inline and collapsing the idle
+time between them to two seconds — someone who came back four hours later would
+otherwise leave four hours of dead air mid-recording. The player has a scrubber,
+speed control, and keyboard transport (space, arrow keys). The per-connection
+originals stay available underneath.
+
+### Evidence export
+
+Two modes, both streamed as they are built, so a large archive starts
+downloading immediately instead of being assembled in memory first.
+
+| | |
+|---|---|
+| **Per attacker** | Export button on any attacker profile |
+| **Bulk** | Evidence page, optionally filtered by minimum score |
+
+Each bundle holds, for one address:
+
+| | |
+|---|---|
+| `report.html` | Readable summary: score breakdown, credentials, ranked commands, transcript |
+| `events.jsonl` | Every logged event |
+| `fail2ban.log` | Its lines from the ban log — what the firewall was told to do, and when |
+| `commands.txt` / `.csv` | Every command run, merged from the session history and the event log |
+| `identity.json` | The tracked identity record |
+| `credentials.csv` | Usernames and passwords tried |
+| `sessions/` | Every recording, plus `engagement.cast` stitching them into one timeline |
+| `clips/` | Rendered video of the sessions |
+| `loot/` | Quarantined payloads with their metadata |
+| `MANIFEST-SHA256.txt` | Digest of every file — verify with `sha256sum -c` |
+
+The bulk archive nests one of those per address under `attackers/` and adds
+`index.csv` over all of them plus the whole `fail2ban.log`.
+
+Commands are merged from two sources on purpose. The identity's session history
+is capped and lives in Redis under a TTL, so on its own it quietly loses the
+early part of a long engagement; the event log is the durable copy. They are
+de-duplicated on timestamp and payload.
+
+### Attacker profile
+
+Headline tiles (score, status, country, first and last seen, time wasted) over a
+facts column and three panels: a **service timeline** plotting scored events
+against a clock in a lane per service, with dot size following the points
+scored, so the moment an engagement turned serious is visible without reading a
+label; **top commands** counted by executable rather than by command line, so
+`cat /etc/passwd` and `cat /etc/shadow` read as one behaviour; and
+**indicators**, the distinct usernames and passwords tried.
+
+### Light and dark
+
+A floating control in the bottom-left corner toggles the theme, and Settings
+adds the "match system" option a two-state button cannot express. The preference
+lives in the browser rather than on the account, and the charts read their
+palette from the same CSS variables as the rest of the page, so they follow
+along instead of staying dark. The session replay stays a dark terminal in both
+themes — that is what the attacker saw.
 
 ## Layout
 
@@ -279,6 +361,43 @@ dashboard comfortably. Elasticsearch needs ~2.5 GB more — see below.
 | Bans as they fire | `tail -f storage/evidence/fail2ban.log` |
 | Wipe and re-baseline | `./deploy/reset-data.sh --yes` |
 | Dashboard | `ssh -N -L 8443:127.0.0.1:8443 -p 2222 you@vps` → <http://127.0.0.1:8443> |
+
+### Updating a running deployment
+
+Pull, rebuild, restart. Captured data lives in `storage/` and `persona/`, which
+are bind-mounted and untouched by a rebuild.
+
+```bash
+cd /opt/drosera
+git pull
+
+# Re-run only if deploy/logrotate-drosera, the fail2ban jail, or the watchdog
+# changed. It is idempotent, so re-running it costs nothing but a few seconds.
+sudo ADMIN_IP=203.0.113.10 ./deploy/bootstrap.sh
+
+./deploy/preflight.sh
+docker compose up -d --build      # --build matters; see below
+./deploy/smoke-test.sh
+```
+
+If `.env.example` gained keys since your `.env` was written, diff them before
+restarting — a missing key falls back to a default that may not be what you
+want:
+
+```bash
+diff <(grep -o '^[A-Z_]*' .env.example | sort -u) \
+     <(grep -o '^[A-Z_]*' .env | sort -u)
+```
+
+To confirm the new code is actually running:
+
+```bash
+docker compose ps                             # all services Up
+docker compose logs --tail=50 admin-dashboard # no tracebacks on boot
+git log -1 --oneline                          # the commit you expect
+```
+
+Rolling back is `git checkout <previous-sha> && docker compose up -d --build`.
 
 ### Two rules that will save you an hour
 

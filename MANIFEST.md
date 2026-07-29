@@ -94,7 +94,7 @@ honeypot container is a member of.
 
 | File | Purpose |
 |---|---|
-| `app.py` | Flask app. Two-stage auth (session created only after TOTP), CSRF, login rate limiting, IP allowlist, all routes |
+| `app.py` | Flask app. Two-stage auth (session created only after TOTP), CSRF, login rate limiting, IP allowlist, all routes. `/api/stats?day=` recomputes any retained day from its own log file; `/api/stats/trend` returns per-day totals for the day picker's history chart |
 | `setup.py` | First-run: bcrypt hash, TOTP secret, terminal QR code. Writes config mode 0600 |
 | `templates/` | Jinja templates, autoescaped |
 | `static/` | CSS and JS. Scripts are external files because the CSP forbids inline |
@@ -123,8 +123,8 @@ honeypot container is a member of.
 | `README.md` | Full deployment guide |
 | `bootstrap.sh` | Host preparation: storage, ufw, fail2ban, logrotate, watchdog, sysctl |
 | `generate-persona.sh` | Writes `persona/persona.json`: randomised banners, hostnames, kernels, company, credentials and file sizes. Run once before going live; the result is gitignored and worth backing up |
-| `watchdog.sh` | Cron fail-safe: prunes storage, restarts dead or unhealthy containers |
-| `logrotate-drosera` | Retention policy (90 days for event logs) |
+| `watchdog.sh` | Cron fail-safe: enforces the 90-day event-log retention, prunes storage under disk pressure, restarts dead or unhealthy containers |
+| `logrotate-drosera` | Retention policy for the evidence and audit logs. Deliberately does **not** cover `storage/logs/*.jsonl`, which is already one file per day |
 | `update-geoip.sh` | Fetches the MaxMind GeoLite2 database with the operator's credentials. Run from cron; MaxMind refreshes weekly |
 | `update-worldmap.sh` | Fetches the Natural Earth land outline for the attack map. Public domain, so the result can be committed |
 | `preflight.sh` | Static validation before deploying: Python/PHP/shell syntax, `docker compose config` on both profiles, `.env` sanity, git-safety of secret paths, host RAM and `vm.max_map_count` |
@@ -154,7 +154,7 @@ honeypot container is a member of.
 
 | Path | Contents |
 |---|---|
-| `storage/logs/YYYY-MM-DD.jsonl` | Every event |
+| `storage/logs/YYYY-MM-DD.jsonl` | Every event. One file per UTC day, which *is* the rotation — never point logrotate at this tree |
 | `storage/sessions/*.cast` | asciinema recordings |
 | `storage/evidence/fail2ban.log` | Ban lines fail2ban acts on |
 | `storage/upload-tmp/` | Upload staging; files are unlinked immediately after hashing |

@@ -20,9 +20,31 @@
   <div class="tile"><div class="label">Attacker-minutes wasted</div><div class="value" id="t-wasted">—</div></div>
 </div>
 
+<div class="tiles">
+  <div class="tile"><div class="label">Top IP</div>
+    <div class="value text" id="t-topip">—</div><div class="sub" id="t-topip-sub"></div></div>
+  <div class="tile"><div class="label">Top country</div>
+    <div class="value text" id="t-topcountry">—</div><div class="sub" id="t-topcountry-sub"></div></div>
+  <div class="tile"><div class="label">Top service</div>
+    <div class="value text" id="t-topservice">—</div><div class="sub" id="t-topservice-sub"></div></div>
+  <div class="tile"><div class="label">Busiest hour</div>
+    <div class="value" id="t-peakhour">—</div><div class="sub" id="t-peakhour-sub"></div></div>
+  <div class="tile"><div class="label">Credential attempts</div>
+    <div class="value" id="t-creds">—</div><div class="sub" id="t-creds-sub"></div></div>
+</div>
+
+<div class="card">
+  <h2>History</h2>
+  <p class="hint">
+    Events per day across the retained log. Click a day to read it; the
+    outlined bar is the one shown below.
+  </p>
+  <div id="c-trend"></div>
+</div>
+
 <div class="card">
   <h2>Held right now <span class="pill on" id="hold-count">0</span></h2>
-  <p class="muted" style="font-size:.75rem;margin-top:-.4rem">
+  <p class="hint">
     Connections being drained at this moment. Refreshes every 5 seconds.
   </p>
   <table>
@@ -34,33 +56,65 @@
 <div class="card">
   <h2>Attack origins</h2>
   <div id="c-map"></div>
-  <p class="muted" id="map-note" style="display:none;font-size:.75rem">
+  <p class="hint" id="map-note" hidden>
     No GeoIP database. Add one with <span class="mono">./deploy/update-geoip.sh</span>
     to plot attack origins.
   </p>
 </div>
 
 <div class="grid2">
-  <div class="card"><h2>Connections by hour (UTC, today)</h2><div id="c-hourly"></div></div>
+  <div class="card"><h2>Connections by hour (UTC)</h2><div id="c-hourly"></div></div>
   <div class="card"><h2>Events by service</h2><div id="c-service"></div></div>
   <div class="card"><h2>Tools detected</h2><div id="c-tools"></div></div>
   <div class="card">
     <h2>Source countries</h2>
     <div id="c-countries"></div>
-    <p class="muted" id="geo-note" style="display:none;font-size:.75rem">
+    <p class="hint" id="geo-note" hidden>
       No GeoIP database. Drop a MaxMind <span class="mono">GeoLite2-City.mmdb</span>
       into <span class="mono">elastic/geoip/</span> to populate this.
     </p>
   </div>
   <div class="card"><h2>Score distribution</h2><div id="c-scores"></div></div>
+  <div class="card">
+    <h2>Usernames tried</h2>
+    <div id="c-usernames"></div>
+    <p class="hint" id="cred-note" hidden>
+      No credential attempts logged on this day.
+    </p>
+  </div>
+  <div class="card">
+    <h2>Passwords tried</h2>
+    <p class="hint">
+      Frequently reused from prior breaches, so these may belong to other
+      victims. Sensitive: do not publish, do not test anywhere.
+    </p>
+    <div id="c-passwords"></div>
+  </div>
 </div>
 
-<div class="card">
-  <h2>Top 10 by score</h2>
-  <table>
-    <thead><tr><th>IP</th><th>Score</th><th>Tool</th><th>Services</th><th>Status</th></tr></thead>
-    <tbody id="t-top"><tr><td colspan="5" class="muted">Loading&hellip;</td></tr></tbody>
-  </table>
+<div class="grid2">
+  <div class="card">
+    <h2>Top 10 by score</h2>
+    <p class="hint">
+      Who did the most alarming thing.
+    </p>
+    <table>
+      <thead><tr><th>IP</th><th>Score</th><th>Tool</th><th>Services</th><th>Status</th></tr></thead>
+      <tbody id="t-top"><tr><td colspan="5" class="muted">Loading&hellip;</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Top 10 by volume</h2>
+    <p class="hint">
+      Who made the most noise. A steady scanner can stay under the score
+      threshold all day and never appear in the ranking by score.
+    </p>
+    <table>
+      <thead><tr><th>IP</th><th>Events</th><th>Country</th><th>Score</th><th>Status</th></tr></thead>
+      <tbody id="t-noisy"><tr><td colspan="5" class="muted">Loading&hellip;</td></tr></tbody>
+    </table>
+  </div>
 </div>
 {% endblock %}
 

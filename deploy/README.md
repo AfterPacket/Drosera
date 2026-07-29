@@ -148,8 +148,8 @@ What it does:
 | Dashboard dirs | `admin-dashboard/{config,admin-logs}` mode 0700 |
 | ufw | default deny in / allow out; opens 21, 22, 23, 25, 80, 139, 443, 445, 3306, 3389, 30000-30019; opens 2222 only from `ADMIN_IP` |
 | fail2ban | installs filter, `ufw-honeypot` action, and the jail pointed at your evidence log |
-| logrotate | 90-day JSONL retention, 26-week evidence retention |
-| watchdog | cron job every 10 min (see §10) |
+| logrotate | 26-week evidence retention, 24-month audit retention |
+| watchdog | cron job every 10 min; also enforces 90-day JSONL retention (see §10) |
 | sysctl | raises conntrack limits for tarpit workloads |
 
 The ufw rules it applies, for reference:
@@ -373,9 +373,10 @@ curl -s  https://your-domain.com/ | grep generator     # WordPress 6.4.3 tell
 | Layer | Mechanism | Where |
 |---|---|---|
 | Disk | Writes stop above `HONEYPOT_MAX_STORAGE_MB` | `shared/alerting.py`, `web/lib/drosera.php` |
-| Disk | Watchdog prunes >90d at 80% full, emergency prune at 92% | `deploy/watchdog.sh` |
+| Disk | Watchdog expires JSONL days past `RETENTION_DAYS` on every tick | `deploy/watchdog.sh` |
+| Disk | Watchdog prunes recordings >90d at 80% full, emergency prune at 92% | `deploy/watchdog.sh` |
 | Disk | Container logs capped at 10 MB × 3 per service | `docker-compose.yml` |
-| Disk | logrotate on JSONL, evidence, and audit logs | `deploy/logrotate-drosera` |
+| Disk | logrotate on evidence and audit logs (**not** JSONL — see the file) | `deploy/logrotate-drosera` |
 | Memory | Redis capped with `allkeys-lru` eviction | `docker-compose.yml` |
 | Memory | Per-container `mem_limit` and `pids_limit` | `docker-compose.yml` |
 | Workers | Global tarpit concurrency cap, below `pm.max_children` | `TARPIT_MAX_CONCURRENT` |
@@ -631,7 +632,7 @@ gives country-level geo for web traffic only.
 
 Retention is `ELASTIC_RETENTION_DAYS` (90 by default) via ILM. That governs the
 search index only — `storage/logs/*.jsonl` remains the authoritative record and
-is rotated separately by logrotate.
+expires separately, a whole day at a time, via `deploy/watchdog.sh`.
 
 **If you re-index from scratch:** delete the checkpoint and restart the shipper.
 Document IDs are derived from file and byte offset, so replaying is idempotent —

@@ -21,22 +21,61 @@
 
   var NS = "http://www.w3.org/2000/svg";
 
-  // GitHub-dark derived, matching the rest of the dashboard.
-  var C = {
-    ink: "#f0f6fc",
-    muted: "#8b949e",
-    grid: "#30363d",
-    surface: "#161b22",
-    series: "#58a6ff",
-    accent: "#bc8cff"
+  // The palette lives in style.css so the charts and the chrome around them
+  // cannot drift apart, and so both follow the light/dark theme from one place.
+  // Read live rather than cached at load: switching theme re-reads these and
+  // redraws, and a cached copy would leave every chart in the old scheme.
+  var FALLBACK = {
+    ink: "#f0f6fc", muted: "#8b949e", grid: "#30363d",
+    surface: "#161b22", series: "#58a6ff", accent: "#bc8cff"
   };
 
-  // Sequential ramp for the attack map's density field: ONE hue, stepped for
-  // this dark surface so the low end recedes toward it and the brightest step
-  // is reserved for the peak. Never a rainbow -- hue carries no identity here,
-  // only magnitude, which is the same reason every other chart on this page is
-  // a single series. Ordered low -> high.
-  var HEAT = ["#0d366b", "#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4"];
+  // Memoised, because getComputedStyle is not cheap and these are read from
+  // inside the drawing loops -- the world outline alone asks for a stroke
+  // colour once per polygon ring. The only thing that can change them is a
+  // theme switch, which says so.
+  var varCache = {};
+
+  function readVar(name, fallback) {
+    if (Object.prototype.hasOwnProperty.call(varCache, name)) {
+      return varCache[name] || fallback;
+    }
+    var value = "";
+    try {
+      value = getComputedStyle(document.documentElement)
+        .getPropertyValue(name).trim();
+    } catch (error) {
+      value = "";
+    }
+    varCache[name] = value;
+    return value || fallback;
+  }
+
+  window.addEventListener("drosera:themechange", function () { varCache = {}; });
+
+  // Property access on a plain object, so every existing `C.series` call site
+  // keeps working while the value now depends on the active theme.
+  var C = {};
+  Object.keys(FALLBACK).forEach(function (key) {
+    Object.defineProperty(C, key, {
+      enumerable: true,
+      get: function () { return readVar("--chart-" + key, FALLBACK[key]); }
+    });
+  });
+
+  // Sequential ramp for the attack map's density field: ONE hue, stepped so the
+  // low end recedes toward the surface and the brightest step is reserved for
+  // the peak. Never a rainbow -- hue carries no identity here, only magnitude,
+  // which is the same reason every other chart is a single series. Low -> high,
+  // and reversed in light mode because "recedes toward the surface" means pale
+  // on dark and dark on pale.
+  function heatRamp() {
+    var ramp = readVar("--chart-heat", "").split(",")
+      .map(function (part) { return part.trim(); })
+      .filter(Boolean);
+    return ramp.length ? ramp
+      : ["#0d366b", "#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4"];
+  }
 
   var FONT = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -199,6 +238,16 @@
                                { anchor: "end" }));
     });
 
+    // A month of dates cannot all be written under a 700px axis without the
+    // labels overlapping into mush, so long series thin them and lean on the
+    // hover tooltip -- which names every bar -- for the ones left out. Counted
+    // from the right so the newest point always keeps its label: it is the one
+    // every other bar is being read against.
+    var every = opts.labelEvery || 1;
+    var last = rows.length - 1;
+    var selectedFill = C.accent;
+    var selectedEdge = C.ink;
+
     rows.forEach(function (row, i) {
       var height = (row.value / max) * plotH;
       var bx = pad.l + i * slot + (slot - width) / 2;
@@ -207,12 +256,36 @@
       var bar = el("rect", {
         x: bx, y: pad.t + plotH - height, width: width,
         height: Math.max(height, row.value > 0 ? 2 : 0),
-        rx: Math.min(4, width / 2), fill: colour
+        rx: Math.min(4, width / 2), fill: row.selected ? selectedFill : colour
       });
-      hoverable(bar, row.label + " · " + row.value);
-      box.svg.appendChild(bar);
-      box.svg.appendChild(text(bx + width / 2, box.h - 8, row.label,
-                               { anchor: "middle" }));
+      if (row.selected) {
+        // Which bar you are reading is a selection, not a category, so it is
+        // marked twice over -- fill and outline. The outline is what carries it
+        // for a reader who cannot separate the two hues, which is the same
+        // reason nothing else on this page encodes meaning in colour alone.
+        bar.setAttribute("stroke", selectedEdge);
+        bar.setAttribute("stroke-width", 1.5);
+      }
+      var tip = row.tip || ((row.title || row.label) + " · " + row.value);
+      hoverable(bar, tip);
+      if (opts.onSelect) {
+        // The whole slot is clickable, not just the drawn bar: a day with two
+        // events is a 2px target and a day with none is not there at all.
+        var hit = el("rect", {
+          x: pad.l + i * slot, y: pad.t, width: slot, height: plotH,
+          fill: "transparent", cursor: "pointer"
+        });
+        hoverable(hit, tip);
+        hit.addEventListener("click", function () { opts.onSelect(row); });
+        box.svg.appendChild(bar);
+        box.svg.appendChild(hit);
+      } else {
+        box.svg.appendChild(bar);
+      }
+      if ((last - i) % every === 0) {
+        box.svg.appendChild(text(bx + width / 2, box.h - 8, row.label,
+                                 { anchor: "middle" }));
+      }
     });
   }
 
@@ -302,8 +375,8 @@
                                  + " " + y(ring[i][1]).toFixed(1);
           }
           svg.appendChild(el("path", {
-            d: d + " Z", fill: "#1b2029",
-            stroke: "#2b3240", "stroke-width": 0.4
+            d: d + " Z", fill: readVar("--chart-land", "#1b2029"),
+            stroke: C.grid, "stroke-width": 0.4
           }));
         });
       });
@@ -315,6 +388,7 @@
     opts = opts || {};
     if (!points || !points.length) { return empty(host); }
 
+    var HEAT = heatRamp();
     var pad = 6;
     var available = Math.max(host.clientWidth || 900, 320) - pad * 2;
 
@@ -355,7 +429,7 @@
     var h = mapH;
     box.svg.appendChild(el("rect", {
       x: ox, y: oy, width: mapW, height: mapH,
-      fill: "#0c0e12", stroke: C.grid, "stroke-width": 1, rx: 4
+      fill: C.surface, stroke: C.grid, "stroke-width": 1, rx: 4
     }));
 
     // Land goes in first so the dots sit on top of it. Drawn asynchronously
@@ -530,7 +604,84 @@
                              "more attacks", { fill: C.muted }));
   }
 
+  // ------------------------------------------------------------- timeline
+
+  // One attacker's scored events against a clock, in a lane per service.
+  //
+  // Lanes rather than a single row of coloured dots: which service an event
+  // belongs to is then carried by vertical position, which no reader can fail
+  // to separate. Hue is a second, redundant encoding on top -- the same
+  // discipline as everywhere else here, where colour never carries identity by
+  // itself. Dot area grows with the score the event scored, so the moment an
+  // engagement turned serious is visible without reading a single label.
+  function timeline(host, points, opts) {
+    opts = opts || {};
+    if (!points || !points.length) { return empty(host, 120); }
+
+    var services = [];
+    points.forEach(function (point) {
+      if (services.indexOf(point.service) === -1) { services.push(point.service); }
+    });
+    services.sort();
+
+    var lane = 22;
+    var pad = { t: 10, r: 14, b: 24, l: 74 };
+    var height = pad.t + pad.b + services.length * lane;
+    var box = surface(host, height);
+    var plotW = box.w - pad.l - pad.r;
+
+    var first = points[0].t;
+    var last = points[points.length - 1].t;
+    var span = last - first;
+    // A burst inside one second would otherwise divide by zero and stack every
+    // event on the left edge; give it a nominal minute and centre it.
+    if (span <= 0) { first -= 30; span = 60; }
+
+    function xAt(t) { return pad.l + ((t - first) / span) * plotW; }
+
+    var palette = heatRamp();
+    var grid = C.grid;
+    var ring = C.surface;
+
+    services.forEach(function (service, row) {
+      var y = pad.t + row * lane + lane / 2;
+      box.svg.appendChild(el("line", {
+        x1: pad.l, y1: y, x2: box.w - pad.r, y2: y,
+        stroke: grid, "stroke-width": 1
+      }));
+      box.svg.appendChild(text(pad.l - 8, y + 3, service, { anchor: "end" }));
+    });
+
+    var peak = Math.max.apply(null, points.map(function (p) {
+      return Math.abs(p.points) || 0;
+    })) || 1;
+
+    points.forEach(function (point) {
+      var row = services.indexOf(point.service);
+      var y = pad.t + row * lane + lane / 2;
+      var weight = Math.sqrt(Math.abs(point.points || 0) / peak);
+      var dot = el("circle", {
+        cx: xAt(point.t), cy: y,
+        r: 2.5 + weight * 4,
+        fill: palette[Math.min(palette.length - 1,
+                               Math.floor(weight * palette.length))],
+        "fill-opacity": .85,
+        stroke: ring, "stroke-width": 1
+      });
+      hoverable(dot, point.label + " · " + point.service + " · " + point.event
+                     + (point.points ? " · +" + point.points : ""));
+      box.svg.appendChild(dot);
+    });
+
+    // Ends only. Intermediate ticks on a span that can be four seconds or four
+    // days would need their own formatting rules to stay honest.
+    box.svg.appendChild(text(pad.l, box.h - 8, points[0].label));
+    box.svg.appendChild(text(box.w - pad.r, box.h - 8,
+                             points[points.length - 1].label, { anchor: "end" }));
+  }
+
   window.DroseraCharts = {
-    line: line, bars: bars, hbars: hbars, geomap: geomap, colours: C
+    line: line, bars: bars, hbars: hbars, geomap: geomap, timeline: timeline,
+    colours: C
   };
 })();

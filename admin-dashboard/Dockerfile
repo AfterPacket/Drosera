@@ -31,7 +31,14 @@ EXPOSE 8443
 
 # Binds 0.0.0.0 inside the container. docker-compose publishes it to 127.0.0.1
 # on the host only, so it is reachable solely through an SSH tunnel.
-# Two workers with a long timeout: enough for concurrent evidence exports.
+#
+# --threads > 1 selects the gthread worker, which keeps notifying the arbiter
+# from its accept loop while a request is still running -- so a bulk evidence
+# export streaming for several minutes does not look like a hung worker. The
+# raised timeout is belt and braces for that: this is a loopback-only operator
+# service, so a generous ceiling costs nothing and a killed export halfway
+# through a multi-gigabyte download costs the operator the whole download.
 CMD ["gunicorn", "--bind", "0.0.0.0:8443", "--workers", "2", "--threads", "4", \
-     "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", \
+     "--timeout", "900", "--graceful-timeout", "30", \
+     "--access-logfile", "-", "--error-logfile", "-", \
      "app:app"]

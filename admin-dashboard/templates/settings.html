@@ -53,9 +53,23 @@
     <tr><th>Camera retention</th><td class="mono">{{ settings.cam_retention_days }} days</td></tr>
     <tr><th>Clips stored</th><td class="mono">{{ settings.clips_stored }}</td></tr>
   </table>
-  <p class="muted" style="margin-top:.8rem">
+  <p class="hint subtle">
     Thresholds come from the environment. Edit <span class="mono">.env</span> and
     run <span class="mono">docker compose up -d</span> to change them. No secrets are shown here.
   </p>
+</div>
+
+<div class="card">
+  <h2>Appearance</h2>
+  <p class="hint">
+    Stored in this browser rather than on your account, so it does not follow
+    you to another machine and costs nothing to change. The session replay stays
+    on a dark terminal in both themes &mdash; that is what the attacker saw.
+  </p>
+  <div class="actions">
+    <button class="act" type="button" data-theme-set="auto">Match system</button>
+    <button class="act" type="button" data-theme-set="light">Light</button>
+    <button class="act" type="button" data-theme-set="dark">Dark</button>
+  </div>
 </div>
 {% endblock %}

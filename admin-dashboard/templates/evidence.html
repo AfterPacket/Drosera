@@ -1,19 +1,67 @@
 {% extends "base.html" %}
 {% block title %}Evidence{% endblock %}
-{% block heading %}Ban evidence log{% endblock %}
+{% block heading %}Evidence &amp; export{% endblock %}
 
 {% block content %}
 <div class="card">
-  <h2>storage/evidence/fail2ban.log</h2>
+  <h2>Export bundles</h2>
+  <p class="hint">
+    A bundle is a ZIP holding the full record for one address:
+  </p>
+  <table class="bundle">
+    <tr><td class="mono">report.html</td><td>Readable summary: score breakdown,
+      credentials, ranked commands and the transcript</td></tr>
+    <tr><td class="mono">events.jsonl</td><td>Every logged event for the address</td></tr>
+    <tr><td class="mono">fail2ban.log</td><td>Its lines from the ban log &mdash;
+      what the firewall was told to do, and when</td></tr>
+    <tr><td class="mono">commands.txt / .csv</td><td>Every command run, merged from
+      the session history and the event log</td></tr>
+    <tr><td class="mono">identity.json</td><td>The tracked identity record</td></tr>
+    <tr><td class="mono">credentials.csv</td><td>Usernames and passwords tried</td></tr>
+    <tr><td class="mono">sessions/</td><td>Every recording, plus
+      <span class="mono">engagement.cast</span> stitching them into one timeline</td></tr>
+    <tr><td class="mono">clips/</td><td>Rendered video of the sessions</td></tr>
+    <tr><td class="mono">loot/</td><td>Quarantined payloads with their metadata</td></tr>
+    <tr><td class="mono">MANIFEST-SHA256.txt</td><td>Digest of every file, so the
+      archive can be shown intact later</td></tr>
+  </table>
+  <p class="hint subtle">
+    The bulk archive nests one of these per address under
+    <span class="mono">attackers/</span> and adds <span class="mono">index.csv</span>
+    over all of them. Archives stream as they are built, so a large export starts
+    downloading immediately rather than being assembled first.
+  </p>
+
+  <form class="export-form" method="get" action="{{ url_for('api_export_bulk') }}">
+    <label for="min-score">Include attackers scoring at least</label>
+    <input type="number" id="min-score" name="min_score" value="0" min="0" step="5"
+           inputmode="numeric">
+    <button type="submit" class="act primary">Export all attackers</button>
+  </form>
+  <p class="hint subtle">
+    Leave at 0 for everything. A honeypot accumulates thousands of addresses
+    that knocked once and left; raising the floor keeps the bundle to the ones
+    worth reading. For a single address, use the export button on its profile.
+  </p>
+</div>
+
+<div class="card">
+  <h2>Ban record <span class="count mono">storage/evidence/fail2ban.log</span></h2>
+  <p class="hint">
+    The lines fail2ban acted on. This is what the firewall banned and when.
+  </p>
   <div class="actions">
-    <button class="act" id="copy-all">Copy all</button>
-    <a class="act" href="{{ url_for('evidence_download') }}">Download</a>
+    <button class="act" id="copy-all" type="button">Copy all</button>
+    <a class="act" href="{{ url_for('evidence_download') }}">Download log</a>
     <span id="copy-status" class="muted"></span>
   </div>
   {% if content %}
   <pre class="log" id="evidence-body">{{ content }}</pre>
   {% else %}
-  <div class="empty">No ban events recorded yet.</div>
+  <div class="empty">
+    No ban events recorded yet. Lines appear here once an attacker crosses the
+    ban threshold.
+  </div>
   {% endif %}
 </div>
 {% endblock %}

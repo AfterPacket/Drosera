@@ -5,8 +5,14 @@
 
 {% block content %}
 <div class="card">
-  <h2>{{ sessions | length }} recording(s)</h2>
+  <h2>Recordings <span class="count">{{ sessions | length }}</span></h2>
+  <p class="hint">
+    One recording per TCP connection. To watch an attacker's connections as a
+    single continuous session, open their profile &mdash; the segments are
+    stitched onto one timeline there.
+  </p>
   {% if sessions %}
+  <div class="table-wrap">
   <table>
     <thead><tr>
       <th>IP</th><th>Recorded</th><th>Duration</th><th>Recording / clip</th><th>Camera</th><th></th>
@@ -20,14 +26,12 @@
         <td class="mono">
           {{ item.size }} B
           {%- if item.clip_size %}
-          <div style="color:var(--muted);font-size:.72rem">
-            clip {{ (item.clip_size / 1024) | round(1) }} KB
-          </div>
+          <div class="sub">clip {{ (item.clip_size / 1024) | round(1) }} KB</div>
           {%- endif %}
         </td>
         <td>
           <span class="pill {{ item.cam_status }}">{{ item.cam_status | upper }}</span>
-          {% if item.cam_detail %}<div class="mono" style="color:var(--muted);font-size:.72rem">{{ item.cam_detail }}</div>{% endif %}
+          {% if item.cam_detail %}<div class="mono sub">{{ item.cam_detail }}</div>{% endif %}
         </td>
         <td>
           <button class="act" data-play="{{ url_for('session_raw', name=item.name) }}">Play</button>
@@ -45,6 +49,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <div class="empty">
     No recordings yet. SSH, telnet, FTP, SMTP, MySQL and web-shell sessions are

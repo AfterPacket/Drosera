@@ -4,42 +4,53 @@
 
 {% block content %}
 <div class="card">
-  <h2>Tracked source addresses <span class="muted" id="refreshed"></span></h2>
+  <h2>Tracked source addresses
+    <span class="count">{{ rows | length }}</span>
+    <span class="count" id="refreshed"></span>
+  </h2>
   {% if rows %}
-  <table>
-    <thead>
-      <tr><th>IP</th><th>First seen</th><th>Last seen</th><th>Score</th>
-          <th>Services</th><th>Tool</th><th>Status</th></tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-      <tr>
-        <td class="mono">
-          {% if row.ip and row.ip != 'unknown' %}
-            <a href="{{ url_for('ip_detail', ip=row.ip) }}">{{ row.ip }}</a>
-          {% else %}<span class="muted">unresolved</span>{% endif %}
-        </td>
-        <td class="mono">{{ row.first_seen[:19] }}</td>
-        <td class="mono">{{ row.last_seen[:19] }}</td>
-        <td class="mono">{{ row.score }}</td>
-        <td>{{ row.services or '-' }}</td>
-        <td>{{ row.tool }}</td>
-        <td><span class="pill {{ row.status }}">{{ row.status }}</span></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>IP</th><th>First seen</th><th>Last seen</th><th class="num">Score</th>
+            <th>Services</th><th>Tool</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="mono nowrap">
+            {% if row.ip and row.ip != 'unknown' %}
+              <a href="{{ url_for('ip_detail', ip=row.ip) }}">{{ row.ip }}</a>
+            {% else %}<span class="muted">unresolved</span>{% endif %}
+          </td>
+          <td class="mono nowrap">{{ row.first_seen[:19] }}</td>
+          <td class="mono nowrap">{{ row.last_seen[:19] }}</td>
+          <td class="mono num">{{ row.score }}</td>
+          <td>{{ row.services or '-' }}</td>
+          <td>{{ row.tool }}</td>
+          <td><span class="pill {{ row.status }}">{{ row.status }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-  <div class="empty">No source addresses recorded yet.</div>
+  <div class="empty">
+    No source addresses recorded yet. Anything that connects to an exposed
+    service appears here within seconds.
+  </div>
   {% endif %}
 </div>
 
 <div class="card">
   <h2>Recent events</h2>
-  <table>
-    <thead><tr><th>Time</th><th>IP</th><th>Service</th><th>Event</th><th>Score</th><th>Detail</th></tr></thead>
-    <tbody id="events"><tr><td colspan="6" class="muted">Loading&hellip;</td></tr></tbody>
-  </table>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Time</th><th>IP</th><th>Service</th><th>Event</th>
+                 <th class="num">Score</th><th>Detail</th></tr></thead>
+      <tbody id="events"><tr><td colspan="6" class="muted">Loading&hellip;</td></tr></tbody>
+    </table>
+  </div>
 </div>
 {% endblock %}
 

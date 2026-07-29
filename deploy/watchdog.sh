@@ -25,6 +25,19 @@ log() { printf '[%s] %s\n' "$(date -Is)" "$*"; }
 
 cd "$DROSERA_DIR" 2>/dev/null || { log "FATAL: ${DROSERA_DIR} not found"; exit 1; }
 
+# ------------------------------------------------------------------- retention
+
+# The event log is one file per UTC day, so retention means expiring whole days
+# -- which is why logrotate is not pointed at this tree (see the note at the top
+# of deploy/logrotate-drosera). This is the 90-day control from AUTHORIZATION.md
+# and it runs on every tick, not just under disk pressure: retention is a
+# data-protection promise, not a housekeeping nicety, and a box that never fills
+# its disk must still forget on schedule.
+#
+# The *.jsonl.* glob mops up siblings left behind by the old logrotate stanza.
+find "${STORAGE}/logs" -name '*.jsonl'   -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
+find "${STORAGE}/logs" -name '*.jsonl.*' -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
+
 # ------------------------------------------------------------------ disk usage
 
 usage_pct=$(df --output=pcent "$STORAGE" 2>/dev/null | tail -1 | tr -dc '0-9')
@@ -32,8 +45,8 @@ usage_pct=${usage_pct:-0}
 
 if (( usage_pct >= DISK_WARN_PCT )); then
     log "WARN: disk at ${usage_pct}% -- pruning data older than ${RETENTION_DAYS}d"
-    find "${STORAGE}/logs"     -name '*.jsonl' -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
-    find "${STORAGE}/sessions" -name '*.cast'  -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
+    find "${STORAGE}/logs"     -name '*.jsonl*' -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
+    find "${STORAGE}/sessions" -name '*.cast'   -mtime "+${RETENTION_DAYS}" -delete 2>/dev/null
     find "${STORAGE}/upload-tmp" -type f -mmin +60 -delete 2>/dev/null
 fi
 
@@ -42,8 +55,8 @@ usage_pct=${usage_pct:-0}
 
 if (( usage_pct >= DISK_CRIT_PCT )); then
     log "CRITICAL: disk at ${usage_pct}% -- emergency prune to ${EMERGENCY_RETENTION_DAYS}d"
-    find "${STORAGE}/sessions" -name '*.cast'  -mtime "+${EMERGENCY_RETENTION_DAYS}" -delete 2>/dev/null
-    find "${STORAGE}/logs"     -name '*.jsonl' -mtime "+${EMERGENCY_RETENTION_DAYS}" -delete 2>/dev/null
+    find "${STORAGE}/sessions" -name '*.cast'   -mtime "+${EMERGENCY_RETENTION_DAYS}" -delete 2>/dev/null
+    find "${STORAGE}/logs"     -name '*.jsonl*' -mtime "+${EMERGENCY_RETENTION_DAYS}" -delete 2>/dev/null
 
     # Session recordings are the bulkiest and least evidentially unique data,
     # so shed the largest ones first rather than losing the event log.

@@ -104,11 +104,12 @@ transcripts. In the EU/UK, an IP address is personal data, so consider:
 - **Data minimisation:** payload excerpts are capped (500 chars in alerts,
   1000 in request logs); session recordings are capped at
   `HONEYPOT_MAX_SESSION_BYTES`.
-- **Retention:** set a retention period and enforce it with logrotate. Identity
-  records expire automatically after 7 days (`IDENTITY_TTL`); bans after
-  `HONEYPOT_BAN_TTL`. Decide and document a retention period for JSONL logs and
-  `.cast` files. **Recommended: 90 days**, unless a specific incident warrants
-  preservation.
+- **Retention:** set a retention period and enforce it with `RETENTION_DAYS` in
+  `deploy/watchdog.sh`, which expires whole days of event log on every run
+  (logrotate covers the evidence and audit logs only). Identity records expire
+  automatically after 7 days (`IDENTITY_TTL`); bans after `HONEYPOT_BAN_TTL`.
+  Decide and document a retention period for JSONL logs and `.cast` files.
+  **Recommended: 90 days**, unless a specific incident warrants preservation.
 - **Third-party credentials:** attackers frequently submit credentials belonging
   to *other* victims (reused from prior breaches). Treat the credential store as
   sensitive. Do not publish it. Do not test captured credentials anywhere.
