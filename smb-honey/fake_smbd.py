@@ -228,10 +228,42 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     hold_until = tarpit.deadline(TARPIT_MAX_SECONDS)
     held = 0.0
     hold_key = None
-    if tarpitted:
+
+    def engage():
+        """Start holding this connection, mid-session if need be.
+
+        Sampling is_tarpitted() once at connect leaves a gap: an address that
+        crosses the threshold part-way through a share enumeration -- or that is
+        pushed over it by a *different* service scoring it at the same moment,
+        since the score is shared -- would keep getting fast answers until it
+        reconnected. Share enumeration is exactly where that matters, because it
+        is one long connection rather than many short ones.
+        """
+        nonlocal tarpitted, hold_key
+        if tarpitted:
+            return
+        tarpitted = True
         identity.score_named_event(ip, "TARPIT_ENGAGED", payload="smb tarpit",
                                    service=SERVICE)
         hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_MAX_SECONDS)
+        recorder.write_output("tarpit engaged\r\n")
+
+    def score(event_type: str, payload: str = ""):
+        """Score, then honour the verdict immediately.
+
+        score_named_event already returns whether the address is tarpitted as
+        of this event -- including when another service pushed it over the
+        threshold a moment ago -- so acting on it costs no extra Redis call.
+        """
+        result = identity.score_named_event(ip, event_type, payload=payload,
+                                            service=SERVICE)
+        if result.get("tarpitted"):
+            engage()
+        return result
+
+    if tarpitted:
+        tarpitted = False       # let engage() do the work uniformly
+        engage()
 
     try:
         while True:
@@ -250,8 +282,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
 
             if payload.startswith(SMB1_MAGIC):
                 recorder.write_output("SMB1 NEGOTIATE -> steering client to SMB2\r\n")
-                identity.score_named_event(
-                    ip, "SMB_ENUM", payload="SMB1 negotiate", service=SERVICE)
+                score("SMB_ENUM", "SMB1 negotiate")
                 # Steer SMB1 clients to SMB2 by answering the wildcard dialect.
                 writer.write(wrap_nbt(negotiate_response(0)))
                 await writer.drain()
@@ -274,8 +305,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
             )
 
             if command == CMD_NEGOTIATE:
-                identity.score_named_event(ip, "SMB_ENUM",
-                                           payload="SMB2 NEGOTIATE", service=SERVICE)
+                score("SMB_ENUM", "SMB2 NEGOTIATE")
                 writer.write(wrap_nbt(negotiate_response(message_id)))
 
             elif command == CMD_SESSION_SETUP:
@@ -287,6 +317,12 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                     if msg == 3:
                         recorder.write_output("  NTLMSSP_AUTH -> STATUS_LOGON_FAILURE\r\n")
                         parse_ntlm_auth(blob, ip)
+                        # parse_ntlm_auth scores internally, so its verdict is
+                        # not in a return value here. Auth attempts are rare
+                        # next to PDUs, and this is the branch a password spray
+                        # sits in, so one lookup is worth it.
+                        if identity.is_tarpitted(ip):
+                            engage()
                         # Slow the failure too: this is the branch a password
                         # spray hits over and over, so it is the one where a
                         # delay costs the attacker the most.
@@ -310,9 +346,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                     pass
                 leaf = share.rstrip("\\").split("\\")[-1] or "IPC$"
                 recorder.write_output(f"  share {share or leaf}\r\n")
-                identity.score_named_event(
-                    ip, "SMB_ENUM", payload=f"TREE_CONNECT {share}"[:200],
-                    service=SERVICE)
+                score("SMB_ENUM", f"TREE_CONNECT {share}"[:200])
                 tree_counter += 1
                 trees[tree_counter] = leaf
                 writer.write(wrap_nbt(tree_connect_response(

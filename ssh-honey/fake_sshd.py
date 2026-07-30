@@ -281,23 +281,32 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
     # Registered for the duration so the dashboard can show this connection
     # being drained while it is happening, not only after it ends.
     hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_MAX_SECONDS)
+    # Time of the last write the peer actually accepted. Held time is measured
+    # to here, not to whenever the failure surfaced: a client that disconnects
+    # during one of the sleeps below is not discovered until the next send
+    # raises, and counting that gap would credit the tarpit with up to twelve
+    # seconds per connection that cost the attacker nothing. Over thousands of
+    # holds that is hours of imaginary time.
+    last_ok = time.time()
     try:
         sock.settimeout(TARPIT_BYTE_DELAY + 5)
         for char in SSH_BANNER:
             if time.time() > deadline:
                 break
             sock.sendall(char.encode())
+            last_ok = time.time()
             time.sleep(TARPIT_BYTE_DELAY)
         while time.time() < deadline:
             junk = "".join(random.choice(string.ascii_letters + string.digits)
                            for _ in range(random.randint(8, 40)))
             sock.sendall((junk + "\r\n").encode())
+            last_ok = time.time()
             time.sleep(random.uniform(5.0, 12.0))
     except (OSError, socket.timeout):
         pass
     finally:
         tarpit.end_hold(hold_key)
-        held = time.time() - started
+        held = max(last_ok - started, 0.0)
         alerting.alert_event(
             ip=ip, event_type="TARPIT_HELD", service=SERVICE,
             reason=f"SSH tarpit held connection {held:.0f}s",

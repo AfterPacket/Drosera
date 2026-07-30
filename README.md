@@ -214,6 +214,38 @@ only and cannot tell you what Tuesday looked like. The day picker walks the
 whole retention window, and a history strip across the top plots events per day;
 click a bar to open that day.
 
+**How held time is counted.** Only the closing `TARPIT_HELD` frame is summed.
+The web tarpit reports progress as `TARPIT_KEEPALIVE` and emits `TARPIT_HELD`
+once per connection, so a ten-minute hold counts once rather than as
+10+20+30+… — an error that grows with the square of the duration.
+
+Time is measured to the **last write the client accepted**, not to whenever the
+disconnect surfaced. A client that vanishes during a pause is not discovered
+until the next send fails, and counting that gap would credit the tarpit with
+seconds that cost the attacker nothing. Verify against the raw log at any time:
+
+```bash
+python3 - <<'EOF'
+import json, glob, gzip
+secs = 0.0
+for path in sorted(glob.glob('storage/logs/*.jsonl*')):
+    op = gzip.open if path.endswith('.gz') else open
+    with op(path, 'rt', errors='replace') as fh:
+        for line in fh:
+            try: r = json.loads(line)
+            except Exception: continue
+            if r.get('event_type') == 'TARPIT_HELD':
+                secs += float(r.get('held_seconds') or 0)
+print('hours wasted', round(secs / 3600, 1))
+EOF
+```
+
+**Tarpit state is shared across services and re-checked mid-connection.** The
+score is one number per address in Redis, so an IP pushed over the threshold by
+SSH is tarpitted on SMB too. Sampling that state only at connection open left a
+gap — a long share enumeration would keep getting fast answers until it
+reconnected — so scored events now act on the verdict they already return.
+
 An **all-time** panel sits above the per-day view: unique addresses, addresses
 blocked, events, attacker-hours wasted, countries and the busiest day across the
 whole retention window. Distinct counts are unions rather than sums — an address

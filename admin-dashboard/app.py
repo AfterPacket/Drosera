@@ -1433,7 +1433,10 @@ def day_facts(day: str, today: str):
     Carries the day's addresses, not just how many, because a lifetime distinct
     count is a union across days and cannot be recovered from per-day totals.
     """
-    cache_key = f"admin:facts:v1:{day}"
+    # v2: v1 was computed through read_day()'s 80,000-event cap and under-reports
+    # any day that crossed it. Bumping the key discards those rather than
+    # serving them for the rest of their week-long TTL.
+    cache_key = f"admin:facts:v2:{day}"
     try:
         cached = _redis_admin().get(cache_key)
         if cached:
@@ -1441,29 +1444,51 @@ def day_facts(day: str, today: str):
     except (redis.RedisError, json.JSONDecodeError):
         pass
 
-    events = read_day(day)
+    # Streamed rather than read_day(), which caps at 80,000 events to bound the
+    # memory a page render can take. That cap is right for a page and wrong
+    # here: a busy day crossing it would silently under-report every lifetime
+    # figure with nothing on screen to say so. Only the sets are held, so there
+    # is no ceiling to hit -- the totals are the whole day or they are wrong.
     addresses = set()
     banned = set()
     tarpitted = set()
     tarpit_seconds = 0.0
+    total = 0
 
-    for event in events:
-        address = event.get("real_ip")
-        if address and len(addresses) < DAY_IP_CAP:
-            addresses.add(address)
-        kind = event.get("event_type")
-        if kind == "BAN" and address:
-            banned.add(address)
-        elif kind == "TARPIT_ENGAGED" and address:
-            tarpitted.add(address)
-        # Closing frame only; keepalives report elapsed-since-start, so summing
-        # them counts the same seconds over and over.
-        elif kind == "TARPIT_HELD":
-            tarpit_seconds += float(event.get("held_seconds") or 0)
+    for path in day_files(day):
+        try:
+            with _open_day_file(path) as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+
+                    total += 1
+                    address = event.get("real_ip")
+                    if address and len(addresses) < DAY_IP_CAP:
+                        addresses.add(address)
+                    kind = event.get("event_type")
+                    if kind == "BAN" and address:
+                        banned.add(address)
+                    elif kind == "TARPIT_ENGAGED" and address:
+                        tarpitted.add(address)
+                    # Closing frame only. The web tarpit reports its progress as
+                    # TARPIT_KEEPALIVE and only its final frame as TARPIT_HELD,
+                    # so counting this type alone counts each connection once.
+                    elif kind == "TARPIT_HELD":
+                        tarpit_seconds += float(event.get("held_seconds") or 0)
+        except (OSError, EOFError, gzip.BadGzipFile):
+            continue
 
     facts = {
         "day": day,
-        "events": len(events),
+        "events": total,
         "ips": len(addresses),
         "banned": len(banned),
         "tarpitted": len(tarpitted),
@@ -1488,7 +1513,7 @@ def lifetime_stats(max_days: int = 400):
     six attackers where there was one, and that error grows with the retention
     window rather than staying constant.
     """
-    cache_key = "admin:lifetime:v1"
+    cache_key = "admin:lifetime:v2"
     try:
         cached = _redis_admin().get(cache_key)
         if cached:
