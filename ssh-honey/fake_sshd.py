@@ -278,6 +278,16 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
     deadline = time.time() + TARPIT_MAX_SECONDS
     held = 0.0
     started = time.time()
+
+    # Recorded like any other connection. This path had no recorder at all,
+    # which meant the addresses held longest were the ones with the least
+    # evidence against them: once an IP crosses the threshold every subsequent
+    # SSH connection arrives here, so its recordings stopped exactly when it
+    # became interesting. The transcript is thin by nature -- nobody reaches a
+    # shell through a tarpit -- but "held 412s, client gave up" is a fact worth
+    # having in the evidence bundle.
+    recorder = alerting.SessionRecorder(ip, SERVICE, title=f"ssh tarpit from {ip}")
+    recorder.write_output(f"SSH tarpit engaged for {ip}\r\n")
     # Registered for the duration so the dashboard can show this connection
     # being drained while it is happening, not only after it ends.
     hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_MAX_SECONDS)
@@ -301,12 +311,16 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
                            for _ in range(random.randint(8, 40)))
             sock.sendall((junk + "\r\n").encode())
             last_ok = time.time()
+            recorder.write_output(junk + "\r\n")
             time.sleep(random.uniform(5.0, 12.0))
     except (OSError, socket.timeout):
         pass
     finally:
         tarpit.end_hold(hold_key)
         held = max(last_ok - started, 0.0)
+        recorder.write_output(
+            f"\r\nclient gave up after {held:.0f}s\r\n")
+        recorder.close()
         alerting.alert_event(
             ip=ip, event_type="TARPIT_HELD", service=SERVICE,
             reason=f"SSH tarpit held connection {held:.0f}s",

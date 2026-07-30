@@ -120,15 +120,26 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 tool="Automated telnet client", service=SERVICE,
             )
 
+        # Opened above the tarpit, not below it. A held client usually gives up
+        # during the stall, and the write that follows then fails on a dead
+        # socket -- so execution never reached the recorder and the connection
+        # left no transcript at all. Held-and-abandoned is thin evidence, but it
+        # is evidence, and it was the most common outcome for exactly the
+        # addresses worth having evidence on.
+        recorder = alerting.SessionRecorder(ip, SERVICE, title=f"telnet from {ip}")
+
         if identity.is_tarpitted(ip):
             identity.score_named_event(ip, "TARPIT_ENGAGED",
                                        payload="telnet tarpit", service=SERVICE)
+            recorder.write_output("telnet tarpit engaged\r\n")
             started = time.monotonic()
             hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_LOGIN_DELAY)
             try:
                 await asyncio.sleep(TARPIT_LOGIN_DELAY)
             finally:
                 tarpit.end_hold(hold_key)
+                recorder.write_output(
+                    f"held {time.monotonic() - started:.0f}s\r\n")
                 # Logged even when the client gives up mid-hold, which is the
                 # normal case and the whole point -- the time is spent whether
                 # or not they wait for the end of it. Without this the stall
@@ -137,14 +148,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 tarpit.log_hold(ip, SERVICE, time.monotonic() - started)
 
         hostname = ident.get("fake_hostname", "srv-01")
-        writer.write(f"\r\n{ident.get('fake_os', 'Ubuntu 22.04.3 LTS')}\r\n".encode())
+        banner = f"\r\n{ident.get('fake_os', 'Ubuntu 22.04.3 LTS')}\r\n"
+        writer.write(banner.encode())
         await writer.drain()
-
-        # Opened before the login loop, not after it. Most telnet bots submit
-        # one credential and disconnect without ever reaching a shell, so
-        # starting the recording after authentication meant the only thing they
-        # did was the one thing never captured.
-        recorder = alerting.SessionRecorder(ip, SERVICE, title=f"telnet from {ip}")
+        recorder.write_output(banner)
 
         username = ""
         for _ in range(3):
