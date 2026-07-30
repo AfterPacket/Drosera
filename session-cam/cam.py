@@ -98,6 +98,10 @@ MIN_FRAMES = int(os.getenv("CAM_MIN_FRAMES", "2"))
 # table about this address. Once it is this high there is no longer any question
 # whether the session is worth watching, so stop asking a question about length.
 ALWAYS_SCORE = float(os.getenv("CAM_ALWAYS_SCORE", "15"))
+# Rickroll deliveries are recorded but not rendered. Set false to render them
+# anyway -- worth doing once to see one, pointless as a standing setting.
+RICKROLL_SKIP = os.getenv("CAM_SKIP_RICKROLL", "true").strip().lower() \
+    in ("1", "true", "yes")
 
 # MP4 by default, because it is what makes full playback deliverable: a whole
 # session as a GIF is tens of megabytes and H.264 carries the same frames in a
@@ -399,6 +403,18 @@ def send_webhook(clip: Path, meta: Dict[str, Any]) -> Optional[str]:
 
 def should_send(meta: Dict[str, Any]) -> Optional[str]:
     """Returns a skip reason, or None when the session is worth a clip."""
+    # Rickroll deliveries, before any threshold is consulted, because no
+    # threshold can catch them: they are long, they are dense, and they only
+    # ever go to banned addresses, so on every axis the score/duration/content
+    # floors measure they look exactly like a session worth watching. What they
+    # actually contain is the same picture every time, and a banned scanner
+    # reconnects hundreds of times a day.
+    #
+    # The recording is still written and still ships in the evidence bundle --
+    # this skips the video render, which is the expensive half and the one with
+    # nothing to show.
+    if RICKROLL_SKIP and "rickroll" in str(meta.get("title") or "").lower():
+        return "rickroll delivery"
     score = float(meta.get("score") or 0)
     if score < MIN_SCORE:
         return f"score {meta.get('score')} below {MIN_SCORE}"

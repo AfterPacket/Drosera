@@ -334,6 +334,10 @@ services:
       # Past this score the content/time floors no longer apply: a short, dense
       # bot session is exactly what those floors were wrongly discarding.
       CAM_ALWAYS_SCORE: ${CAM_ALWAYS_SCORE:-15}
+      # Rickroll deliveries are recorded and exported, but not rendered to
+      # video: a banned scanner reconnects hundreds of times a day and every
+      # delivery is the same picture.
+      CAM_SKIP_RICKROLL: ${CAM_SKIP_RICKROLL:-true}
       CAM_POLL_SECONDS: ${CAM_POLL_SECONDS:-15}
       CAM_RETENTION_DAYS: ${CAM_RETENTION_DAYS:-14}
       CAM_MAX_CLIP_MB: ${CAM_MAX_CLIP_MB:-45}
