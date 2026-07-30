@@ -54,6 +54,47 @@ The operator attests that:
    Most providers permit honeypots; some require notification. Confirm before
    deploying.
 
+### 2.1 Whether to tell your hosting provider
+
+Short answer: **read their AUP, and do not volunteer this document.**
+
+This file is written to be *produced on request* — by a provider, an upstream
+ISP, or law enforcement — not to be sent unprompted. Emailing a legal and ethics
+document to a general support queue means a first-line agent skims it, sees
+"honeypot", "malware" and "captured credentials", and escalates to abuse. You
+have created a ticket where there was none, and handed a human the decision on
+something they would otherwise never have examined. Providers that permit this
+by default need no convincing; providers that do not will now refuse in writing,
+which is worse than not asking, because it converts future operation into a
+knowing violation rather than an unexamined one.
+
+Notify anyway in two cases:
+
+1. **You are enabling payload quarantine.** `storage/loot/` holds live malware
+   samples. Many acceptable-use policies prohibit storing malicious binaries
+   regardless of intent, and providers run scanners that will find them. Clear
+   this in advance: the failure mode is termination without warning, and it
+   takes your evidence with it.
+2. **The policy is ambiguous, or mentions honeypots or security research at
+   all.** If it says notify, notify. If it is silent, silence is normally
+   permission.
+
+When you do notify, send three sentences, not this file:
+
+> I am running a honeypot on instance `<id>` — emulated services that log
+> unauthorised connection attempts. It has no outbound connectivity, hosts
+> nothing real, and serves no production traffic. I have documentation of the
+> legal basis and data-handling controls available if you would like it.
+
+The last clause is the point. It offers this document without requiring anyone
+to read it: if they want it they will ask, and you are then answering a question
+rather than making a disclosure.
+
+Expect abuse complaints eventually regardless — not from your traffic, which
+never leaves the box, but from scanned parties misreading their own logs, or
+from an attacker's provider replying to a report you filed. §7 and §8 cover
+that, and that is the moment this document earns its keep.
+
 ## 3. Why a honeypot is lawful to run
 
 - **You may run whatever services you like on your own host.** Emulating an FTP
