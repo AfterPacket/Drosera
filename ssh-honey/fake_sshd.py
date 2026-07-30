@@ -437,6 +437,13 @@ def handle_client(sock: socket.socket, addr) -> None:
             # the time shows up on the dashboard and in attacker-minutes.
             art = rickroll.banner()
             if art:
+                # Recorded. This branch returns before the normal recorder
+                # exists, so delivery -- the one moment worth watching -- was
+                # the only thing never kept. A banned scanner reconnects
+                # constantly, so this is where most of its traffic ends up.
+                rick_rec = alerting.SessionRecorder(
+                    ip, SERVICE, title=f"ssh rickroll from {ip}")
+                rick_rec.write_output(art)
                 sock.settimeout(rickroll.DRIP_SECONDS + 30)
                 hold_key = tarpit.begin_hold(ip, SERVICE, rickroll.DRIP_SECONDS)
                 try:
@@ -445,6 +452,8 @@ def handle_client(sock: socket.socket, addr) -> None:
                         byte_delay=rickroll.drip_delay(art))
                 finally:
                     tarpit.end_hold(hold_key)
+                rick_rec.write_output(f"\r\ndelivered over {held:.0f}s\r\n")
+                rick_rec.close()
                 tarpit.log_hold(ip, SERVICE, held, reason="ssh rickroll (banned)")
             sock.close()
             return

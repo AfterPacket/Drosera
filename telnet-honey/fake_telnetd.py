@@ -88,6 +88,14 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         # Dripped, so the ban path costs them time rather than just closing.
         art = rickroll.banner()
         if art:
+            # Recorded like everything else. This branch returns before the
+            # normal recorder is created, so the delivery -- the one moment an
+            # operator actually wants to watch -- was the only thing the
+            # honeypot never kept. A banned address reconnects constantly, so
+            # this is also where most of its connections go.
+            recorder = alerting.SessionRecorder(
+                ip, SERVICE, title=f"telnet rickroll from {ip}")
+            recorder.write_output(art)
             hold_key = tarpit.begin_hold(ip, SERVICE, rickroll.DRIP_SECONDS)
             try:
                 held = await tarpit.drip(
@@ -95,6 +103,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                     byte_delay=rickroll.drip_delay(art))
             finally:
                 tarpit.end_hold(hold_key)
+            recorder.write_output(f"\r\ndelivered over {held:.0f}s\r\n")
+            recorder.close()
             tarpit.log_hold(ip, SERVICE, held, reason="telnet rickroll (banned)")
         writer.close()
         return
