@@ -660,17 +660,15 @@ networks:
   # towards the outside is dropped. Verify with `./deploy/smoke-test.sh`, which
   # asserts that ssh-honey and web cannot reach 1.1.1.1.
   #
-  # enable_icc is set EXPLICITLY on every network whose members must talk to
-  # each other, and it is not optional. deploy/bootstrap.sh writes
-  # `"icc": false` into /etc/docker/daemon.json, which is the right default for
-  # the docker0 bridge and becomes the inherited default for user-defined
-  # bridges created afterwards. A deployment that predates that setting keeps
-  # working; the moment its networks are recreated -- a compose edit, a
-  # `down`/`up`, a daemon restart -- every container-to-container connection
-  # starts timing out at once, and the symptom is bewildering: DNS resolves,
-  # the IPs are right, the containers are on the same network, iptables shows
-  # nothing dropped, and nothing can reach Redis. Stating it here makes the
-  # networks independent of the daemon default rather than quietly bound to it.
+  # enable_icc is stated EXPLICITLY on every network whose members must talk to
+  # each other, so that inter-container communication never depends on whatever
+  # the daemon's default happens to be. It costs one line and removes a class
+  # of "it worked until the networks were recreated" surprises.
+  #
+  # It is not a fix for anything currently broken -- if containers cannot reach
+  # each other, check for stale nftables rules first (deploy/clean-stale-nft.sh
+  # and the Troubleshooting section of the README). That failure looks identical
+  # from every normal diagnostic and is far more likely than an ICC problem.
   honeypot-internal:
     driver: bridge
     driver_opts:
