@@ -41,7 +41,10 @@
     }
     window.DroseraCast.stop(slot);
     open = name;
-    window.DroseraCast.play("/sessions/" + encodeURIComponent(name) + "/raw", slot);
+    // follow(), not play(): this session is still being written. Replaying it
+    // with its original timing would mean watching the last five minutes over
+    // again before reaching the present, which is not what "live" means.
+    window.DroseraCast.follow("/sessions/" + encodeURIComponent(name) + "/raw", slot);
   }
 
   function render(rows) {

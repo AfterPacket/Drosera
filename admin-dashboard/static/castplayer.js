@@ -257,12 +257,97 @@
       });
   };
 
+  // ------------------------------------------------------------- follow mode
+
+  // `tail -f` for a recording that is still being written.
+  //
+  // Replaying a live session with its original timing is not watching it: a
+  // connection that opened five minutes ago would take five minutes of replay
+  // to reach the present, by which point it is no longer the present. So this
+  // renders everything already recorded at once -- catching up instantly --
+  // and then appends new frames as they land.
+  //
+  // It re-reads the whole file each poll rather than requesting a byte range.
+  // Recordings are capped at MAX_SESSION_BYTES (2MB by default), the file is
+  // local to the container serving it, and a Range request against a file
+  // being appended to is the kind of thing that works until it does not.
+  function Follower(url, slot) {
+    this.url = url;
+    this.slot = slot;
+    this.rendered = 0;
+    this.timer = null;
+    this.stopped = false;
+    this.idle = 0;
+  }
+
+  Follower.prototype.stop = function () {
+    this.stopped = true;
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+  };
+
+  Follower.prototype.tick = function () {
+    var self = this;
+    fetch(this.url, { credentials: "same-origin", cache: "no-store" })
+      .then(function (response) {
+        if (!response.ok) { throw new Error("http " + response.status); }
+        return response.text();
+      })
+      .then(function (body) {
+        if (self.stopped) { return; }
+        var frames = parse(body);
+        if (frames.length > self.rendered) {
+          var fresh = frames.slice(self.rendered).map(function (f) {
+            return clean(f[1]);
+          }).join("");
+          var text = self.screen.textContent + fresh;
+          if (text.length > MAX_CHARS) { text = text.slice(text.length - MAX_CHARS); }
+          self.screen.textContent = text;
+          self.screen.scrollTop = self.screen.scrollHeight;
+          self.rendered = frames.length;
+          self.idle = 0;
+        } else {
+          self.idle += 1;
+        }
+        self.status.textContent = self.idle > 20
+          ? "idle · " + self.rendered + " frames · still following"
+          : "following live · " + self.rendered + " frames";
+      })
+      .catch(function (error) {
+        // A recording that has been rotated away or a session that ended is
+        // not an error worth shouting about; keep the transcript on screen.
+        self.status.textContent = "no longer following: " + error.message;
+        self.stop();
+      });
+  };
+
+  Follower.prototype.start = function () {
+    this.slot.textContent = "";
+    this.screen = el("pre", "cast-screen");
+    this.screen.setAttribute("role", "log");
+    this.screen.setAttribute("aria-live", "polite");
+    this.status = el("div", "cast-status", "connecting…");
+    this.slot.appendChild(this.screen);
+    this.slot.appendChild(this.status);
+
+    var self = this;
+    this.tick();
+    this.timer = setInterval(function () { self.tick(); }, 2000);
+  };
+
   window.DroseraCast = {
     play: function (url, slot) {
       var player = new Player(url, slot);
       slot._drosera = player;
       player.start();
       return player;
+    },
+    // Catches up instantly, then appends new output as it is written. Use for
+    // a session that is still open; use play() for one that has finished.
+    follow: function (url, slot) {
+      var follower = new Follower(url, slot);
+      slot._drosera = follower;
+      follower.start();
+      return follower;
     },
     stop: function (slot) {
       if (slot && slot._drosera) { slot._drosera.stop(); slot._drosera = null; }

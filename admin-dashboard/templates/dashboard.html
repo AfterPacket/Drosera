@@ -6,9 +6,10 @@
 <div class="card">
   <h2>Live sessions <span class="pill off" id="live-count">0</span></h2>
   <p class="hint">
-    Connections being recorded at this moment. Watching one is strictly
-    read-only &mdash; the dashboard reads the recording file another container
-    is appending to, and has no path back towards the attacker.
+    Connections being recorded at this moment. Watching one catches up to the
+    present immediately, then follows new output as it is written &mdash; it is
+    not a replay. Strictly read-only: the dashboard reads the file another
+    container is appending to, and has no path back towards the attacker.
   </p>
   <div class="table-wrap">
     <table>
