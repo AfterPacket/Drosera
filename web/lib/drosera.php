@@ -674,12 +674,29 @@ function update_identity(string $ip, array $fields): array
     return $identity;
 }
 
+/**
+ * Whether an operator has released this address from the tarpit.
+ *
+ * Clearing `tarpit_active` alone lasts one request: the score is unchanged, so
+ * the next scored event puts it straight back. The web tier has to honour the
+ * same exemption as the Python services or a release from the dashboard would
+ * survive on SSH and be undone by the first HTTP request.
+ */
+function sb_tarpit_exempt(array $identity): bool
+{
+    return (float)($identity['tarpit_exempt_until'] ?? 0) > microtime(true);
+}
+
 function is_tarpitted(string $ip): bool
 {
     if (sb_is_ignored($ip)) {
         return false;
     }
-    return !empty(get_or_create_identity($ip)['tarpit_active']);
+    $identity = get_or_create_identity($ip);
+    if (sb_tarpit_exempt($identity)) {
+        return false;
+    }
+    return !empty($identity['tarpit_active']);
 }
 
 function is_banned(string $ip): bool
@@ -697,6 +714,9 @@ function activate_tarpit(string $ip, string $reason = 'Threshold reached'): void
         return;
     }
     $identity = get_or_create_identity($ip);
+    if (sb_tarpit_exempt($identity)) {
+        return;
+    }
     if (!empty($identity['tarpit_active'])) {
         return;
     }
@@ -786,7 +806,9 @@ function score_event(string $ip, string $eventType, string $payload = '', string
         $fields['tool_detected'] = $tool;
     }
     $wasTarpitted = !empty($identity['tarpit_active']);
-    if ($new >= TARPIT_THRESHOLD) {
+    // Not while released. The score stays over the threshold after a release,
+    // so without this every scored request re-engages the tarpit immediately.
+    if ($new >= TARPIT_THRESHOLD && !sb_tarpit_exempt($identity)) {
         $fields['tarpit_active'] = true;
     }
     $identity = update_identity($ip, $fields);

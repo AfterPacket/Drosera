@@ -6,6 +6,53 @@ next one will look just as innocent.
 
 ---
 
+## "Release tarpit" lasted exactly one packet
+
+**Symptom.** An operator releases an address from the tarpit to watch it work,
+and it is back in the tarpit immediately:
+
+```
+20:54:27  ssh  TARPIT_ENGAGED  31.0  ssh tarpit
+20:54:27  ssh  CONNECTION_ANY  31.0  Initial contact
+```
+
+Engaged in the same second as the connection that triggered it.
+
+**Cause.** The release cleared `tarpit_active` and nothing else. The score is
+deliberately left alone -- it is the record of what they did -- but that is
+exactly why clearing the flag on its own achieves nothing:
+
+```python
+should_tarpit = scoring.should_tarpit(new_score)   # 31 >= 20
+if should_tarpit and not was_tarpitted:
+    fields["tarpit_active"] = True
+```
+
+Every scored event re-derives the flag from the score. The attacker's next
+connection scores `CONNECTION_ANY`, the score is still over the threshold, and
+the tarpit re-engages before the operator has seen anything.
+
+**Why it hid.** The button worked. The audit line was written, the flag really
+was cleared, and the API returned success. The window between the release and
+the next inbound packet is where it was true, and on a host being scanned that
+is milliseconds. `release_tarpit()` even documented the mechanism in its own
+docstring -- "clearing it would just let them climb back to the threshold and
+re-engage" -- and then did not act on it.
+
+**Fix.** A release is an exemption with a deadline rather than a flag flip.
+`tarpit_exempt_until` is honoured by `score_event`, `activate_tarpit` and
+`is_tarpitted`, and by the web tier, which keeps its own copy of all three --
+otherwise a release would hold on SSH and be undone by the first HTTP request.
+It expires (`HONEYPOT_TARPIT_RELEASE_SECONDS`, one hour) because a permanent
+release made by accident is invisible afterwards: the address simply never gets
+tarpitted again and nothing says why.
+
+**Avoid it.** When a control derives state from a value on every event, setting
+the state is not the same as changing the outcome. The question to ask of any
+manual override is what recomputes it, and how soon.
+
+---
+
 ## One probe was enough to identify the honeypot
 
 **Symptom.** A session that ends 2.8 seconds after a successful login, having

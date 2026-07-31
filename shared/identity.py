@@ -452,7 +452,7 @@ def score_event(ip: str, points: float, event_type: str, reason: str,
         fields["tool_detected"] = tool
 
     was_tarpitted = bool(identity.get("tarpit_active"))
-    should_tarpit = scoring.should_tarpit(new_score)
+    should_tarpit = scoring.should_tarpit(new_score) and not is_exempt(identity)
     if should_tarpit and not was_tarpitted:
         fields["tarpit_active"] = True
 
@@ -506,8 +506,14 @@ def activate_tarpit(ip: str, reason: str = "Threshold reached",
     identity = get_or_create_identity(ip)
     if identity.get("tarpit_active"):
         return identity
+    # An operator release outranks the automatic threshold until it expires --
+    # otherwise the first service to score them puts the tarpit straight back
+    # and the release was never real.
+    if is_exempt(identity):
+        return identity
 
-    identity = update_identity(ip, {"tarpit_active": True})
+    identity = update_identity(ip, {"tarpit_active": True,
+                                    "tarpit_exempt_until": 0})
     alerting.alert_event(
         ip=ip,
         event_type="TARPIT_ENGAGED",
@@ -522,17 +528,30 @@ def activate_tarpit(ip: str, reason: str = "Threshold reached",
     return identity
 
 
-def release_tarpit(ip: str, reason: str = "Operator release") -> Dict[str, Any]:
-    """Drop an IP out of the tarpit without touching its score.
+RELEASE_SECONDS = int(os.getenv("HONEYPOT_TARPIT_RELEASE_SECONDS", "3600"))
+
+
+def release_tarpit(ip: str, reason: str = "Operator release",
+                   seconds: float = None) -> Dict[str, Any]:
+    """Drop an IP out of the tarpit, and keep it out for a while.
 
     The counterpart to activate_tarpit, for false positives and for releasing
-    someone deliberately. The score is left alone on purpose: clearing it would
-    just let them climb back to the threshold and re-engage, which is rarely
-    what an operator releasing a host actually wants.
+    someone deliberately. The score is left alone -- it is the record of what
+    they did and clearing it would lose that -- but leaving it alone is also
+    why clearing the flag on its own achieves nothing: the score is still over
+    the threshold, so the next scored event re-engages the tarpit in the same
+    second the attacker reconnects.
+
+    So the release is an exemption with a deadline rather than a flag flip. It
+    expires on its own, because a permanent release made by accident is
+    invisible afterwards: the address simply never gets tarpitted again and
+    nothing on the dashboard says why.
     """
     from . import alerting
 
-    identity = update_identity(ip, {"tarpit_active": False})
+    window = RELEASE_SECONDS if seconds is None else seconds
+    identity = update_identity(ip, {"tarpit_active": False,
+                                    "tarpit_exempt_until": time.time() + window})
     alerting.alert_event(
         ip=ip,
         event_type="TARPIT_RELEASED",
@@ -543,6 +562,20 @@ def release_tarpit(ip: str, reason: str = "Operator release") -> Dict[str, Any]:
     return identity
 
 
+def is_exempt(identity: Dict[str, Any]) -> bool:
+    """Whether an operator has released this address from the tarpit.
+
+    Clearing `tarpit_active` alone lasts one packet: the score is unchanged, so
+    the next scored event puts it straight back. This is what makes the
+    dashboard's release button mean what it says, and it expires on its own so
+    a release cannot silently become permanent.
+    """
+    try:
+        return float(identity.get("tarpit_exempt_until") or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
+
+
 def is_tarpitted(ip: str) -> bool:
     # Checked here as well as in score_event: an operator who was flagged before
     # being added to the ignore list would otherwise stay tarpitted forever,
@@ -550,7 +583,10 @@ def is_tarpitted(ip: str) -> bool:
     # blank terminal on your own honeypot, which is the tarpit working.
     if is_ignored(ip):
         return False
-    return bool(get_or_create_identity(ip).get("tarpit_active"))
+    identity = get_or_create_identity(ip)
+    if is_exempt(identity):
+        return False
+    return bool(identity.get("tarpit_active"))
 
 
 def is_banned(ip: str) -> bool:

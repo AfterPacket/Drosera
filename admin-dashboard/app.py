@@ -51,6 +51,12 @@ STATS_CACHE_TTL = 30
 
 BAN_TTL = int(os.getenv("HONEYPOT_BAN_TTL", str(7 * 24 * 3600)))
 
+# How long "Release tarpit" keeps an address out of the tarpit. Bounded rather
+# than permanent: a release is usually "let me watch this one for a bit", and a
+# permanent one made by accident is invisible afterwards -- the address simply
+# never gets tarpitted again and nothing says why.
+TARPIT_RELEASE_SECONDS = int(os.getenv("HONEYPOT_TARPIT_RELEASE_SECONDS", "3600"))
+
 # Kibana is reached by the operator's own browser over their SSH tunnel, not by
 # this container -- which is on neither elastic-internal nor any egress network.
 # So this is a link target, never something the dashboard connects to.
@@ -1784,12 +1790,24 @@ def _set_tarpit(ip: str, active: bool):
                             "error": "no identity recorded for that address"}), 404
         identity = json.loads(raw)
         identity["tarpit_active"] = active
+        # Releasing has to outlast the release, or it does nothing. The flag is
+        # re-set by every scored event while the score is over the threshold,
+        # so clearing it on its own buys exactly one packet: the attacker's
+        # next connection scores CONNECTION_ANY, the score is still over, and
+        # the tarpit re-engages in the same second. An exemption is what the
+        # button actually means -- let this address move freely because I want
+        # to watch it -- and it expires so a release cannot be forgotten.
+        if active:
+            identity.pop("tarpit_exempt_until", None)
+        else:
+            identity["tarpit_exempt_until"] = time.time() + TARPIT_RELEASE_SECONDS
         client.set(f"hp:identity:{digest}", json.dumps(identity), ex=7 * 24 * 3600)
     except (redis.RedisError, json.JSONDecodeError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
     audit("MANUAL_TARPIT" if active else "MANUAL_UNTARPIT", target_ip=ip)
-    return jsonify({"ok": True, "ip": ip, "tarpit_active": active})
+    return jsonify({"ok": True, "ip": ip, "tarpit_active": active,
+                    "exempt_seconds": 0 if active else TARPIT_RELEASE_SECONDS})
 
 
 @app.route("/api/tarpit/<path:ip>", methods=["POST"])
