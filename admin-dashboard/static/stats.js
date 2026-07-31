@@ -255,6 +255,18 @@
             return { label: (d.flag ? d.flag + " " : "") + d.country,
                      value: d.count };
           }));
+        // Reported, not charted. An address GeoIP cannot place is a gap in the
+        // data, and hiding the size of that gap would overstate how complete
+        // the chart above is.
+        var unknown = document.getElementById("geo-unknown");
+        if (unknown) {
+          unknown.hidden = !data.countries_unknown;
+          unknown.textContent = data.countries_unknown
+            ? plural(data.countries_unknown, "address") + " could not be "
+              + "geolocated and " + (data.countries_unknown === 1 ? "is" : "are")
+              + " not counted above."
+            : "";
+        }
       } else {
         host("c-map").textContent = "";
         var mapNote = document.getElementById("map-note");

@@ -1298,7 +1298,9 @@ def api_stats():
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
         day = today
 
-    cache_key = f"admin:stats:v3:{day}"
+    # v4: countries no longer carries the "unknown" bucket, and the payload
+    # gained countries_unknown and the per-country flag.
+    cache_key = f"admin:stats:v4:{day}"
     try:
         cached = _redis_admin().get(cache_key)
         if cached:
@@ -1457,8 +1459,16 @@ def api_stats():
         # Flag alongside the code, not instead of it. A flag is quick to
         # recognise and impossible to search for or read aloud, so the two-letter
         # code stays as the label and the flag decorates it.
+        #
+        # "unknown" is excluded: it is the absence of a GeoIP match, not a
+        # country, and leaving it in meant it took one of the ten slots away
+        # from somewhere real while rendering flagless and broken-looking next
+        # to the rest. The count is still reported, as a note under the chart --
+        # how much of your traffic cannot be placed is worth knowing, it just
+        # is not a bar on this chart.
         "countries": [{"country": k, "flag": country_flag(k), "count": v}
-                      for k, v in countries.most_common(10)],
+                      for k, v in ranked_countries[:10]],
+        "countries_unknown": countries.get("unknown", 0),
         # Capped: past a couple of hundred dots the map is a smear, and the
         # busiest origins are the ones worth seeing anyway.
         "origins": sorted(origins.values(), key=lambda o: -o["count"])[:200],
