@@ -250,7 +250,10 @@
         window.DroseraCharts.geomap(host("c-map"), data.origins || []);
         window.DroseraCharts.hbars(host("c-countries"),
           (data.countries || []).map(function (d) {
-            return { label: d.country, value: d.count };
+            // Flag before the code, never instead of it: a flag cannot be
+            // searched for, read aloud, or told apart at 10px by everyone.
+            return { label: (d.flag ? d.flag + " " : "") + d.country,
+                     value: d.count };
           }));
       } else {
         host("c-map").textContent = "";
@@ -299,8 +302,11 @@
         : "");
 
       ipTable("t-top", data.top_ips || [], ["score", "tool", "services"], [0]);
-      ipTable("t-noisy", data.noisiest_ips || [],
-              ["events", "country", "score"], [0, 2]);
+      ipTable("t-noisy", (data.noisiest_ips || []).map(function (row) {
+        return Object.assign({}, row, {
+          country: (row.flag ? row.flag + " " : "") + row.country
+        });
+      }), ["events", "country", "score"], [0, 2]);
     });
   }
 

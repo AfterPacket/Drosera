@@ -868,6 +868,20 @@ def api_sessions_live():
     return jsonify(live_sessions())
 
 
+def country_flag(code) -> str:
+    """ISO 3166-1 alpha-2 to a flag emoji.
+
+    Built from regional indicator symbols rather than shipped as images: no
+    sprite sheet to fetch, which matters on a dashboard reached through an SSH
+    tunnel to a box with no egress, and no image set to keep current when a
+    country changes its flag.
+    """
+    code = (code or "").strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        return ""
+    return "".join(chr(0x1F1E6 + ord(letter) - ord("A")) for letter in code)
+
+
 def status_of(identity: dict) -> str:
     if identity.get("banned"):
         return "BANNED"
@@ -882,21 +896,31 @@ def status_of(identity: dict) -> str:
 @require_auth
 def dashboard():
     rows = []
+    countries = set()
     for _, identity in iter_identities():
+        address = identity.get("ip") or "unknown"
+        # geoip caches, so several thousand identities cost a few thousand
+        # dictionary hits rather than a few thousand database reads.
+        code = (geoip.lookup(address) or {}).get("country_code") or ""
+        if code:
+            countries.add(code)
         rows.append({
             # Written by both the PHP engine and the Python services.
-            "ip": identity.get("ip") or "unknown",
+            "ip": address,
             "first_seen": identity.get("first_seen", ""),
             "last_seen": identity.get("last_seen", ""),
             "score": identity.get("score", 0),
             "services": ", ".join(identity.get("services_touched") or []),
             "tool": identity.get("tool_detected") or "-",
             "status": status_of(identity),
+            "country": code,
+            "flag": country_flag(code),
         })
     rows.sort(key=lambda r: r["last_seen"], reverse=True)
     # Only asked when the list came back empty: a healthy deployment renders
     # this page constantly and does not need a PING every time.
     return render_template("dashboard.html", rows=rows,
+                           countries=sorted(countries),
                            redis_error=honeypot_redis_error() if not rows else None,
                            csrf_token=g.csrf_token)
 
@@ -1403,6 +1427,7 @@ def api_stats():
         "ip": address,
         "events": count,
         "country": country_of.get(address) or "-",
+        "flag": country_flag(country_of.get(address)),
         "score": round(peak_score.get(address, 0), 1),
         "status": status_of({"banned": address in banned_ips,
                              "tarpit_active": address in tarpitted_ips}),
@@ -1429,7 +1454,10 @@ def api_stats():
         "by_service": [{"service": k, "count": v} for k, v in by_service.most_common(12)],
         "tools": [{"tool": k, "count": v} for k, v in tools.most_common(10)],
         "geoip": geoip.available(),
-        "countries": [{"country": k, "count": v}
+        # Flag alongside the code, not instead of it. A flag is quick to
+        # recognise and impossible to search for or read aloud, so the two-letter
+        # code stays as the label and the flag decorates it.
+        "countries": [{"country": k, "flag": country_flag(k), "count": v}
                       for k, v in countries.most_common(10)],
         # Capped: past a couple of hundred dots the map is a smear, and the
         # busiest origins are the ones worth seeing anyway.
@@ -1447,7 +1475,9 @@ def api_stats():
         # to re-derive "the largest of these" in three different places.
         "top_ip": noisiest[0]["ip"] if noisiest else None,
         "top_ip_events": noisiest[0]["events"] if noisiest else 0,
-        "top_country": ranked_countries[0][0] if ranked_countries else None,
+        "top_country": (f"{country_flag(ranked_countries[0][0])} "
+                        f"{ranked_countries[0][0]}").strip()
+                       if ranked_countries else None,
         "top_country_ips": ranked_countries[0][1] if ranked_countries else 0,
         # Excludes the "unknown" bucket, which the Countries tile used to count
         # as a country of its own -- so a day of pure un-geolocated traffic

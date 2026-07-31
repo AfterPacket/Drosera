@@ -28,19 +28,45 @@
     <span class="count" id="refreshed"></span>
   </h2>
   {% if rows %}
+  {# Filtering is client-side and additive: the rows are already here, so
+     narrowing them needs no round trip and no page state to lose. #}
+  <div class="filters" data-filter-target="tracked">
+    <input type="search" id="f-ip" placeholder="Filter by IP or tool&hellip;"
+           autocomplete="off" aria-label="Filter by IP or tool">
+    <select id="f-status" aria-label="Filter by status">
+      <option value="">All statuses</option>
+      <option value="ACTIVE">Active</option>
+      <option value="TARPITTED">Tarpitted</option>
+      <option value="BANNED">Banned</option>
+    </select>
+    <select id="f-country" aria-label="Filter by country">
+      <option value="">All countries</option>
+      {% for code in countries %}
+      <option value="{{ code }}">{{ code }}</option>
+      {% endfor %}
+    </select>
+    <button class="act" type="button" id="f-clear">Clear</button>
+    <span class="muted" id="f-count"></span>
+  </div>
   <div class="table-wrap">
-    <table>
+    <table id="tracked">
       <thead>
-        <tr><th>IP</th><th>First seen</th><th>Last seen</th><th class="num">Score</th>
-            <th>Services</th><th>Tool</th><th>Status</th></tr>
+        <tr><th>IP</th><th>Country</th><th>First seen</th><th>Last seen</th>
+            <th class="num">Score</th><th>Services</th><th>Tool</th><th>Status</th></tr>
       </thead>
       <tbody>
         {% for row in rows %}
-        <tr>
+        <tr data-status="{{ row.status }}" data-country="{{ row.country }}"
+            data-ip="{{ row.ip }}" data-tool="{{ row.tool }}">
           <td class="mono nowrap">
             {% if row.ip and row.ip != 'unknown' %}
               <a href="{{ url_for('ip_detail', ip=row.ip) }}">{{ row.ip }}</a>
             {% else %}<span class="muted">unresolved</span>{% endif %}
+          </td>
+          <td class="nowrap">
+            {% if row.country %}<span class="flag">{{ row.flag }}</span>
+              <span class="mono">{{ row.country }}</span>
+            {% else %}<span class="muted">—</span>{% endif %}
           </td>
           <td class="mono nowrap">{{ row.first_seen[:19] }}</td>
           <td class="mono nowrap">{{ row.last_seen[:19] }}</td>
@@ -90,4 +116,5 @@
 <script src="{{ url_for('static', filename='castplayer.js') }}"></script>
 <script src="{{ url_for('static', filename='feed.js') }}" defer></script>
 <script src="{{ url_for('static', filename='live.js') }}" defer></script>
+<script src="{{ url_for('static', filename='filter.js') }}" defer></script>
 {% endblock %}

@@ -269,6 +269,23 @@ button.act.danger:hover{border-color:var(--bad);color:var(--bad);background:var(
    the last one and collapsed badly when they wrapped. */
 .actions{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center;
   margin:var(--s4) 0 0}
+/* Filter bar. Sits directly above the table it narrows. */
+.filters{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center;
+  margin-bottom:var(--s3)}
+.filters input[type="search"],.filters select{background:var(--raised);
+  color:var(--text);border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:.38rem .6rem;font-size:.82rem;font-family:var(--mono)}
+.filters input[type="search"]{min-width:16rem;flex:1;max-width:24rem}
+.filters input:focus,.filters select:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-soft)}
+.filters .muted{font-size:.78rem;margin-left:auto;font-variant-numeric:tabular-nums}
+/* Status pills filter on click, so they need to look clickable. */
+#tracked tbody .pill{cursor:pointer}
+#tracked tbody .pill:hover{filter:brightness(1.25)}
+/* Flags render at whatever the system emoji font gives; keep them from
+   changing the row height. */
+.flag{font-size:1rem;line-height:1;vertical-align:-.05em}
+
 .export-form{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
 .export-form label{color:var(--muted);font-size:.82rem}
 .export-form input{width:6.5rem;text-align:right}
