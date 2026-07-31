@@ -205,33 +205,55 @@ fi
 # daemon restarts, which is why the rules go here rather than in FORWARD.
 info "Blocking honeypot egress via DOCKER-USER"
 
-HP_SUBNET="172.25.0.0/16"
+# Installed by a systemd unit ordered after docker.service, NOT saved with
+# netfilter-persistent.
+#
+# `netfilter-persistent save` captures every table, including the chains Docker
+# writes and rewrites itself -- DOCKER, DOCKER-FORWARD, and the `raw`
+# PREROUTING rules that stop published ports being bypassed. Those name bridges
+# by interface, and bridge names change whenever a network is recreated, so a
+# saved ruleset goes stale the moment anything moves. Replaying it at boot then
+# reinstates rules naming bridges that no longer exist.
+#
+# The `raw` ones are the dangerous kind, because Docker writes them with a
+# NEGATED interface match:
+#
+#   -A PREROUTING -d 172.25.0.2/32 ! -i br-<old> -j DROP
+#
+# With br-<old> gone, `! -i br-<old>` matches everything, and every packet to
+# that address is dropped -- before conntrack, before FORWARD, and invisible to
+# `iptables -L`. That has already cost one production outage. Docker rebuilds
+# its own rules from the live networks at every start and needs no help; only
+# the three rules below are ours to reinstate.
+install -m 0755 "${REPO_DIR}/deploy/drosera-firewall.sh" /usr/local/bin/drosera-firewall
 
-# Idempotent: drop any rules we previously added before re-adding them.
-while iptables -C DOCKER-USER -s "$HP_SUBNET" -j DROP 2>/dev/null; do
-    iptables -D DOCKER-USER -s "$HP_SUBNET" -j DROP
-done
-while iptables -C DOCKER-USER -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN 2>/dev/null; do
-    iptables -D DOCKER-USER -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN
-done
-while iptables -C DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null; do
-    iptables -D DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-done
+cat > /etc/systemd/system/drosera-firewall.service <<EOF
+[Unit]
+Description=Drosera honeypot egress rules
+After=docker.service
+Requires=docker.service
 
-# Inserted in reverse order, so the final chain reads:
-#   1. ESTABLISHED,RELATED -> RETURN   (replies to attackers we accepted)
-#   2. subnet -> subnet    -> RETURN   (honeypots reaching redis)
-#   3. subnet -> anywhere  -> DROP     (no phoning home, no pivoting)
-iptables -I DOCKER-USER 1 -s "$HP_SUBNET" -j DROP
-iptables -I DOCKER-USER 1 -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN
-iptables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=HP_SUBNET=172.25.0.0/16
+ExecStart=/usr/local/bin/drosera-firewall
 
-if command -v netfilter-persistent >/dev/null; then
-    netfilter-persistent save >/dev/null 2>&1 \
-        || warn "could not persist iptables rules; re-run this script after reboot"
-else
-    warn "iptables-persistent not installed: egress rules are lost on reboot."
-    warn "  apt-get install -y iptables-persistent   (then re-run this script)"
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now drosera-firewall.service >/dev/null 2>&1 \
+    || warn "could not enable drosera-firewall.service; run /usr/local/bin/drosera-firewall by hand after reboot"
+
+# A previously saved ruleset would replay stale Docker chains over the top of
+# whatever the daemon has just built, so drop it rather than leave a landmine.
+if [ -f /etc/iptables/rules.v4 ] && grep -q 'br-' /etc/iptables/rules.v4 2>/dev/null; then
+    warn "/etc/iptables/rules.v4 contains saved Docker bridge rules"
+    warn "  these replay stale rules at boot; removing the saved ruleset"
+    mv /etc/iptables/rules.v4 /etc/iptables/rules.v4.drosera-backup
+    systemctl disable netfilter-persistent >/dev/null 2>&1 || true
 fi
 
 # --------------------------------------------------------------- kernel limits
