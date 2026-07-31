@@ -345,9 +345,17 @@ class SessionRecorder:
         except Exception:
             self._handle = None
 
-    def _write(self, stream: str, data: str) -> None:
+    def _write(self, stream: str, data) -> None:
         if self._handle is None or self.closed:
             return
+        # Decoded here rather than trusted to be text. The services that write
+        # to a raw socket hold bytes, and json.dumps raises TypeError on bytes
+        # -- which the except below swallowed, so the frame vanished and the
+        # recording kept its header and nothing else. That is exactly what
+        # happened to every rickroll delivery: 321 files of 166 bytes each,
+        # all claiming to record a picture none of them contained.
+        if isinstance(data, (bytes, bytearray)):
+            data = bytes(data).decode("utf-8", "replace")
         with self._lock:
             if self.bytes_written > MAX_SESSION_BYTES:
                 return

@@ -91,11 +91,19 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             # Recorded like everything else. This branch returns before the
             # normal recorder is created, so the delivery -- the one moment an
             # operator actually wants to watch -- was the only thing the
-            # honeypot never kept. A banned address reconnects constantly, so
-            # this is also where most of its connections go.
-            recorder = alerting.SessionRecorder(
-                ip, SERVICE, title=f"telnet rickroll from {ip}")
-            recorder.write_output(art)
+            # honeypot never kept.
+            #
+            # Rate-limited: a banned address reconnects constantly and gets the
+            # identical picture each time, so recording every delivery buries
+            # the live feed under copies of one drawing. The drip still runs on
+            # every connection.
+            recorder = None
+            if rickroll.should_record(ip):
+                recorder = alerting.SessionRecorder(
+                    ip, SERVICE, title=f"telnet rickroll from {ip}")
+                # Decoded: the art is bytes for the socket, and a recorder
+                # frame is JSON, which has no way to carry raw bytes.
+                recorder.write_output(art.decode("utf-8", "replace"))
             hold_key = tarpit.begin_hold(ip, SERVICE, rickroll.DRIP_SECONDS)
             try:
                 held = await tarpit.drip(
@@ -103,8 +111,9 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                     byte_delay=rickroll.drip_delay(art))
             finally:
                 tarpit.end_hold(hold_key)
-            recorder.write_output(f"\r\ndelivered over {held:.0f}s\r\n")
-            recorder.close()
+            if recorder is not None:
+                recorder.write_output(f"\r\ndelivered over {held:.0f}s\r\n")
+                recorder.close()
             tarpit.log_hold(ip, SERVICE, held, reason="telnet rickroll (banned)")
         writer.close()
         return

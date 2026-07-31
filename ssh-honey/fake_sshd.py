@@ -461,11 +461,20 @@ def handle_client(sock: socket.socket, addr) -> None:
             if art:
                 # Recorded. This branch returns before the normal recorder
                 # exists, so delivery -- the one moment worth watching -- was
-                # the only thing never kept. A banned scanner reconnects
-                # constantly, so this is where most of its traffic ends up.
-                rick_rec = alerting.SessionRecorder(
-                    ip, SERVICE, title=f"ssh rickroll from {ip}")
-                rick_rec.write_output(art)
+                # the only thing never kept.
+                #
+                # Rate-limited, because a banned scanner reconnects every few
+                # seconds and is handed the same picture each time: one address
+                # produced 321 recordings in half an hour and left nothing else
+                # visible on the live feed. The drip below still runs on every
+                # connection, so their time is spent either way.
+                rick_rec = None
+                if rickroll.should_record(ip):
+                    rick_rec = alerting.SessionRecorder(
+                        ip, SERVICE, title=f"ssh rickroll from {ip}")
+                    # Decoded: the art is bytes for the socket, and a recorder
+                    # frame is JSON, which has no way to carry raw bytes.
+                    rick_rec.write_output(art.decode("utf-8", "replace"))
                 sock.settimeout(rickroll.DRIP_SECONDS + 30)
                 hold_key = tarpit.begin_hold(ip, SERVICE, rickroll.DRIP_SECONDS)
                 try:
@@ -474,8 +483,9 @@ def handle_client(sock: socket.socket, addr) -> None:
                         byte_delay=rickroll.drip_delay(art))
                 finally:
                     tarpit.end_hold(hold_key)
-                rick_rec.write_output(f"\r\ndelivered over {held:.0f}s\r\n")
-                rick_rec.close()
+                if rick_rec is not None:
+                    rick_rec.write_output(f"\r\ndelivered over {held:.0f}s\r\n")
+                    rick_rec.close()
                 tarpit.log_hold(ip, SERVICE, held, reason="ssh rickroll (banned)")
             sock.close()
             return

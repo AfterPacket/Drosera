@@ -27,6 +27,7 @@ the services fall back to dropping the connection without a word.
 
 import os
 import threading
+import time
 from pathlib import Path
 
 ART_FILE = Path(__file__).with_name("rickroll.txt")
@@ -41,9 +42,48 @@ MAX_BYTES = 64 * 1024
 # minutes without costing us a connection slot all afternoon.
 DRIP_SECONDS = float(os.getenv("HONEYPOT_RICKROLL_DRIP_SECONDS", "120"))
 
+# One recording per address per interval, not one per connection.
+#
+# A banned scanner reconnects every few seconds and is handed the identical
+# picture every time. Recording each delivery produced 321 near-identical files
+# for a single address in half an hour, filled every slot in the live feed so
+# nothing else was visible, and left the profile page stitching a 321-segment
+# playback of the same drawing. The first delivery is the evidence; the 321st is
+# the same evidence again. The drip itself still runs every time -- their time is
+# the point -- and log_hold still counts every second of it.
+RECORD_INTERVAL = float(os.getenv("HONEYPOT_RICKROLL_RECORD_INTERVAL", "3600"))
+_MAX_TRACKED = 4096
+
 _lock = threading.Lock()
 _tried = False
 _rendered = b""
+_recorded: dict = {}
+_recorded_lock = threading.Lock()
+
+
+def should_record(ip: str) -> bool:
+    """True at most once per RECORD_INTERVAL for a given address.
+
+    Process-local rather than Redis-backed on purpose: this is a bound on our
+    own disk writes, and it has to hold when the identity store is down --
+    which is precisely when a flood is least welcome. A restart forgets, which
+    costs one extra recording per address.
+    """
+    if RECORD_INTERVAL <= 0:
+        return True
+    now = time.time()
+    with _recorded_lock:
+        if now - _recorded.get(ip, 0.0) < RECORD_INTERVAL:
+            return False
+        if len(_recorded) >= _MAX_TRACKED:
+            # The keys are attacker-supplied, so the map cannot grow freely.
+            cutoff = now - RECORD_INTERVAL
+            for stale in [key for key, seen in _recorded.items() if seen < cutoff]:
+                del _recorded[stale]
+            if len(_recorded) >= _MAX_TRACKED:
+                _recorded.clear()
+        _recorded[ip] = now
+        return True
 
 
 def drip_delay(data: bytes) -> float:

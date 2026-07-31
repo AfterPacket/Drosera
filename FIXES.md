@@ -6,6 +6,45 @@ next one will look just as innocent.
 
 ---
 
+## Every rickroll recording was an empty file, and there were 321 of them
+
+**Symptom.** One banned address filled all five slots in the live feed, its
+profile claimed 321 connections, and every recording was exactly 166 bytes.
+
+**Cause.** Two independent problems that presented as one.
+
+`rickroll.banner()` returns **bytes** — it is written to a raw socket. Both the
+SSH and telnet ban paths passed it straight to `SessionRecorder.write_output()`,
+which builds a frame with `json.dumps()`. That raises `TypeError` on bytes, and
+the method's blanket `except Exception: pass` swallowed it. The frame was
+dropped, the file kept its header, and 166 bytes is what an asciicast header
+weighs. Both call sites carried a comment explaining that delivery was *finally*
+being recorded. It never was, from the moment the feature was added.
+
+Separately, the recording was created per connection. A banned scanner
+reconnects every few seconds — 321 times in half an hour here — and is handed
+the identical picture each time, so the feed filled with copies of one drawing
+and the profile page tried to stitch a 321-segment playback of it.
+
+**Why it hid.** The bug wrote a file, at a plausible path, with a valid header,
+on schedule. Nothing errored, nothing was missing, and the dashboard listed the
+sessions correctly — they were real files. Only the size gave it away, and only
+because five of them were on screen at once showing the same number.
+
+**Fix.** `_write()` decodes bytes rather than letting `json.dumps` refuse them,
+so no raw-socket service can lose a frame this way again, and both call sites
+decode explicitly. `rickroll.should_record()` limits recordings to one per
+address per hour (`HONEYPOT_RICKROLL_RECORD_INTERVAL`). The drip still runs on
+every connection and `log_hold` still counts every second — their time is the
+point; the duplicate file is not.
+
+**Avoid it.** A blanket `except Exception: pass` around a serialiser turns a
+type error into missing data. If a write is worth doing, its failure is worth
+distinguishing from its success — and "file exists, correct name, right size for
+a header" is not evidence that anything was recorded.
+
+---
+
 ## The tarpit was set on three services that never honoured it
 
 **Symptom.** None, which is the problem. Addresses were marked tarpitted, the
