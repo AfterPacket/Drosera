@@ -106,6 +106,48 @@ def main():
     bad += check("a bare trailing backslash does not crash",
                  _expand_escapes("abc\\") == "abc\\")
 
+    # --- command substitution, including nested parentheses ---------------
+    #
+    # The recon script every SSH dropper opens with is one long chain of these,
+    # and its very first line nests a `( ... )` inside the `$( ... )`. A body
+    # pattern of `[^()]*` stopped at the inner paren, so the substitution never
+    # ran, the variable kept its own source text, and `echo "UNAME:$uname"`
+    # replayed the attacker's script back at them.
+    s = shell()
+    out = s.run('v=$(echo hello); echo "V:$v"')
+    bad += check("a simple substitution is executed", out.endswith("V:hello"), repr(out))
+
+    s = shell()
+    out = s.run('v=$(echo one || ( [ -f /nope ] && echo two )); echo "V:$v"')
+    bad += check("a nested parenthesis does not break substitution",
+                 "V:one" in out and "$(" not in out, repr(out))
+
+    s = shell()
+    out = s.run('v=$(uname -s 2>/dev/null || ( [ -f /proc/version ] && echo x )); echo "U:$v"')
+    bad += check("the real recon opener resolves",
+                 "U:" in out and "$(" not in out and "||" not in out, repr(out))
+
+    bad += check("backticks still work",
+                 shell().run('v=`echo hi`; echo "V:$v"').endswith("V:hi"))
+    bad += check("an unterminated substitution does not hang",
+                 isinstance(shell().run('echo $(echo broken'), str))
+
+    # --- shell grammar is not a command ----------------------------------
+    for fragment in ["case", "esac", "in", "done", "fi", "*)", "*xxxxxx*)"]:
+        out = shell().run(fragment)
+        bad += check(f"{fragment!r} is not reported as a missing command",
+                     "command not found" not in out, repr(out))
+
+    # --- their own file can be removed ------------------------------------
+    s = shell()
+    s.run('printf "#!/bin/sh\\necho ok\\n" > filter')
+    out = s.run("rm -rf filter")
+    bad += check("a file they created can be deleted",
+                 "Permission denied" not in out, repr(out))
+    out = shell().run("rm -rf /etc/passwd")
+    bad += check("a file they did not create still cannot be",
+                 "Permission denied" in out, repr(out))
+
     # --- the busybox presence check --------------------------------------
     out = shell().run("/bin/busybox MIRAI")
     bad += check("an unknown busybox applet reports 'applet not found'",

@@ -244,6 +244,15 @@ def scan_redirects(stage: str):
 # inside the quoted script matches and the wrapper is never reached.
 SHELL_COMMANDS = ("bash", "sh", "dash", "ash", "zsh", "ksh")
 
+# Shell grammar, which a real shell consumes rather than executing. These reach
+# the dispatcher because stages are split on `;` and `&&`, so the fragments of
+# a `case`/`esac` or `for`/`done` arrive looking like command names.
+SHELL_KEYWORDS = {
+    "case", "esac", "in", "do", "done", "for", "while", "until", "select",
+    "if", "then", "elif", "else", "fi", "function", "time", "coproc",
+    ";;", ";;&", ";&", "{", "}", "!", ":",
+}
+
 # What `echo -e` turns a backslash sequence into. Malware writes its strings
 # this way constantly -- partly to dodge naive log matching, partly because the
 # telnet path cannot carry arbitrary bytes -- so getting it right is the
@@ -469,8 +478,56 @@ class FakeShell:
     # Redirections are found by scan_redirects(), not a regex: a regex cannot
     # tell a `>` inside `bash -c '... > file ...'` from one that belongs to the
     # stage, and stripping the inner one broke the script it was part of.
-    _SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
     _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+    @staticmethod
+    def _next_substitution(text: str, start: int = 0):
+        """Locate the next $(...) or `...`, as (open, close, inner).
+
+        A scanner rather than a regex, because `$(...)` nests: the recon script
+        every SSH dropper runs opens with
+
+            uname=$(uname -s -v -n -m 2>/dev/null || ( [ -f /proc/version ] && ... ))
+
+        and a `[^()]*` body stops dead at that inner parenthesis. The
+        substitution then never matched, so the assignment stored its own
+        source text and `echo "UNAME:$uname"` handed the attacker back the
+        command they had just sent. Nothing in the transcript said "error" --
+        it simply answered every probe with its own script.
+        """
+        index = start
+        while index < len(text):
+            char = text[index]
+            if char == "\\":
+                index += 2
+                continue
+            if char == "`":
+                end = text.find("`", index + 1)
+                if end == -1:
+                    return None
+                return index, end + 1, text[index + 1:end]
+            if char == "$" and text.startswith("$(", index):
+                depth, cursor, quote = 1, index + 2, ""
+                while cursor < len(text) and depth:
+                    here = text[cursor]
+                    if here == "\\":
+                        cursor += 2
+                        continue
+                    if quote:
+                        if here == quote:
+                            quote = ""
+                    elif here in "'\"":
+                        quote = here
+                    elif here == "(":
+                        depth += 1
+                    elif here == ")":
+                        depth -= 1
+                    cursor += 1
+                if depth:                       # unterminated; leave it alone
+                    return None
+                return index, cursor, text[index + 2:cursor - 1]
+            index += 1
+        return None
 
     def _expand(self, text: str, depth: int = 0) -> str:
         """Resolve $(...), `...` and $VAR, innermost first.
@@ -483,8 +540,13 @@ class FakeShell:
         if depth > 4:
             return ""
 
-        def substitute(match):
-            inner = match.group(1) if match.group(1) is not None else match.group(2)
+        # Bounded so a line full of substitutions cannot pin a thread.
+        for _ in range(64):
+            found = self._next_substitution(text)
+            if found is None:
+                break
+            open_at, close_at, inner = found
+
             # Substitutions commonly contain their own || fallback chain.
             result = ""
             failed = False
@@ -497,12 +559,7 @@ class FakeShell:
                 failed = result.startswith("bash:")
                 if not failed and result:
                     break
-            return "" if failed else result.strip()
-
-        previous = None
-        while previous != text and depth <= 4:
-            previous = text
-            text = self._SUBST_RE.sub(substitute, text)
+            text = text[:open_at] + ("" if failed else result.strip()) + text[close_at:]
 
         return self._VAR_RE.sub(
             lambda m: self.env.get(m.group(1) or m.group(2), ""), text)
@@ -712,6 +769,17 @@ class FakeShell:
                     "Exec format error")
 
         if not tokens:
+            return ""
+
+        # Keywords, not commands. `case ... in *x*) ;; *) ... esac` is how the
+        # recon scripts branch, and stage-splitting on `;` leaves the pieces of
+        # one looking like commands -- so the attacker got back
+        # `bash: case: command not found`, three times, which no shell has ever
+        # printed. Answering with silence is not a full parser, but it is what
+        # a shell that understood the construct would have shown.
+        # A trailing `)` makes it a case branch label -- `*)`, `*xxxxxx*)` --
+        # not a command. No command name ends in one.
+        if command in SHELL_KEYWORDS or command.endswith(")"):
             return ""
 
         handler = self._HANDLERS.get(command)
@@ -1254,7 +1322,17 @@ class FakeShell:
 
     def _cmd_rm(self, args: List[str], _line: str) -> str:
         target = next((a for a in args if not a.startswith("-")), "")
-        return f"rm: cannot remove '{target}': Permission denied" if target else ""
+        if not target:
+            return ""
+        # Deleting their own file works. The probe scripts write a script, run
+        # it, then clean up -- and refusing that last step told them the
+        # filesystem was a fake, right after the write and the exec had both
+        # appeared to succeed. Inconsistency is the tell, not strictness.
+        resolved = self._resolve(target)
+        if resolved in self.written:
+            del self.written[resolved]
+            return ""
+        return f"rm: cannot remove '{target}': Permission denied"
 
     def _cmd_touch(self, _args: List[str], _line: str) -> str:
         return ""
