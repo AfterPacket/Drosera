@@ -78,6 +78,14 @@ def collect(log_dir: pathlib.Path):
                     password = password.strip()
                     if not password:
                         continue
+                    # Placeholders, not passwords. MySQL logs
+                    # `user:<auth deadbeef...>` because the wire carries a
+                    # challenge response rather than a password, and it shows
+                    # up near the top of any ranking -- 21 sources and 277
+                    # attempts on the first run here. Accepting it as a login
+                    # would mean nothing, and it costs a slot in the list.
+                    if password.startswith("<") and password.endswith(">"):
+                        continue
                     sources[password].add(event.get("real_ip") or "")
                     attempts[password] += 1
         except OSError:

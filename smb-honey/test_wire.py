@@ -243,9 +243,14 @@ def main():
                  words[33] == len(s.SERVER_CHALLENGE), words[33])
     bad += check("SMB1 NEGOTIATE carries the challenge first",
                  data[:len(s.SERVER_CHALLENGE)] == s.SERVER_CHALLENGE)
-    bad += check("SMB1 header echoes PID and MID",
-                 struct.unpack("<HH", negotiate[26:30]) == (7, 9),
-                 struct.unpack("<HH", negotiate[26:30]))
+    # TID@24, PID@26, UID@28, MID@30 -- reading 26:30 gets PID and UID, which
+    # is what this assertion originally did and why it failed.
+    bad += check("SMB1 header echoes the PID",
+                 struct.unpack("<H", negotiate[26:28])[0] == 7,
+                 struct.unpack("<H", negotiate[26:28])[0])
+    bad += check("SMB1 header echoes the MID",
+                 struct.unpack("<H", negotiate[30:32])[0] == 9,
+                 struct.unpack("<H", negotiate[30:32])[0])
     bad += check("SMB1 replies set the response flag",
                  negotiate[9] & 0x80, hex(negotiate[9]))
     bad += check("SMB1 replies ask for 32-bit statuses",
