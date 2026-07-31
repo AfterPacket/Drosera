@@ -6,6 +6,55 @@ next one will look just as innocent.
 
 ---
 
+## SMB1 scanners were answered in a protocol they do not speak
+
+**Symptom.** One connection, five events, gone in a second — then the identical
+pattern again:
+
+```
+20:16:43  smb  CONNECTION_ANY  Initial contact
+20:16:43  smb  SMB_ENUM        SMB1 negotiate
+20:16:43  smb  SMB_ENUM        SMB1 negotiate
+20:16:43  smb  SMB_ENUM        SMB1 negotiate
+20:16:43  smb  SMB_ENUM        SMB1 negotiate
+20:16:44  smb  SESSION_END     Session closed after 1.0s
+```
+
+**Cause.** Every SMB1 packet — whatever it asked, whatever dialects it offered
+— was answered with an **SMB2** NEGOTIATE response:
+
+```python
+if payload.startswith(SMB1_MAGIC):
+    writer.write(wrap_nbt(negotiate_response(0)))
+    continue
+```
+
+Steering an SMB1 client to SMB2 is a real mechanism, but only when the client
+offered `SMB 2.???` or `SMB 2.002` in its dialect list. A client that offered
+neither cannot parse the reply. It retried, four times, and left.
+
+That is the MS17-010 scanner family, which speaks SMB1 and nothing else, and
+which is a large fraction of all SMB traffic reaching an exposed host.
+
+**Why the retries were the clue.** Four identical events in the same second is
+not a client working through a protocol; it is a client that discarded an
+answer and asked again. Nothing errored, and the branch even scored each one,
+so the log looked like enumeration rather than a client being talked past.
+
+**Fix.** The dialect list is parsed and logged, and the SMB2 reply now only
+goes to clients that asked for SMB2 by name. SMB1-only clients get an SMB1
+NEGOTIATE response selecting `NT LM 0.12`, followed by SESSION_SETUP_ANDX —
+which captures LM/NTLM responses against the same fixed challenge as the SMB2
+path, so they are equally crackable — TREE_CONNECT_ANDX, ECHO, and a parseable
+`STATUS_NOT_IMPLEMENTED` for everything else. A client offering dialects we do
+not want answers `0xFFFF`, which is a real answer rather than silence.
+
+**Avoid it.** Protocol negotiation is a question, not a formality. Answering
+every version of it with the version you prefer is indistinguishable, from the
+far end, from being broken.
+
+---
+
 ## `echo` printed its own flags, so no bot ever got past the handshake
 
 **Symptom.** A telnet attacker connects, sends one command, and leaves after one

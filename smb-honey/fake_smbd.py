@@ -39,6 +39,50 @@ MAX_PDU = 1 << 20
 SMB2_MAGIC = b"\xfeSMB"
 SMB1_MAGIC = b"\xffSMB"
 
+# SMB1 commands we answer. Everything else gets a clean error status.
+#
+# SMB1 is answered rather than refused because refusing it loses the single
+# largest category of SMB traffic on the internet: MS17-010 scanners speak SMB1
+# and nothing else. This used to reply to every SMB1 packet with an SMB2
+# NEGOTIATE response, which such a client cannot parse -- it retried four times
+# and hung up inside a second, every time.
+SMB1_NEGOTIATE = 0x72
+SMB1_SESSION_SETUP_ANDX = 0x73
+SMB1_LOGOFF_ANDX = 0x74
+SMB1_TREE_CONNECT_ANDX = 0x75
+SMB1_TREE_DISCONNECT = 0x71
+SMB1_ECHO = 0x2B
+SMB1_NT_CREATE_ANDX = 0xA2
+SMB1_TRANS2 = 0x32
+
+SMB1_NAMES = {
+    SMB1_NEGOTIATE: "NEGOTIATE",
+    SMB1_SESSION_SETUP_ANDX: "SESSION_SETUP_ANDX",
+    SMB1_LOGOFF_ANDX: "LOGOFF_ANDX",
+    SMB1_TREE_CONNECT_ANDX: "TREE_CONNECT_ANDX",
+    SMB1_TREE_DISCONNECT: "TREE_DISCONNECT",
+    SMB1_ECHO: "ECHO",
+    SMB1_NT_CREATE_ANDX: "NT_CREATE_ANDX",
+    SMB1_TRANS2: "TRANSACTION2",
+}
+
+# Dialect strings that mean "I can speak SMB2, upgrade me". Only these justify
+# answering an SMB1 packet with an SMB2 response; a client that offered neither
+# is being handed a protocol it never claimed to understand.
+SMB2_DIALECTS = ("SMB 2.???", "SMB 2.002")
+# What we select when the client is SMB1-only. Index into its own dialect list,
+# so it has to be looked up rather than assumed.
+SMB1_PREFERRED = "NT LM 0.12"
+
+# Non-extended security: the client then puts its LM and NTLM responses
+# directly in SESSION_SETUP_ANDX, where they can be read without unpicking
+# SPNEGO. Against a fixed challenge those are exactly as crackable as the
+# NTLMv2 blobs captured on the SMB2 path, and this is the form the SMB1-only
+# tools use anyway.
+SMB1_FLAGS = 0x88                    # response, case-insensitive paths
+SMB1_FLAGS2 = 0x4001                 # 32-bit NT status, long names
+SMB1_CAPABILITIES = 0x000002D9       # raw mode, NT SMBs, status32, NT find
+
 CMD_NEGOTIATE, CMD_SESSION_SETUP, CMD_LOGOFF = 0x0000, 0x0001, 0x0002
 CMD_TREE_CONNECT, CMD_TREE_DISCONNECT, CMD_CREATE = 0x0003, 0x0004, 0x0005
 CMD_CLOSE, CMD_FLUSH, CMD_READ, CMD_WRITE = 0x0006, 0x0007, 0x0008, 0x0009
@@ -292,6 +336,130 @@ def error_response(command: int, message_id: int, status: int,
             + struct.pack("<H", 9) + b"\x00" * 7)
 
 
+# ------------------------------------------------------------------ SMB1
+
+def smb1_header(command: int, status: int = STATUS_SUCCESS, tree_id: int = 0,
+                uid: int = 0, pid: int = 0, mid: int = 0) -> bytes:
+    """The fixed 32-byte SMB1 header."""
+    return (
+        SMB1_MAGIC
+        + bytes([command])
+        + struct.pack("<I", status)
+        + bytes([SMB1_FLAGS])
+        + struct.pack("<H", SMB1_FLAGS2)
+        + struct.pack("<H", 0)          # PIDHigh
+        + b"\x00" * 8                   # SecurityFeatures
+        + struct.pack("<H", 0)          # Reserved
+        + struct.pack("<H", tree_id)
+        + struct.pack("<H", pid)
+        + struct.pack("<H", uid)
+        + struct.pack("<H", mid)
+    )
+
+
+def smb1_fields(payload: bytes):
+    """(command, tree_id, pid, uid, mid, parameters, data) from a request.
+
+    Returns empty parameters/data rather than raising on a short packet: this
+    is attacker input, and a malformed header should produce an error reply,
+    not end the connection.
+    """
+    command = payload[4]
+    tree_id, pid, uid, mid = struct.unpack("<HHHH", payload[24:32])
+    parameters, data = b"", b""
+    if len(payload) > 32:
+        word_count = payload[32]
+        start = 33 + word_count * 2
+        parameters = payload[33:start]
+        if len(payload) >= start + 2:
+            byte_count, = struct.unpack("<H", payload[start:start + 2])
+            data = payload[start + 2:start + 2 + byte_count]
+    return command, tree_id, pid, uid, mid, parameters, data
+
+
+def smb1_dialects(data: bytes):
+    """Dialect strings offered in a NEGOTIATE request.
+
+    The buffer is a series of 0x02-prefixed, NUL-terminated ASCII strings.
+    """
+    offered = []
+    for chunk in data.split(b"\x02"):
+        name = chunk.split(b"\x00", 1)[0]
+        if name:
+            offered.append(name.decode("ascii", "replace"))
+    return offered
+
+
+def smb1_message(command: int, words: bytes, data: bytes, status: int = STATUS_SUCCESS,
+                 tree_id: int = 0, uid: int = 0, pid: int = 0, mid: int = 0) -> bytes:
+    """Assemble a reply. WordCount is in words; ByteCount is in bytes."""
+    return (smb1_header(command, status, tree_id, uid, pid, mid)
+            + bytes([len(words) // 2]) + words
+            + struct.pack("<H", len(data)) + data)
+
+
+def smb1_error(command: int, status: int, tree_id: int = 0, uid: int = 0,
+               pid: int = 0, mid: int = 0) -> bytes:
+    return smb1_message(command, b"", b"", status, tree_id, uid, pid, mid)
+
+
+def smb1_negotiate_response(index: int, pid: int, mid: int) -> bytes:
+    """NEGOTIATE response selecting the dialect at `index` in the client's list."""
+    domain = NTLM_TARGET.encode("ascii", "replace") + b"\x00"
+    words = (
+        struct.pack("<H", index)
+        + bytes([0x03])                      # user-level security, encrypted passwords
+        + struct.pack("<H", 50)              # MaxMpxCount
+        + struct.pack("<H", 1)               # MaxNumberVcs
+        + struct.pack("<I", 16644)           # MaxBufferSize
+        + struct.pack("<I", 65536)           # MaxRawSize
+        + struct.pack("<I", 0)               # SessionKey
+        + struct.pack("<I", SMB1_CAPABILITIES)
+        + struct.pack("<Q", filetime(time.time()))
+        + struct.pack("<h", 0)               # ServerTimeZone
+        + bytes([len(SERVER_CHALLENGE)])     # ChallengeLength
+    )
+    return smb1_message(SMB1_NEGOTIATE, words, SERVER_CHALLENGE + domain,
+                        pid=pid, mid=mid)
+
+
+def smb1_session_setup_response(uid: int, pid: int, mid: int, guest: bool) -> bytes:
+    """SESSION_SETUP_ANDX response. Action bit 0 marks the logon as guest."""
+    words = (b"\xff"                         # AndXCommand: none
+             + b"\x00"                       # AndXReserved
+             + struct.pack("<H", 0)          # AndXOffset
+             + struct.pack("<H", 1 if guest else 0))
+    data = b"Unix\x00Samba\x00" + NTLM_TARGET.encode("ascii", "replace") + b"\x00"
+    return smb1_message(SMB1_SESSION_SETUP_ANDX, words, data,
+                        uid=uid, pid=pid, mid=mid)
+
+
+def smb1_tree_connect_response(tree_id: int, uid: int, pid: int, mid: int,
+                               service: str) -> bytes:
+    words = (b"\xff" + b"\x00" + struct.pack("<H", 0)
+             + struct.pack("<H", 0x0001))    # OptionalSupport: search bits
+    data = service.encode("ascii") + b"\x00" + b"NTFS\x00"
+    return smb1_message(SMB1_TREE_CONNECT_ANDX, words, data,
+                        tree_id=tree_id, uid=uid, pid=pid, mid=mid)
+
+
+def smb1_credentials(parameters: bytes, data: bytes):
+    """(account, domain, lm_response, nt_response) from SESSION_SETUP_ANDX.
+
+    Non-extended security puts both password responses in the byte field ahead
+    of the account name, with their lengths in the parameter words.
+    """
+    if len(parameters) < 26:
+        return "", "", b"", b""
+    lm_length, nt_length = struct.unpack("<HH", parameters[14:18])
+    lm_response = data[:lm_length]
+    nt_response = data[lm_length:lm_length + nt_length]
+    rest = data[lm_length + nt_length:].split(b"\x00")
+    account = rest[0].decode("utf-8", "replace") if rest else ""
+    domain = rest[1].decode("utf-8", "replace") if len(rest) > 1 else ""
+    return account, domain, lm_response, nt_response
+
+
 # ------------------------------------------------------- file operations
 #
 # Everything below exists because a client that gets STATUS_NOT_IMPLEMENTED
@@ -521,6 +689,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     trees = {}
     handles = {}          # file id -> (share, name, size, is_dir, listed)
     auth_attempts = 0
+    smb1_uid = 0          # allocated on the SMB1 path only
 
     recorder = alerting.SessionRecorder(ip, SERVICE, title=f"smb from {ip}")
     recorder.write_output(
@@ -595,12 +764,88 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                 await writer.drain()
                 continue
 
-            if payload.startswith(SMB1_MAGIC):
-                recorder.write_output("SMB1 NEGOTIATE -> steering client to SMB2\r\n")
-                score("SMB_ENUM", "SMB1 negotiate")
-                # Steer SMB1 clients to SMB2 by answering the wildcard dialect.
-                writer.write(wrap_nbt(negotiate_response(0)))
+            if payload.startswith(SMB1_MAGIC) and len(payload) >= 32:
+                cmd1, tid1, pid1, uid1, mid1, params1, data1 = smb1_fields(payload)
+                recorder.write_output(
+                    f"SMB1 {SMB1_NAMES.get(cmd1, f'0x{cmd1:02x}')}\r\n")
+
+                if cmd1 == SMB1_NEGOTIATE:
+                    offered = smb1_dialects(data1)
+                    recorder.write_output(f"  dialects: {', '.join(offered)}\r\n")
+                    score("SMB_ENUM", f"SMB1 negotiate: {','.join(offered)}"[:200])
+                    upgrade = next((name for name in offered
+                                    if name in SMB2_DIALECTS), None)
+                    if upgrade:
+                        # It asked for SMB2 by name, so the SMB2 reply is an
+                        # answer rather than a non-sequitur.
+                        recorder.write_output(f"  -> upgrading via {upgrade}\r\n")
+                        writer.write(wrap_nbt(negotiate_response(0)))
+                    elif SMB1_PREFERRED in offered:
+                        smb1_uid = smb1_uid or int.from_bytes(os.urandom(2), "little") or 1
+                        writer.write(wrap_nbt(smb1_negotiate_response(
+                            offered.index(SMB1_PREFERRED), pid1, mid1)))
+                    else:
+                        # 0xFFFF means "none of your dialects", which is a real
+                        # answer -- the client stops rather than retrying.
+                        writer.write(wrap_nbt(smb1_negotiate_response(
+                            0xFFFF, pid1, mid1)))
+
+                elif cmd1 == SMB1_SESSION_SETUP_ANDX:
+                    account, domain, lm_response, nt_response = smb1_credentials(
+                        params1, data1)
+                    if nt_response or lm_response:
+                        blob = (nt_response or lm_response).hex()
+                        recorder.write_output(
+                            f"  {domain}\\{account} response {blob[:48]}\r\n")
+                        identity.record_credential(
+                            ip, f"{domain}\\{account}" if domain else account,
+                            blob[:128], SERVICE)
+                        score("CREDENTIAL_ATTEMPT", f"SMB1 {account}"[:200])
+                    smb1_uid = smb1_uid or int.from_bytes(os.urandom(2), "little") or 1
+                    auth_attempts += 1
+                    # The stall at the end of this block covers the reply; a
+                    # second one here would drain the same response twice.
+                    if identity.is_tarpitted(ip):
+                        engage()
+                    if ALLOW_SESSION and auth_attempts > FAIL_ATTEMPTS:
+                        writer.write(wrap_nbt(smb1_session_setup_response(
+                            smb1_uid, pid1, mid1, guest=True)))
+                    else:
+                        writer.write(wrap_nbt(smb1_error(
+                            SMB1_SESSION_SETUP_ANDX, STATUS_LOGON_FAILURE,
+                            pid=pid1, mid=mid1)))
+
+                elif cmd1 == SMB1_TREE_CONNECT_ANDX:
+                    share = data1.split(b"\x00")[0].decode("utf-8", "replace")
+                    leaf = share.rstrip("\\").split("\\")[-1] or "IPC$"
+                    recorder.write_output(f"  share {share or leaf}\r\n")
+                    score("SMB_ENUM", f"SMB1 TREE_CONNECT {share}"[:200])
+                    tree_counter += 1
+                    trees[tree_counter] = leaf
+                    writer.write(wrap_nbt(smb1_tree_connect_response(
+                        tree_counter, uid1, pid1, mid1,
+                        "IPC" if leaf == "IPC$" else "A:")))
+
+                elif cmd1 in (SMB1_ECHO, SMB1_TREE_DISCONNECT, SMB1_LOGOFF_ANDX):
+                    writer.write(wrap_nbt(smb1_message(
+                        cmd1, b"", b"", tree_id=tid1, uid=uid1, pid=pid1, mid=mid1)))
+
+                else:
+                    # NT_CREATE_ANDX and TRANS2 land here. An MS17-010 probe
+                    # expects a status back from its TRANS2, and a refusal is
+                    # what an unaffected host returns -- the point is that it
+                    # is a refusal it can parse, not silence.
+                    score("SMB_ENUM", f"SMB1 command 0x{cmd1:02x}")
+                    writer.write(wrap_nbt(smb1_error(
+                        cmd1, STATUS_NOT_IMPLEMENTED, tree_id=tid1, uid=uid1,
+                        pid=pid1, mid=mid1)))
+
+                if tarpitted:
+                    held += await tarpit.stall(hold_until)
                 await writer.drain()
+                if banned:
+                    recorder.write_output("banned mid-session -- closing\r\n")
+                    break
                 continue
 
             if not payload.startswith(SMB2_MAGIC) or len(payload) < 64:

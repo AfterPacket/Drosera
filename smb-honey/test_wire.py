@@ -215,6 +215,93 @@ def main():
     bad += check("the security blob sits where SecurityBufferOffset says",
                  challenge[declared:declared + 8] == b"NTLMSSP\x00", declared)
 
+    # --- SMB1 -------------------------------------------------------------
+    #
+    # A pure-SMB1 scanner used to get an SMB2 NEGOTIATE response it could not
+    # parse, retry four times and hang up inside a second. These check that the
+    # SMB1 replies are the shape such a client expects.
+    def smb1_body(response):
+        assert response[:4] == s.SMB1_MAGIC, "not an SMB1 response"
+        assert len(response) >= 32, "header truncated"
+        word_count = response[32]
+        start = 33 + word_count * 2
+        words = response[33:start]
+        byte_count = struct.unpack("<H", response[start:start + 2])[0]
+        data = response[start + 2:start + 2 + byte_count]
+        assert len(data) == byte_count, "ByteCount disagrees with the buffer"
+        assert start + 2 + byte_count == len(response), "trailing bytes"
+        return words, data
+
+    negotiate = s.smb1_negotiate_response(0, pid=7, mid=9)
+    words, data = smb1_body(negotiate)
+    bad += check("SMB1 NEGOTIATE declares 17 words",
+                 negotiate[32] == 17, negotiate[32])
+    bad += check("SMB1 NEGOTIATE words are 34 bytes", len(words) == 34, len(words))
+    bad += check("SMB1 NEGOTIATE selects the requested dialect index",
+                 struct.unpack("<H", words[0:2])[0] == 0)
+    bad += check("SMB1 NEGOTIATE advertises the challenge length",
+                 words[33] == len(s.SERVER_CHALLENGE), words[33])
+    bad += check("SMB1 NEGOTIATE carries the challenge first",
+                 data[:len(s.SERVER_CHALLENGE)] == s.SERVER_CHALLENGE)
+    bad += check("SMB1 header echoes PID and MID",
+                 struct.unpack("<HH", negotiate[26:30]) == (7, 9),
+                 struct.unpack("<HH", negotiate[26:30]))
+    bad += check("SMB1 replies set the response flag",
+                 negotiate[9] & 0x80, hex(negotiate[9]))
+    bad += check("SMB1 replies ask for 32-bit statuses",
+                 struct.unpack("<H", negotiate[10:12])[0] & 0x4000)
+
+    refusal = s.smb1_negotiate_response(0xFFFF, pid=1, mid=1)
+    words, _ = smb1_body(refusal)
+    bad += check("SMB1 can refuse every offered dialect",
+                 struct.unpack("<H", words[0:2])[0] == 0xFFFF)
+
+    setup = s.smb1_session_setup_response(uid=0x1234, pid=1, mid=2, guest=True)
+    words, _ = smb1_body(setup)
+    bad += check("SESSION_SETUP_ANDX declares 3 words", setup[32] == 3, setup[32])
+    bad += check("SESSION_SETUP_ANDX terminates the AndX chain", words[0] == 0xFF)
+    bad += check("SESSION_SETUP_ANDX flags the guest logon",
+                 struct.unpack("<H", words[4:6])[0] & 0x0001)
+    bad += check("SESSION_SETUP_ANDX returns the UID in the header",
+                 struct.unpack("<H", setup[28:30])[0] == 0x1234)
+
+    tree = s.smb1_tree_connect_response(3, uid=1, pid=1, mid=1, service="IPC")
+    words, data = smb1_body(tree)
+    bad += check("TREE_CONNECT_ANDX declares 3 words", tree[32] == 3, tree[32])
+    bad += check("TREE_CONNECT_ANDX names the service",
+                 data.startswith(b"IPC\x00"), data[:8])
+    bad += check("TREE_CONNECT_ANDX returns the tree id",
+                 struct.unpack("<H", tree[24:26])[0] == 3)
+
+    error = s.smb1_error(s.SMB1_NT_CREATE_ANDX, s.STATUS_NOT_IMPLEMENTED,
+                         pid=4, mid=5)
+    words, data = smb1_body(error)
+    bad += check("an SMB1 error carries no words or data",
+                 words == b"" and data == b"")
+    bad += check("an SMB1 error reports its status",
+                 struct.unpack("<I", error[5:9])[0] == s.STATUS_NOT_IMPLEMENTED)
+
+    # Dialect parsing decides whether the client gets SMB1 or SMB2 back.
+    offered = s.smb1_dialects(
+        b"\x02PC NETWORK PROGRAM 1.0\x00\x02LANMAN1.0\x00\x02NT LM 0.12\x00")
+    bad += check("dialect strings are recovered in order",
+                 offered[-1] == "NT LM 0.12" and len(offered) == 3, offered)
+    upgradeable = s.smb1_dialects(b"\x02NT LM 0.12\x00\x02SMB 2.???\x00")
+    bad += check("an SMB2 dialect offer is recognised",
+                 any(name in s.SMB2_DIALECTS for name in upgradeable), upgradeable)
+    bad += check("an SMB1-only offer is not mistaken for an upgrade",
+                 not any(name in s.SMB2_DIALECTS for name in offered), offered)
+
+    # Credentials arrive ahead of the account name, sized by the parameters.
+    lm, nt = b"L" * 24, b"N" * 24
+    params = (b"\x00" * 14 + struct.pack("<HH", len(lm), len(nt)) + b"\x00" * 8)
+    account = lm + nt + b"admin\x00WORKGROUP\x00Unix\x00Samba\x00"
+    got = s.smb1_credentials(params, account)
+    bad += check("SMB1 credentials split into responses and names",
+                 got == ("admin", "WORKGROUP", lm, nt), got)
+    bad += check("a truncated SESSION_SETUP_ANDX does not raise",
+                 s.smb1_credentials(b"\x00" * 4, b"") == ("", "", b"", b""))
+
     # --- path handling ----------------------------------------------------
     bad += check("the share root is a directory",
                  s.lookup_entry("SharedDocs", "") == (0, True))
