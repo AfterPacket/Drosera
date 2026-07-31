@@ -16,7 +16,7 @@ import shlex
 import time
 import zlib
 
-from . import loot, persona
+from . import ioc, loot, persona
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -371,6 +371,17 @@ class FakeShell:
             return ""
         self.history.append(line)
         self._score_always("WEBSHELL_CMD", payload=line[:200])
+
+        # Retrieval targets, before the line is dispatched. On a box with no
+        # egress the fetch these name will always fail, so the URL is the only
+        # artefact the exchange produces -- and it is the one worth keeping.
+        # Recording is best-effort inside ioc.record(); it cannot raise here.
+        loaders = ioc.record(line, ip=self.ip, service=self.service)
+        if loaders:
+            self._score_always(
+                "LOADER_URL",
+                payload=" ".join(f"{e['scheme']}://{e['host']}:{e['port']}{e['path']}"
+                                 for e in loaders)[:200])
 
         if REVERSE_SHELL_PATTERNS.search(line):
             return self._reverse_shell(line)

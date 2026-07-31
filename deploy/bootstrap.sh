@@ -38,6 +38,7 @@ install -d -o "$UID_HP" -g "$GID_HP" -m 0750 \
     "${REPO_DIR}/storage/sessions" \
     "${REPO_DIR}/storage/clips" \
     "${REPO_DIR}/storage/evidence" \
+    "${REPO_DIR}/storage/ioc" \
     "${REPO_DIR}/storage/upload-tmp"
 
 # Read-only mount into elastic-shipper; present so the bind mount does not get

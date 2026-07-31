@@ -391,6 +391,19 @@ services:
     environment:
       LOOT_DIR: /var/honeypot/storage/loot
       STORAGE_DIR: /var/honeypot/storage
+      IOC_DIR: /var/honeypot/storage/ioc
+      # Second-stage payload retrieval. OFF unless explicitly enabled: this is
+      # the one component that connects out to infrastructure an attacker
+      # chose. It runs here because this container already has egress and the
+      # honeypots have none -- they write IOCs to the volume, this reads them,
+      # and the two share no network. See intel/fetcher.py for the failsafes
+      # and AUTHORIZATION.md 2.1 before turning it on.
+      FETCH_ENABLED: ${FETCH_ENABLED:-false}
+      FETCH_MAX_BYTES: ${FETCH_MAX_BYTES:-8388608}
+      FETCH_MAX_PER_HOUR: ${FETCH_MAX_PER_HOUR:-20}
+      FETCH_HOST_COOLDOWN: ${FETCH_HOST_COOLDOWN:-3600}
+      FETCH_TIMEOUT: ${FETCH_TIMEOUT:-8}
+      FETCH_POLL_SECONDS: ${FETCH_POLL_SECONDS:-60}
       VT_API_KEY: ${VT_API_KEY:-}
       VT_POLL_SECONDS: ${VT_POLL_SECONDS:-300}
       VT_REQUEST_INTERVAL: ${VT_REQUEST_INTERVAL:-20}

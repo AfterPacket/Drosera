@@ -882,6 +882,47 @@ def dashboard():
 COMMAND_PREFIXES = {"sudo", "doas", "env", "nohup", "time", "exec", "command"}
 
 
+def loader_iocs(ip: str = None, limit: int = 500):
+    """Second-stage retrieval targets recorded from attacker commands.
+
+    Read off the filesystem rather than re-parsed out of the event log: the
+    honeypot already did the extraction at the moment it saw the command, and
+    storage/ioc/ carries the sighting history and the fetch outcome with it.
+    """
+    directory = STORAGE_DIR / "ioc"
+    if not directory.is_dir():
+        return []
+    out = []
+    for path in sorted(directory.glob("*.json"))[:limit * 2]:
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        sightings = entry.get("sightings") or []
+        if ip and not any(s.get("ip") == ip for s in sightings):
+            continue
+        fetch = entry.get("fetch") or {}
+        out.append({
+            "url": f"{entry.get('scheme')}://{entry.get('host')}:{entry.get('port')}"
+                   f"{entry.get('path')}",
+            "host": entry.get("host"),
+            "port": entry.get("port"),
+            "method": entry.get("method"),
+            "public": bool(entry.get("public", True)),
+            "first_seen": entry.get("first_seen"),
+            "last_seen": entry.get("last_seen"),
+            "times_seen": entry.get("times_seen", 0),
+            "sources": len({s.get("ip") for s in sightings if s.get("ip")}),
+            "fetch_status": fetch.get("status") or "not attempted",
+            "fetch_detail": fetch.get("detail") or "",
+            "sha256": fetch.get("sha256"),
+        })
+    out.sort(key=lambda e: str(e.get("last_seen") or ""), reverse=True)
+    return out[:limit]
+
+
 def top_commands(commands, limit: int = 12):
     """The programs this attacker actually invoked, most-used first.
 
@@ -1007,6 +1048,7 @@ def ip_detail(ip):
                   if e.get("event_type") in ("SQLI_BASIC", "SQLI_UNION_BLIND", "SQLI_OOB",
                                              "PHP_EVAL_ATTEMPT", "FILE_UPLOAD",
                                              "REVERSE_SHELL")][-100:],
+        loaders=loader_iocs(ip),
         timeline=service_timeline(history),
         events=events[start:start + per_page],
         page=page, total_pages=max(1, (len(events) + per_page - 1) // per_page),
@@ -1949,6 +1991,22 @@ def _attacker_bundle(archive, ip: str, root: str, ledger: list, loot, events,
                ("\n".join(ban_lines) + "\n") if ban_lines
                else f"# No ban lines recorded for {ip}.\n", ledger)
     yield
+
+    # Retrieval targets. On a no-egress deployment this is usually the most
+    # actionable thing in the bundle: the sample never arrived, but the address
+    # serving it did, and that is what an abuse report can act on.
+    loaders = loader_iocs(ip)
+    if loaders:
+        rows = io.StringIO()
+        writer = csv.writer(rows)
+        writer.writerow(["url", "host", "port", "method", "times_seen",
+                         "first_seen", "last_seen", "fetch_status", "sha256"])
+        for row in loaders:
+            writer.writerow([row["url"], row["host"], row["port"], row["method"],
+                             row["times_seen"], row["first_seen"], row["last_seen"],
+                             row["fetch_status"], row["sha256"] or ""])
+        _add_bytes(archive, f"{root}loaders.csv", rows.getvalue(), ledger)
+        yield
 
     commands = commands_from(identity, events)
     if commands:

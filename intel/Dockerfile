@@ -12,7 +12,12 @@ FROM python:3.11-slim
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin honeypot
 
 WORKDIR /app
-COPY vt.py /app/vt.py
+COPY vt.py fetcher.py entrypoint.sh /app/
+RUN chmod 0755 /app/entrypoint.sh
 
 USER honeypot
-ENTRYPOINT ["python3", "-u", "/app/vt.py"]
+# Both roles in one container because both need the same thing -- egress and a
+# read of storage/ -- and neither is busy enough to justify its own. The
+# fetcher exits immediately unless FETCH_ENABLED is true, so the default
+# deployment behaves exactly as it did before it existed.
+ENTRYPOINT ["/app/entrypoint.sh"]

@@ -139,6 +139,49 @@
 </div>
 
 <div class="card">
+  <h2>Second-stage loaders <span class="count">{{ loaders | length }}</span></h2>
+  {% if loaders %}
+  <p class="hint">
+    Where this address told the shell to fetch its next stage. The box has no
+    egress, so the retrieval always fails &mdash; the URL is the artefact. Fetch
+    status is <span class="mono">not attempted</span> unless
+    <span class="mono">FETCH_ENABLED</span> is on.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>URL</th><th>Method</th><th class="num">Seen</th>
+                 <th>Last seen</th><th>Fetch</th></tr></thead>
+      <tbody>
+        {% for row in loaders %}
+        <tr>
+          <td class="mono wrap">{{ row.url }}</td>
+          <td>{{ row.method }}</td>
+          <td class="mono num">{{ row.times_seen }}</td>
+          <td class="mono nowrap">{{ (row.last_seen or '')[:19] }}</td>
+          <td>
+            {% if row.sha256 %}
+            <span class="pill sent">CAPTURED</span>
+            <div class="sub mono">{{ row.sha256[:16] }}</div>
+            {% elif row.fetch_status == 'not attempted' %}
+            <span class="pill off">NOT ATTEMPTED</span>
+            {% elif row.fetch_status == 'refused' %}
+            <span class="pill failed">REFUSED</span>
+            <div class="sub">{{ row.fetch_detail }}</div>
+            {% else %}
+            <span class="pill {{ 'rendered' if row.fetch_status == 'skipped' else 'failed' }}">
+              {{ row.fetch_status | upper }}</span>
+            <div class="sub">{{ row.fetch_detail }}</div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<div class="empty">No retrieval URLs recorded.</div>{% endif %}
+</div>
+
+<div class="card">
   <h2>Payloads submitted <span class="count">{{ payloads | length }}</span></h2>
   {% if payloads %}
   <div class="table-wrap">

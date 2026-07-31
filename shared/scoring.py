@@ -16,6 +16,10 @@ SCORES = {
     "PHP_EVAL_ATTEMPT": (7, "PHP code execution attempt"),
     "FILE_UPLOAD": (8, "Malicious file upload"),
     "WEBSHELL_CMD": (2, "Webshell command issued"),
+    # Naming where the second stage lives is a step past running commands: it
+    # is the point the session stops being reconnaissance and starts being an
+    # attempted infection.
+    "LOADER_URL": (6, "Second-stage retrieval URL disclosed"),
     # Clearing immutable flags on ~/.ssh, rewriting authorized_keys, disabling
     # history. Weighted well above ordinary recon: this is someone settling in.
     "PERSISTENCE_ATTEMPT": (8, "SSH persistence / anti-forensics attempt"),
