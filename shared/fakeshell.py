@@ -8,6 +8,7 @@ Latency tiers mimic real work so an attacker's timing heuristics agree with the
 story the rest of the honeypot tells.
 """
 
+import ipaddress
 import os
 import random
 import re
@@ -983,11 +984,42 @@ class FakeShell:
                     f"Successfully installed {pkg}-2.1.0")
         return "pip 22.0.2 from /usr/lib/python3/dist-packages/pip (python 3.10)"
 
+    @staticmethod
+    def _split_hostport(url: str):
+        """(host, port) from a URL, defaulting the port to the scheme's."""
+        rest = re.sub(r"^(\w+)://", "", url)
+        scheme = (re.match(r"^(\w+)://", url) or [None, "http"])[1]
+        authority = rest.split("/")[0]
+        # Strip credentials, and keep an IPv6 literal in its brackets.
+        authority = authority.rsplit("@", 1)[-1]
+        match = re.match(r"^(\[[^\]]+\]|[^:]+)(?::(\d+))?$", authority)
+        host = match.group(1) if match else authority
+        port = match.group(2) if match and match.group(2) else \
+            ("443" if scheme == "https" else "21" if scheme == "ftp" else "80")
+        return host, port
+
+    @staticmethod
+    def _is_ip_literal(host: str) -> bool:
+        stripped = host.strip("[]")
+        try:
+            ipaddress.ip_address(stripped)
+            return True
+        except ValueError:
+            return False
+
     def _cmd_wget(self, args: List[str], _line: str) -> str:
         self._sleep(3.0)
         url = next((a for a in args if not a.startswith("-")), "http://example.com")
-        host = re.sub(r"^\w+://", "", url).split("/")[0]
+        host, port = self._split_hostport(url)
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        # An IP literal is never resolved. Reporting a DNS failure for one is a
+        # tell, and it is the common case rather than the corner case: most
+        # Mirai-family loaders hardcode an address precisely so they do not
+        # depend on DNS. What a real wget does here is fail to connect.
+        if self._is_ip_literal(host):
+            return (f"--{stamp}--  {url}\n"
+                    f"Connecting to {host}:{port}... failed: Connection timed out.\n"
+                    f"Retrying.\n")
         return (f"--{stamp}--  {url}\n"
                 f"Resolving {host} ({host})... failed: Temporary failure in name resolution.\n"
                 f"wget: unable to resolve host address '{host}'")
@@ -995,7 +1027,11 @@ class FakeShell:
     def _cmd_curl(self, args: List[str], _line: str) -> str:
         self._sleep(3.0)
         url = next((a for a in args if not a.startswith("-")), "http://example.com")
-        host = re.sub(r"^\w+://", "", url).split("/")[0]
+        host, port = self._split_hostport(url)
+        # curl exit 7 is "failed to connect", 6 is "couldn't resolve host".
+        # Returning 6 for an address it never had to resolve is the same tell.
+        if self._is_ip_literal(host):
+            return f"curl: (7) Failed to connect to {host} port {port}: Connection timed out"
         return f"curl: (6) Could not resolve host: {host}"
 
     def _cmd_chmod(self, _args: List[str], _line: str) -> str:
