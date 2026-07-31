@@ -343,6 +343,14 @@ def _fallback(ip: str) -> Dict[str, Any]:
 
 def get_or_create_identity(ip: str) -> Dict[str, Any]:
     """Return the cached identity for an IP, creating it on first sight."""
+    # Generated but never stored. Gating only the scoring left the profile
+    # itself alive: every connection still created and touched a record, so an
+    # ignored address kept its page on the dashboard with last_seen ticking
+    # forward and no events behind it. Callers still get a usable identity --
+    # they read fake_hostname and friends out of it to answer the connection.
+    if is_ignored(ip):
+        return _generate(ip)
+
     client = _client()
     if client is None:
         return _fallback(ip)
@@ -374,6 +382,12 @@ def update_identity(ip: str, fields: Dict[str, Any]) -> Dict[str, Any]:
     identity = get_or_create_identity(ip)
     identity.update(fields)
     identity["last_seen"] = _now()
+
+    # Merged for the caller, never persisted. Credential capture and session
+    # bookkeeping both land here, so without this an ignored address still
+    # wrote a record on every connection.
+    if is_ignored(ip):
+        return identity
 
     client = _client()
     if client is None:

@@ -533,8 +533,104 @@ function sb_identity_key(string $ip): string
     return 'hp:identity:' . sb_ip_hash($ip);
 }
 
+/**
+ * Addresses that are never scored, tarpitted, banned or stored.
+ *
+ * The web tier keeps its own identity store in PHP, so it needs its own copy of
+ * this check -- HONEYPOT_IGNORE_IPS was read only by shared/identity.py, which
+ * meant an operator who added their own address still got scored and eventually
+ * banned by browsing their own site. That is the precise scenario the setting
+ * exists to prevent, and on the web tier it never worked.
+ *
+ * The bridge gateway is included automatically. It is the host reaching in --
+ * health checks and anything curled from the box -- and it climbed to 27 of the
+ * 35-point ban threshold before anyone noticed. A ban there would have had
+ * fail2ban run `ufw insert 1 deny from <gateway>`, cutting the host off from
+ * every container it runs.
+ *
+ * Accepts single addresses and CIDR ranges, matching the Python side.
+ */
+function sb_ignored_networks(): array
+{
+    static $networks = null;
+    if ($networks !== null) {
+        return $networks;
+    }
+
+    $networks = [];
+    foreach (explode(',', (string)getenv('HONEYPOT_IGNORE_IPS')) as $item) {
+        $item = trim($item);
+        if ($item !== '') {
+            $networks[] = $item;
+        }
+    }
+
+    $gatewayOff = in_array(
+        strtolower(trim((string)(getenv('HONEYPOT_IGNORE_GATEWAY') ?: '1'))),
+        ['0', 'false', 'no', 'off'], true);
+    if (!$gatewayOff) {
+        // Same source as the Python side: the container's default route.
+        $route = @file('/proc/net/route', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        foreach (($route ?: []) as $index => $line) {
+            if ($index === 0) {
+                continue;                                   // header
+            }
+            $fields = preg_split('/\s+/', $line);
+            if (count($fields) > 2 && $fields[1] === '00000000'
+                && $fields[2] !== '00000000') {
+                $packed = str_pad(strrev(hex2bin(str_pad($fields[2], 8, '0', STR_PAD_LEFT))), 4, "\0");
+                $networks[] = inet_ntop($packed);
+                break;
+            }
+        }
+    }
+    return $networks;
+}
+
+function sb_is_ignored(string $ip): bool
+{
+    $address = @inet_pton($ip);
+    if ($address === false) {
+        return false;
+    }
+    foreach (sb_ignored_networks() as $entry) {
+        if (strpos($entry, '/') === false) {
+            if ($entry === $ip) {
+                return true;
+            }
+            continue;
+        }
+        [$subnet, $bits] = explode('/', $entry, 2);
+        $subnetPacked = @inet_pton($subnet);
+        $bits = (int)$bits;
+        if ($subnetPacked === false || strlen($subnetPacked) !== strlen($address)) {
+            continue;
+        }
+        $whole = intdiv($bits, 8);
+        $remainder = $bits % 8;
+        if (strncmp($address, $subnetPacked, $whole) !== 0) {
+            continue;
+        }
+        if ($remainder === 0) {
+            return true;
+        }
+        $mask = chr((0xFF << (8 - $remainder)) & 0xFF);
+        if ((substr($address, $whole, 1) & $mask)
+            === (substr($subnetPacked, $whole, 1) & $mask)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function get_or_create_identity(string $ip): array
 {
+    // Generated but never stored, so an ignored address leaves no profile to
+    // appear on the dashboard and nothing for the statistics to count.
+    if (sb_is_ignored($ip)) {
+        return sb_generate_identity($ip);
+    }
+
     $redis = sb_redis();
     $key = sb_identity_key($ip);
 
@@ -563,6 +659,14 @@ function update_identity(string $ip, array $fields): array
     }
     $identity['last_seen'] = gmdate('c');
 
+    // Merged for the caller, never written back. This is what kept refreshing
+    // last_seen on the gateway's profile after scoring had already stopped
+    // ignoring it -- the row stayed alive on the dashboard, ticking, with no
+    // events behind it.
+    if (sb_is_ignored($ip)) {
+        return $identity;
+    }
+
     $redis = sb_redis();
     if ($redis->isReady()) {
         $redis->setex(sb_identity_key($ip), IDENTITY_TTL, json_encode($identity));
@@ -572,17 +676,26 @@ function update_identity(string $ip, array $fields): array
 
 function is_tarpitted(string $ip): bool
 {
+    if (sb_is_ignored($ip)) {
+        return false;
+    }
     return !empty(get_or_create_identity($ip)['tarpit_active']);
 }
 
 function is_banned(string $ip): bool
 {
+    if (sb_is_ignored($ip)) {
+        return false;
+    }
     $redis = sb_redis();
     return $redis->isReady() && $redis->exists('hp:banned:' . sb_ip_hash($ip)) > 0;
 }
 
 function activate_tarpit(string $ip, string $reason = 'Threshold reached'): void
 {
+    if (sb_is_ignored($ip)) {
+        return;
+    }
     $identity = get_or_create_identity($ip);
     if (!empty($identity['tarpit_active'])) {
         return;
@@ -632,6 +745,13 @@ function ban_ip(string $ip, float $score, string $reason, string $tool = '', str
  */
 function score_event(string $ip, string $eventType, string $payload = '', string $tool = ''): array
 {
+    // No identity, no score, no log line. The operator is not a data point.
+    if (sb_is_ignored($ip)) {
+        return ['old_score' => 0.0, 'new_score' => 0.0, 'banned' => false,
+                'tarpit_active' => false, 'newly_tarpitted' => false,
+                'ignored' => true];
+    }
+
     [$points, $reason] = SCORES[$eventType] ?? [0, 'Unknown event'];
 
     $identity = get_or_create_identity($ip);
@@ -959,6 +1079,13 @@ function sb_request_headers(): array
 
 function log_request(string $ip, array $extra = []): void
 {
+    // Health checks are not traffic worth keeping. Left in, they were the
+    // HTTP_REQUEST lines filling the gateway's event log and inflating every
+    // per-day request count with the appliance polling itself.
+    if (sb_is_ignored($ip)) {
+        return;
+    }
+
     $postKeys = array_map(static fn($k) => mb_substr((string)$k, 0, 64), array_keys($_POST));
     $payload = '';
     if (!empty($_POST)) {
