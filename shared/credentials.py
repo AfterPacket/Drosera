@@ -29,6 +29,16 @@ import re
 ACCEPT_ANY = os.getenv("HONEYPOT_ACCEPT_ANY_PASSWORD", "0").strip().lower() in (
     "1", "true", "yes", "on")
 
+# Per-deployment additions, built from this host's own captured logins by
+# deploy/extract-credentials.py.
+#
+# The built-in list below is published, and a published accept-list is the same
+# weakness it defends against: read the repo, pick a password that is not in
+# it, and you have a probe. The persona is per-deployment for exactly this
+# reason, and so is this. A deployment that has been running for a week knows
+# what is actually being sprayed at it better than any list written in advance.
+WORDLIST_FILE = os.getenv("HONEYPOT_ACCEPT_WORDLIST", "")
+
 # Credentials published in scanner tooling specifically to detect accept-all
 # servers. Refused by name as well as by shape, so a probe that happens to look
 # ordinary is still caught.
@@ -57,6 +67,25 @@ COMMON_PASSWORDS = {
     "vizxv", "xc3511", "juantech", "anko", "xmhdipc", "seiko2005",
     "jvbzd", "hi3518", "klv123", "cat1029", "ivdev", "ipcam_rt5350",
 }
+
+def _load_wordlist() -> set:
+    """Observed passwords this deployment has decided to accept.
+
+    Missing or unreadable is normal and not an error: the built-ins alone are a
+    working policy, and a honeypot must not fail to answer because an optional
+    file is absent.
+    """
+    if not WORDLIST_FILE:
+        return set()
+    try:
+        with open(WORDLIST_FILE, "r", encoding="utf-8", errors="replace") as handle:
+            return {line.rstrip("\n").lower() for line in handle
+                    if line.strip() and not line.startswith("#")}
+    except OSError:
+        return set()
+
+
+COMMON_PASSWORDS |= _load_wordlist()
 
 # A password that is letters-and-digits, long, and matches nothing anyone would
 # choose. Deliberately narrow: the cost of refusing a real attacker's guess is
