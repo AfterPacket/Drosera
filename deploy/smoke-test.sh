@@ -273,6 +273,34 @@ else
     warn "session-cam has no egress; clip delivery will fail"
 fi
 
+# Containment is only half the model. The other half is that the containers
+# which are SUPPOSED to talk to each other still can -- and that half had no
+# test, which is how a deployment reached production where no honeypot could
+# reach Redis at all. It fails silently by design: identities stop being
+# tracked, scores stop accumulating, bans stop applying, and the only visible
+# symptom is a dashboard that looks like a quiet day.
+#
+# The usual cause is `icc: false` in /etc/docker/daemon.json becoming the
+# inherited default for a user-defined bridge created after it. docker-compose
+# sets enable_icc explicitly to prevent that; this asserts it worked.
+for container in hp-ssh-honey hp-admin-dashboard; do
+    if docker exec "$container" timeout 8 python3 -c \
+            "import socket;socket.create_connection(('redis-honeypot',6379),timeout=5)" \
+            >/dev/null 2>&1; then
+        pass "${container#hp-} reaches redis-honeypot"
+    else
+        fail "${container#hp-} CANNOT reach redis-honeypot -- no identities, scores or bans"
+    fi
+done
+
+if docker exec hp-admin-dashboard timeout 8 python3 -c \
+        "import socket;socket.create_connection(('redis-admin',6379),timeout=5)" \
+        >/dev/null 2>&1; then
+    pass "admin-dashboard reaches redis-admin"
+else
+    fail "admin-dashboard CANNOT reach redis-admin -- sessions and audit will fail"
+fi
+
 printf '\n'
 if [ "$FAILED" -gt 0 ]; then
     printf '\033[31m%d check(s) failed\033[0m\n' "$FAILED"

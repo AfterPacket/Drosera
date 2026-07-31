@@ -659,20 +659,41 @@ networks:
   # container-to-container traffic are allowed, anything this subnet originates
   # towards the outside is dropped. Verify with `./deploy/smoke-test.sh`, which
   # asserts that ssh-honey and web cannot reach 1.1.1.1.
+  #
+  # enable_icc is set EXPLICITLY on every network whose members must talk to
+  # each other, and it is not optional. deploy/bootstrap.sh writes
+  # `"icc": false` into /etc/docker/daemon.json, which is the right default for
+  # the docker0 bridge and becomes the inherited default for user-defined
+  # bridges created afterwards. A deployment that predates that setting keeps
+  # working; the moment its networks are recreated -- a compose edit, a
+  # `down`/`up`, a daemon restart -- every container-to-container connection
+  # starts timing out at once, and the symptom is bewildering: DNS resolves,
+  # the IPs are right, the containers are on the same network, iptables shows
+  # nothing dropped, and nothing can reach Redis. Stating it here makes the
+  # networks independent of the daemon default rather than quietly bound to it.
   honeypot-internal:
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
     ipam:
       config:
         - subnet: 172.25.0.0/16
   admin-internal:
     driver: bridge
     internal: true
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
     ipam:
       config:
         - subnet: 172.26.0.0/16
   # The one network in the appliance with egress. session-cam is its only
   # member, and session-cam is on no other network -- so this grants the
   # ability to deliver clips without granting the honeypot a way out.
+  #
+  # No enable_icc here, deliberately. Its members -- session-cam, intel and
+  # certbot -- exchange work through the storage volume and never open a socket
+  # to one another, so inheriting the daemon's `icc: false` costs nothing and
+  # removes a path between the containers that can reach the internet.
   cam-egress:
     driver: bridge
     ipam:
@@ -683,12 +704,16 @@ networks:
   elastic-internal:
     driver: bridge
     internal: true
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
     ipam:
       config:
         - subnet: 172.28.0.0/16
 
   kibana-access:
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
 
 volumes:
   redis-honeypot-data:
