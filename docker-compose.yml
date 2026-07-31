@@ -530,7 +530,9 @@ services:
       # Loopback only, same access model as the dashboard:
       #   ssh -N -L 5601:127.0.0.1:5601 -p 2222 you@vps
       - "127.0.0.1:${KIBANA_PORT:-5601}:5601"
-    networks: [elastic-internal]
+    networks:
+      - elastic-internal
+      - kibana-access
     mem_limit: ${KIBANA_MEM_LIMIT:-1024m}
     pids_limit: 512
     logging:
@@ -684,6 +686,10 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+
+  kibana-access:
+    driver: bridge
+
 volumes:
   redis-honeypot-data:
   redis-admin-data:
