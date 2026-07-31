@@ -6,6 +6,55 @@ next one will look just as innocent.
 
 ---
 
+## `echo` printed its own flags, so no bot ever got past the handshake
+
+**Symptom.** A telnet attacker connects, sends one command, and leaves after one
+second. The command:
+
+```
+echo -e "\x61\x75\x74\x68\x5F\x6F\x6B\x0A"
+```
+
+**Cause.** That decodes to `auth_ok`. It is the handshake a Mirai-family loader
+performs immediately after login: send a hex-escaped string, read it back, and
+only continue if the shell answered correctly. The implementation was:
+
+```python
+def _cmd_echo(self, args, _line):
+    return " ".join(args)
+```
+
+So the bot got `-e \x61\x75\x74\x68...` — its own flag, and its own escapes
+untouched. It concluded this was not a shell and hung up.
+
+A second break sat right behind it: `/bin/busybox MIRAI` is a presence check,
+where the loader runs its own tag as an applet and looks for the exact string
+`applet not found` before starting the infection chain. Unknown commands
+returned bash's `command not found`, which fails that check too.
+
+**What it cost.** Everything after the handshake. The busybox probe, the
+`wget`/`tftp` line naming the second stage, the payload itself — the loader URL
+extractor and the quarantine fetcher are both downstream of these two
+exchanges, so neither had ever seen a Mirai infection attempt through to the
+part worth capturing.
+
+**Why it hid.** The session looked like a scanner that touched the port and
+moved on, which is most traffic. Nothing errored: `echo` returned a string, the
+command was logged, the score went up, the recording was written. The only
+evidence was that the sessions were always exactly one command long.
+
+**Fix.** `echo` handles `-e`, `-E`, `-n` and combined forms, and expands
+`\xHH`, `\0NNN`, `\n`, `\t`, `\c` and the rest. Unknown escapes pass through
+untouched, as bash does, so a payload is recorded verbatim. An unrecognised
+applet invoked through busybox answers `applet not found`, while a genuinely
+missing command still answers `command not found`.
+
+**Avoid it.** `" ".join(args)` is a reasonable sketch of `echo` and a wrong
+implementation of it. In a honeypot the fidelity of the boring builtins is the
+product: the interesting behaviour only happens if the dull part convinces.
+
+---
+
 ## The honeypot was working its way towards banning its own host
 
 **Symptom.** An attacker profile for `172.25.0.1` — the Docker bridge gateway.

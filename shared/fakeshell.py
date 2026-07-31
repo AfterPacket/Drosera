@@ -244,6 +244,65 @@ def scan_redirects(stage: str):
 # inside the quoted script matches and the wrapper is never reached.
 SHELL_COMMANDS = ("bash", "sh", "dash", "ash", "zsh", "ksh")
 
+# What `echo -e` turns a backslash sequence into. Malware writes its strings
+# this way constantly -- partly to dodge naive log matching, partly because the
+# telnet path cannot carry arbitrary bytes -- so getting it right is the
+# difference between reading the handshake and watching the bot leave.
+ECHO_ESCAPES = {
+    "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f",
+    "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\",
+}
+
+
+def _expand_escapes(text: str) -> str:
+    """Interpret `echo -e` backslash escapes: \\xHH, \\0NNN, \\n and friends.
+
+    Unrecognised sequences are passed through untouched, which is what bash
+    does -- inventing an interpretation would corrupt a payload we want to
+    record verbatim.
+    """
+    out = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char != "\\" or index + 1 >= len(text):
+            out.append(char)
+            index += 1
+            continue
+
+        following = text[index + 1]
+        if following == "x":
+            digits = ""
+            cursor = index + 2
+            while (cursor < len(text) and len(digits) < 2
+                   and text[cursor] in "0123456789abcdefABCDEF"):
+                digits += text[cursor]
+                cursor += 1
+            if digits:
+                out.append(chr(int(digits, 16)))
+                index = cursor
+                continue
+        elif following == "0":
+            digits = ""
+            cursor = index + 2
+            while cursor < len(text) and len(digits) < 3 and text[cursor] in "01234567":
+                digits += text[cursor]
+                cursor += 1
+            out.append(chr(int(digits, 8) & 0xFF) if digits else "\0")
+            index = cursor
+            continue
+        elif following == "c":
+            # Suppress the rest of the output, trailing newline included.
+            return "".join(out)
+        elif following in ECHO_ESCAPES:
+            out.append(ECHO_ESCAPES[following])
+            index += 2
+            continue
+
+        out.append(char)
+        index += 1
+    return "".join(out)
+
 
 class FakeShell:
     """Stateful fake bash for one attacker session."""
@@ -616,7 +675,9 @@ class FakeShell:
 
         command = tokens[0].rsplit("/", 1)[-1] if tokens else ""
         args = tokens[1:]
+        via_busybox = False
         if command == "busybox" and args:        # busybox uname -m -> uname -m
+            via_busybox = True
             command, args = args[0], args[1:]
 
         # Shell wrappers are dispatched before the dropped-binary scan below.
@@ -655,6 +716,13 @@ class FakeShell:
 
         handler = self._HANDLERS.get(command)
         if handler is None:
+            if via_busybox:
+                # `/bin/busybox MIRAI` is a presence check, not a typo: the
+                # loader picks a tag, runs it as an applet, and looks for
+                # exactly "applet not found" to confirm busybox is installed
+                # before it starts the infection chain. Answering with bash's
+                # "command not found" fails that check and ends the session.
+                return f"{command}: applet not found"
             return f"bash: {command}: command not found"
 
         return self._finish(handler(self, args, stage),
@@ -1094,7 +1162,40 @@ class FakeShell:
         ])
 
     def _cmd_echo(self, args: List[str], _line: str) -> str:
-        return " ".join(args)
+        """echo, including -e escape expansion.
+
+        This used to be `" ".join(args)`, which printed the flags back and left
+        the escapes as literal text. That breaks the first thing a Mirai-family
+        loader does after login: it sends
+
+            echo -e "\\x61\\x75\\x74\\x68\\x5F\\x6F\\x6B\\x0A"
+
+        and waits to read `auth_ok` back. Getting `-e \\x61\\x75...` instead
+        tells it this is not a shell, so it hangs up -- one second, one
+        connection, before the busybox probe, the loader URL or the payload.
+        The whole reason the IOC extractor and the payload fetcher exist is
+        downstream of answering this correctly.
+        """
+        interpret = False
+        index = 0
+        # Flags are only flags if every letter is one; `echo -xyz` prints, as
+        # real echo does.
+        while (index < len(args) and len(args[index]) > 1
+               and args[index][0] == "-"
+               and all(char in "eEn" for char in args[index][1:])):
+            for flag in args[index][1:]:
+                if flag == "e":
+                    interpret = True
+                elif flag == "E":
+                    interpret = False
+            index += 1
+
+        text = " ".join(args[index:])
+        if interpret:
+            text = _expand_escapes(text)
+        # The transport adds the line ending, so a trailing newline in the
+        # payload would otherwise produce a blank line the bot did not ask for.
+        return text[:-1] if text.endswith("\n") else text
 
     def _cmd_find(self, args: List[str], _line: str) -> str:
         self._score_once("RECON_LS")
