@@ -206,7 +206,21 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         await writer.drain()
         recorder.write_output(motd)
 
-        shell = FakeShell(ip, ident, score=identity.score_named_event,
+        # The ban is checked once at login, which covers a credential spray but
+        # not the shell -- and the shell is where the events that actually earn
+        # a ban happen. Wrapping the scorer catches the verdict FakeShell is
+        # already being handed, without a second Redis lookup per command.
+        session_banned = False
+
+        def score(target_ip, event_type, *args, **kwargs):
+            nonlocal session_banned
+            result = identity.score_named_event(target_ip, event_type,
+                                                *args, **kwargs)
+            if isinstance(result, dict) and result.get("banned"):
+                session_banned = True
+            return result
+
+        shell = FakeShell(ip, ident, score=score,
                           service=SERVICE, username=username)
 
         loop = asyncio.get_running_loop()
@@ -228,6 +242,12 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 writer.write(payload.encode())
                 await writer.drain()
                 recorder.write_output(payload)
+
+            # Show them the output of the command that crossed the line -- it
+            # is the evidence, and it is already scored -- then end the session.
+            if session_banned:
+                recorder.write_output("Connection closed by foreign host.\r\n")
+                break
     except (OSError, asyncio.TimeoutError, ConnectionResetError, asyncio.IncompleteReadError):
         pass
     finally:

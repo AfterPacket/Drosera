@@ -340,7 +340,22 @@ def interactive_session(channel, ip: str, ident: dict, username: str,
     first authentication attempt, so one .cast covers login and shell as a
     single session, the way the connection actually happened.
     """
-    shell = FakeShell(ip, ident, score=identity.score_named_event,
+    # The ban is checked once, before the banner. Everything that actually
+    # earns one -- a dropper, a reverse shell, rewriting authorized_keys --
+    # happens in this loop, so without watching the verdict here an attacker
+    # keeps the shell they are already holding and is only refused the next
+    # time they connect. FakeShell is handed the verdict anyway; this reads it.
+    session_banned = False
+
+    def score(target_ip, event_type, *args, **kwargs):
+        nonlocal session_banned
+        result = identity.score_named_event(target_ip, event_type,
+                                            *args, **kwargs)
+        if isinstance(result, dict) and result.get("banned"):
+            session_banned = True
+        return result
+
+    shell = FakeShell(ip, ident, score=score,
                       service=SERVICE, username=username)
 
     # The last-login line is per-deployment: a fixed timestamp and source IP
@@ -417,6 +432,13 @@ def interactive_session(channel, ip: str, ident: dict, username: str,
                 payload = output.replace("\n", "\r\n") + "\r\n"
                 channel.sendall(payload.encode())
                 recorder.write_output(payload)
+
+            # Let the command that crossed the threshold finish and be seen --
+            # it is the evidence the ban is based on -- then hang up. They get
+            # the dripped rickroll on their next attempt.
+            if session_banned:
+                recorder.write_output("Connection to host closed.\r\n")
+                return
     except (OSError, socket.timeout, EOFError):
         pass
 
@@ -510,6 +532,9 @@ def handle_client(sock: socket.socket, addr) -> None:
             # recording it -- so the dropper and persistence one-liners, which
             # are the payloads actually worth watching, produced an event log
             # entry and no footage. Non-interactive is not uninteresting.
+            # One command and out, so there is no loop to break -- the ban is
+            # applied by score_named_event either way and takes effect on their
+            # next connection, which for `ssh host '<cmd>'` bots is seconds.
             shell = FakeShell(ip, ident, score=identity.score_named_event,
                               service=SERVICE, username=server.username)
             recorder = server.rec()

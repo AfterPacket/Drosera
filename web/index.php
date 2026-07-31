@@ -32,6 +32,9 @@ if (str_starts_with($path, '/blog/') || $path === '/blog') {
 // the right value we remember it, so their later requests land straight in.
 if (!webshell_unlocked($ip)) {
     score_event($ip, 'SCANNER_PATH_HIT', 'admin-ajax.php probed without action key');
+    sb_cam_http($ip, sprintf('%s %s', $_SERVER['REQUEST_METHOD'] ?? 'GET',
+                             substr((string)($_SERVER['REQUEST_URI'] ?? '/'), 0, 200)),
+                'admin-ajax.php probed without the action key -> "0"');
     header('Content-Type: text/html; charset=UTF-8');
     header('X-Powered-By: PHP/' . FAKE_PHP_VERSION);
     echo '0';
@@ -86,6 +89,11 @@ function serve_crawler_trap(string $ip, string $path): void
         $visited = $redis->lrange($key, 0, 49);
         if (is_array($visited) && count(array_unique($visited)) >= 3) {
             score_event($ip, 'SCANNER_PATH_HIT', "crawler trap: {$slug}");
+            // Only once they are demonstrably crawling rather than on the
+            // first page, which a person could land on by accident.
+            sb_cam_http($ip, 'GET ' . substr($slug, 0, 200),
+                        'crawler trap, ' . count(array_unique($visited))
+                        . ' generated pages followed');
         }
     }
 

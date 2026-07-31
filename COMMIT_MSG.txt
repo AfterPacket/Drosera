@@ -1,0 +1,43 @@
+Answer the setup questions, honour the tarpit, and act on bans mid-session
+
+Attackers were disconnecting one command into MySQL and SMB sessions. Two
+unrelated causes, same symptom.
+
+MySQL sessions all ended on SELECT @@max_allowed_packet. That query is not the
+attacker's -- libmysqlclient sends it once auth finishes and sizes its send
+buffer from the reply. It had no handler, so the generic SELECT answered with a
+column called "result" containing 1. The client believed it could send one byte
+and hung up. The framing was always valid, so nothing logged an error.
+
+Adds a SYSVARS table with correct @@-prefixed column names, qualifier and
+multi-variable support, makes SHOW VARIABLES read the same table and honour
+LIKE, and ties the advertised packet ceiling to MAX_PACKET so we do not publish
+a limit the reader will not honour.
+
+SMB had two walls, either one sufficient. CMD_CREATE had a constant and a
+CMD_NAMES entry but no branch, so it hit the catch-all NOT_IMPLEMENTED -- and
+the recorder names commands before dispatch, so transcripts showed it arriving
+as though it were handled. Behind that, every NTLMSSP_AUTH was refused, so most
+clients never got that far. Implements CREATE, CLOSE, READ, WRITE,
+QUERY_DIRECTORY, QUERY_INFO, SET_INFO, FLUSH, LOCK, ECHO and CANCEL over a fake
+tree, and grants a guest session once the hash is captured.
+
+Auditing the other services turned up worse. MySQL called activate_tarpit()
+from five places in answer_query() and never imported shared.tarpit, so an
+address tarpitted by SSH or SMB got a full-speed MySQL. SMTP paused once on
+EHLO and ran full speed after. FTP delayed correctly but never registered the
+hold, so it was missing from "Held right now". All three now drain through
+shared.tarpit and register their holds.
+
+Bans were checked once at connect, and nothing read the banned verdict that
+score_named_event already returns -- so an attacker who crossed the threshold
+mid-session kept the shell they had. Each service now finishes the reply to the
+command that crossed the line, since that reply is the evidence, then closes.
+
+Web recording covered only the webshell, so the live feed showed almost nothing
+while probes and tarpits -- the overwhelming majority of traffic -- went
+unrecorded. sb_cam_http() now records scanner hits, spray attempts and the
+tarpit drip into the same per-IP cast. FTP data-channel transfers left no trace
+in the replay; their outcome is now written back to the control transcript.
+
+Nothing an attacker writes reaches a disk on any of these paths.

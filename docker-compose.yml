@@ -179,6 +179,7 @@ services:
       TARPIT_MAX_CONCURRENT: ${TARPIT_MAX_CONCURRENT:-24}
       TARPIT_MAX_SECONDS: ${TARPIT_MAX_SECONDS:-900}
       CAM_WEB_IDLE_SECONDS: ${CAM_WEB_IDLE_SECONDS:-900}
+      CAM_RECORD_WEB_PROBES: ${CAM_RECORD_WEB_PROBES:-true}
       RICKROLL_URL: ${RICKROLL_URL:-https://www.youtube.com/watch?v=dQw4w9WgXcQ}
       RICKROLL_FILE: /rickroll.txt
       SERVER_NAME: ${DOMAIN:-localhost}
@@ -252,6 +253,7 @@ services:
       FTP_PASV_MIN: "30000"
       FTP_PASV_MAX: "30019"
       FTP_PASV_ADDRESS: ${FTP_PASV_ADDRESS:-}
+      FTP_TARPIT_MAX_SECONDS: ${FTP_TARPIT_MAX_SECONDS:-600}
     ports:
       - "21:2121"
       - "30000-30019:30000-30019"
@@ -273,6 +275,7 @@ services:
     environment:
       <<: *honeypot-env
       LISTEN_PORT: "2525"
+      SMTP_TARPIT_MAX_SECONDS: ${SMTP_TARPIT_MAX_SECONDS:-600}
     ports:
       - "25:2525"
 
@@ -283,6 +286,8 @@ services:
     environment:
       <<: *honeypot-env
       LISTEN_PORT: "33306"
+      MYSQL_MAX_PACKET: ${MYSQL_MAX_PACKET:-1048576}
+      MYSQL_TARPIT_MAX_SECONDS: ${MYSQL_TARPIT_MAX_SECONDS:-600}
     ports:
       - "3306:33306"
 
@@ -295,6 +300,9 @@ services:
       LISTEN_PORT_SMB: "4445"
       LISTEN_PORT_NBT: "4139"
       SMB_TARPIT_MAX_SECONDS: ${SMB_TARPIT_MAX_SECONDS:-600}
+      SMB_FAIL_ATTEMPTS: ${SMB_FAIL_ATTEMPTS:-0}
+      SMB_ALLOW_SESSION: ${SMB_ALLOW_SESSION:-true}
+      SMB_MAX_HANDLES: ${SMB_MAX_HANDLES:-512}
     ports:
       - "445:4445"
       - "139:4139"

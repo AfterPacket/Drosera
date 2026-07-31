@@ -54,6 +54,13 @@ if (!$isScannerPath) {
 
 score_event($ip, 'SCANNER_PATH_HIT', $path);
 activate_tarpit($ip, "Scanner path probed: {$path}");
+// Recorded as well as scored. A scan is a sequence -- which paths, in which
+// order, with which agent -- and that sequence is the fingerprint. Reading it
+// back as a transcript says more than the same hits scattered through the
+// event log, and it is what puts probes on the live feed at all.
+sb_cam_http($ip,
+    sprintf('%s %s', $_SERVER['REQUEST_METHOD'] ?? 'GET', substr($path, 0, 200)),
+    substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 200));
 $identity = get_or_create_identity($ip);
 
 // --- large "download" baits: header, then trickle forever -------------------

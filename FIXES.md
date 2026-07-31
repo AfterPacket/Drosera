@@ -6,6 +6,140 @@ next one will look just as innocent.
 
 ---
 
+## The tarpit was set on three services that never honoured it
+
+**Symptom.** None, which is the problem. Addresses were marked tarpitted, the
+dashboard said so, the events were logged — and the attackers kept getting fast
+answers.
+
+**Cause.** `activate_tarpit()` writes a flag. Honouring it is each service's
+own job, and three of them never did:
+
+| Service | What it did | What was missing |
+|---|---|---|
+| MySQL | called `activate_tarpit()` from five places in `answer_query()` | never imported `shared.tarpit` at all |
+| SMTP | one `sleep` on EHLO, decided at connect | every later reply, and any re-check |
+| FTP | delayed every reply correctly | never called `begin_hold()`, so holds were invisible live |
+
+MySQL is the stark one: five call sites setting a flag, and no reader. An IP
+tarpitted by SSH or SMB got a full-speed MySQL, and a `UNION SELECT` that
+tarpitted an address in one breath was answered instantly in the next.
+
+**Why it hid.** Everything *looked* right from outside the service. The flag was
+set, the dashboard showed `TARPITTED`, `TARPIT_ENGAGED` was in the event log,
+and the score was shared across services exactly as designed. The only way to
+see it was to notice that nothing in `fake_mysqld.py` ever read the flag back —
+absence of code, which no log line reports.
+
+**Fix.** All three drain through `shared.tarpit` and register the hold. Verdicts
+now come from what `score_named_event()` already returns rather than a fresh
+lookup, so acting on them costs nothing.
+
+**Avoid it.** A flag with no reader is not a feature. When state is written in
+one module and honoured in another, the honouring is the part worth testing —
+the writing will look fine either way.
+
+---
+
+## A ban only took effect on the attacker's next connection
+
+**Symptom.** An attacker crosses the ban threshold with a reverse shell, and
+carries on working in the shell they already have.
+
+**Cause.** Every service checked `is_banned()` once, at connect. Nothing watched
+the `banned` verdict that `score_named_event()` returns on every scored event —
+which is precisely when a ban is earned, since the events worth banning for
+(dropper, reverse shell, `authorized_keys`) all happen mid-session. The tarpit
+had been given a mid-connection re-check; the ban never got the same treatment.
+
+**Fix.** Each service reads the verdict it is already being handed, finishes the
+reply to the command that crossed the line — that reply is the evidence — and
+then closes. SSH and telnet wrap the scorer they pass to `FakeShell`; SMB, FTP,
+SMTP and MySQL track it on the connection. RDP is one exchange with no loop, so
+there is nothing to cut short.
+
+---
+
+## Every MySQL session ended on the same line
+
+**Symptom.** Attackers connect, send one query, and are gone. Thirty-two
+connections from one address, every recording ending at
+`SELECT @@max_allowed_packet`. It reads like the honeypot hanging up on them.
+
+**Cause.** Nothing hung up. That query is not the attacker's — it is what
+libmysqlclient sends automatically once authentication finishes, and the client
+does not display the answer, it *configures itself* from it. It had no handler,
+so it fell through to the generic `SELECT` at the bottom of `answer_query()`:
+
+```python
+if low.startswith("select"):
+    return result_set(["result"], [["1"]], 1)
+```
+
+A perfectly well-formed result set saying the server accepts one-byte packets.
+The client believed it, concluded it could not send anything, and closed the
+connection itself. The column name was wrong too — `result` rather than
+`@@max_allowed_packet` — which breaks connectors that look results up by name.
+
+**Why it hid.** The framing was never malformed, so nothing logged an error and
+the packets look correct in a capture. The failure is entirely in the *meaning*
+of a valid reply, and it happens before the attacker types anything, so the
+recording of a killed session is indistinguishable from someone who lost
+interest. Thirty-two identical short sessions read as a scanner's behaviour,
+not as a bug.
+
+**Fix.** A `SYSVARS` table answering the variables clients actually ask for,
+returning columns named `@@<var>` and handling `@@session.`/`@@global.`
+qualifiers and multi-variable selects. `SHOW VARIABLES` now answers from the
+same table and honours `LIKE`, because older connectors probe that way instead.
+The advertised `max_allowed_packet` is `MAX_PACKET` itself, so the number we
+publish is the number `read_packet()` enforces.
+
+**Avoid it.** A generic fallback that answers *plausibly* is more dangerous than
+one that errors. `SELECT` → `1` looked harmless precisely because it was
+well-formed. Where a protocol has a setup handshake, its questions deserve real
+answers before any thought goes into the interesting ones.
+
+---
+
+## SMB sessions ended one command after they started
+
+**Symptom.** Same report, different service: attackers connect, get through
+`TREE_CONNECT`, and disappear.
+
+**Cause.** Two independent walls, either one sufficient.
+
+`CMD_CREATE` was defined as a constant and listed in `CMD_NAMES`, so it *looked*
+handled — but there was no branch for it. It fell into the catch-all `else` and
+got `STATUS_NOT_IMPLEMENTED`. CREATE is what every client sends immediately
+after connecting to a share, because you cannot do anything to a share without
+opening something on it. So the server accepted the share and then broke.
+
+Behind that, every `NTLMSSP_AUTH` returned `STATUS_LOGON_FAILURE`
+unconditionally. That is correct for capturing hashes and nothing else: a client
+that cannot log in has no reason to keep talking, so most sessions never reached
+the first wall.
+
+**Why it hid.** The constant and the name in `CMD_NAMES` made CREATE read as
+implemented at a glance, and the transcripts said `SMB2 CREATE` — the recorder
+names the command from `CMD_NAMES` before dispatch, so the log showed the
+command arriving whether or not anything handled it.
+
+**Fix.** Implemented CREATE, CLOSE, READ, WRITE, QUERY_DIRECTORY, QUERY_INFO,
+SET_INFO, FLUSH, LOCK, ECHO and CANCEL over a fake tree, so a client can browse.
+Auth grants a guest session after the hash is captured — refusing again buys one
+more spray attempt and loses every client that gives up after one failure.
+`IOCTL` and `CHANGE_NOTIFY` answer `STATUS_NOT_SUPPORTED`, which a client
+understands and moves past; the unhandled-command error was not.
+
+Nothing an attacker writes touches a disk. WRITE is acknowledged, the first 64
+bytes go into the transcript as evidence, and the rest is dropped.
+
+**Avoid it.** A constant is not an implementation, and a name in a lookup table
+is not either. Both made the transcript claim more than the code did.
+
+---
+
 ## Stale nftables rules blackhole all container traffic
 
 **Symptom.** Every container times out reaching Redis. Attacker profiles vanish

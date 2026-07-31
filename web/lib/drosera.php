@@ -93,6 +93,12 @@ define('MAX_STORAGE_MB', (int)(getenv('HONEYPOT_MAX_STORAGE_MB') ?: 4096));
 // seconds pass with no new command.
 define('CAM_WEB_IDLE_SECONDS', (int)(getenv('CAM_WEB_IDLE_SECONDS') ?: 900));
 define('CAM_MAX_SESSION_BYTES', (int)(getenv('HONEYPOT_MAX_SESSION_BYTES') ?: 2097152));
+// Whether scanner probes and tarpit drips are recorded alongside webshell
+// commands. On by default: they are most of what arrives, and a live feed that
+// only ever shows the rare webshell session under-reports the appliance badly.
+// Set false on a deployment where the extra file churn per probe is unwelcome.
+define('CAM_RECORD_WEB_PROBES',
+    strtolower((string)(getenv('CAM_RECORD_WEB_PROBES') ?: 'true')) !== 'false');
 
 const SCORES = [
     'CONNECTION_ANY'      => [1,  'Initial contact'],
@@ -758,17 +764,66 @@ function sb_write_atomic(string $path, string $content): void
 }
 
 /**
- * Append one webshell exchange to an asciicast recording.
- *
- * The webshell is stateless HTTP: there is no socket whose close can end a
- * recording the way it does for SSH or telnet. So commands from one IP are
- * grouped into a single .cast for as long as they keep arriving inside the idle
- * window, and the sidecar carries an `open_until` deadline telling session-cam
- * when the recording has been quiet long enough to be safe to render.
+ * Append one webshell exchange to an asciicast recording, as a shell prompt.
  *
  * Recording only. Nothing here executes, and the command is written as text.
  */
 function sb_cam_record(string $ip, string $command, string $output): void
+{
+    sb_cam_append($ip, static function (array $identity) use ($command, $output): array {
+        $hostname = (string)($identity['fake_hostname'] ?? 'srv-01');
+        $cwd = (string)($identity['fake_cwd'] ?? '/var/www/html');
+        $prompt = 'www-data@' . $hostname . ':' . $cwd . '$ ';
+        $frames = [$prompt . $command . "\r\n"];
+        // Terminals need CRLF; the simulated output uses bare LF.
+        $rendered = str_replace("\n", "\r\n", $output);
+        if ($rendered !== '') {
+            $frames[] = $rendered . "\r\n";
+        }
+        return $frames;
+    });
+}
+
+/**
+ * Record HTTP activity that is not a webshell command.
+ *
+ * Scanner path hits and tarpit drips were scored, alerted and logged, but they
+ * were the one kind of attacker traffic with no recording -- so the live feed
+ * and evidence bundles showed webshell sessions and nothing else, even though
+ * probes and tarpits are the overwhelming majority of what arrives. They share
+ * a cast with the webshell because they are the same address over the same
+ * protocol; one recording per IP is the session that actually happened.
+ */
+function sb_cam_http(string $ip, string $line, string $detail = ''): void
+{
+    if (!CAM_RECORD_WEB_PROBES) {
+        return;
+    }
+    sb_cam_append($ip, static function (array $identity) use ($line, $detail): array {
+        $frames = [$line . "\r\n"];
+        if ($detail !== '') {
+            $frames[] = '    ' . str_replace("\n", "\r\n    ", $detail) . "\r\n";
+        }
+        return $frames;
+    });
+}
+
+/**
+ * Append frames to this IP's web recording, opening one if needed.
+ *
+ * HTTP is stateless: there is no socket whose close can end a recording the way
+ * it does for SSH or telnet. So everything one IP does over HTTP is grouped
+ * into a single .cast for as long as it keeps arriving inside the idle window,
+ * and the sidecar carries an `open_until` deadline telling session-cam when the
+ * recording has been quiet long enough to be safe to render.
+ *
+ * `$build` receives the freshly read identity and returns the frame texts. It
+ * is a callback rather than an array so callers that need the identity -- for a
+ * shell prompt, say -- do not have to read it a second time, and so the read
+ * still happens after scoring, which is what makes the clip carry the score the
+ * command earned rather than the one before it.
+ */
+function sb_cam_append(string $ip, callable $build): void
 {
     if (!sb_storage_ok()) {
         return;
@@ -778,6 +833,10 @@ function sb_cam_record(string $ip, string $command, string $output): void
     // for this command, so this picks up the score the clip should be captioned
     // with instead of the one from before the command.
     $identity = get_or_create_identity($ip);
+    $frames = $build($identity);
+    if (!$frames) {
+        return;
+    }
     $redis = sb_redis();
     $key = 'hp:cam:' . sb_ip_hash($ip);
     $state = null;
@@ -807,8 +866,6 @@ function sb_cam_record(string $ip, string $command, string $output): void
     }
 
     $cast = STORAGE_PATH . '/sessions/' . $state['stem'] . '.cast';
-    $hostname = (string)($identity['fake_hostname'] ?? 'srv-01');
-    $cwd = (string)($identity['fake_cwd'] ?? '/var/www/html');
 
     if (!is_file($cast)) {
         sb_append_line($cast, json_encode([
@@ -828,20 +885,13 @@ function sb_cam_record(string $ip, string $command, string $output): void
     }
 
     $offset = max(0, time() - (int)$state['started']);
-    $prompt = 'www-data@' . $hostname . ':' . $cwd . '$ ';
-    // Terminals need CRLF; the simulated output uses bare LF.
-    $rendered = str_replace("\n", "\r\n", $output);
-
-    sb_append_line($cast, json_encode(
-        [$offset, 'o', $prompt . $command . "\r\n"], JSON_UNESCAPED_SLASHES
-    ) . "\n");
-    if ($rendered !== '') {
+    foreach (array_values($frames) as $index => $text) {
         sb_append_line($cast, json_encode(
-            [$offset + 0.05, 'o', $rendered . "\r\n"], JSON_UNESCAPED_SLASHES
+            [$offset + $index * 0.05, 'o', $text], JSON_UNESCAPED_SLASHES
         ) . "\n");
     }
 
-    $state['frames'] = (int)($state['frames'] ?? 0) + ($rendered !== '' ? 2 : 1);
+    $state['frames'] = (int)($state['frames'] ?? 0) + count($frames);
     if ($redis->isReady()) {
         $redis->setex($key, CAM_WEB_IDLE_SECONDS, json_encode($state));
     }
@@ -1160,6 +1210,13 @@ function run_tarpit(string $ip, string $reason): void
         }
     };
 
+    // Recorded as well as held, so the drip can be watched on the live feed
+    // while it is happening rather than only counted after it ends.
+    sb_cam_http($ip,
+        sprintf('--- tarpit engaged: %s ---', $reason),
+        sprintf('%s %s', $_SERVER['REQUEST_METHOD'] ?? 'GET',
+                substr((string)($_SERVER['REQUEST_URI'] ?? '/'), 0, 200)));
+
     $preamble = [
         "<!DOCTYPE html><html><head><title>" . sb_html(COMPANY_NAME) . "</title>",
         "<meta charset='UTF-8'><meta name='generator' content='WordPress 6.4.3'>",
@@ -1169,6 +1226,9 @@ function run_tarpit(string $ip, string $reason): void
     foreach ($preamble as $chunk) {
         if (connection_aborted()) {
             sb_log_tarpit($ip, $reason, time() - $started, 0);
+            sb_cam_http($ip, sprintf(
+                '--- tarpit released after %ds, client gave up during preamble ---',
+                time() - $started));
             $releaseHold();
             $release();
             exit;
@@ -1197,10 +1257,18 @@ function run_tarpit(string $ip, string $reason): void
 
         if ($counter % 200 === 0) {
             sb_log_tarpit($ip, $reason, time() - $started, $counter, 'TARPIT_KEEPALIVE');
+            // Same cadence as the keepalive rather than per chunk: a frame
+            // every few hundred milliseconds for fifteen minutes would be a
+            // large file recording nothing but the passage of time.
+            sb_cam_http($ip, sprintf('    ... still holding, %ds, %d chunks sent',
+                                     time() - $started, $counter));
         }
     }
 
     sb_log_tarpit($ip, $reason, time() - $started, $counter);
+    sb_cam_http($ip, sprintf('--- tarpit released after %ds (%d chunks%s) ---',
+                             time() - $started, $counter,
+                             connection_aborted() ? ', client gave up' : ''));
     $releaseHold();
     $release();
     exit;

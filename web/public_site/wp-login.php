@@ -49,6 +49,11 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'POST') {
     }
 
     score_event($ip, 'CREDENTIAL_ATTEMPT', "{$username}:{$password}");
+    // The credentials are already captured in the identity; recording them
+    // here puts the spray on the live feed as the sequence it is, so the
+    // wordlist can be read in the order it was tried.
+    sb_cam_http($ip, 'POST /wp-login.php',
+                "log={$username}&pwd={$password} -> login failed");
 
     if ($seenPasswords > 5) {
         score_event($ip, 'CREDENTIAL_SPRAY', "{$seenPasswords} distinct passwords");

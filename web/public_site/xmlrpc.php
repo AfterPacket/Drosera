@@ -58,6 +58,8 @@ if (strcasecmp($methodName, 'system.multicall') === 0) {
 
     score_event($ip, 'CREDENTIAL_SPRAY', "system.multicall with {$loginCount} calls");
     activate_tarpit($ip, 'XML-RPC system.multicall brute force');
+    sb_cam_http($ip, 'POST /xmlrpc.php',
+                "system.multicall carrying {$loginCount} wp.* login calls");
 
     // Capture the credential pairs carried in the multicall.
     if (preg_match_all('#<string>([^<]{0,128})</string>#', $body, $matches)) {

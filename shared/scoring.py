@@ -15,6 +15,11 @@ SCORES = {
     "SQLI_OOB": (12, "Out-of-band SQL injection attempt"),
     "PHP_EVAL_ATTEMPT": (7, "PHP code execution attempt"),
     "FILE_UPLOAD": (8, "Malicious file upload"),
+    # Pulling a file off a share, as opposed to listing one. Weighted above
+    # SMB_ENUM because a scanner enumerates and leaves, while fetching contents
+    # is a deliberate choice about a specific file -- and someone working
+    # through a share file by file reaches the ban threshold, which is right.
+    "FILE_DOWNLOAD": (4, "File contents retrieved"),
     "WEBSHELL_CMD": (2, "Webshell command issued"),
     # Naming where the second stage lives is a step past running commands: it
     # is the point the session stops being reconnaissance and starts being an

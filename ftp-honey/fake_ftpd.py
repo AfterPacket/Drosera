@@ -24,6 +24,7 @@ SERVICE = "ftp"
 
 TARPIT_DELAY = float(os.getenv("FTP_TARPIT_DELAY", "5.0"))
 IDLE_TIMEOUT = int(os.getenv("FTP_IDLE_TIMEOUT", "300"))
+TARPIT_MAX_SECONDS = int(os.getenv("FTP_TARPIT_MAX_SECONDS", "600"))
 MAX_LINE = 2048
 
 FAKE_LISTING = [
@@ -53,6 +54,30 @@ class FTPSession:
         # FTP stalls a tarpitted client on every single response, so one event
         # per stall would bury the log to report the same connection.
         self.tarpit_seconds = 0.0
+        # Sampled once, then kept: is_tarpitted() was being called on every
+        # single reply, which is a Redis round trip per line of a protocol that
+        # is nothing but lines. The scored events already return the verdict,
+        # so this tracks it without asking again.
+        self.tarpitted = False
+        self.banned = False
+        self.hold_key = None
+
+    def score(self, event_type: str, payload: str = ""):
+        """Score, and act on the verdict during this connection, not the next."""
+        result = identity.score_named_event(self.ip, event_type,
+                                            payload=payload, service=SERVICE)
+        if result.get("tarpitted"):
+            self.engage()
+        if result.get("banned"):
+            self.banned = True
+        return result
+
+    def engage(self) -> None:
+        if not self.tarpitted:
+            self.tarpitted = True
+            self.rec().write_output("[tarpit engaged]\r\n")
+        if self.hold_key is None:
+            self.hold_key = tarpit.begin_hold(self.ip, SERVICE, TARPIT_MAX_SECONDS)
 
     def rec(self):
         """Session recorder, created on the first exchange.
@@ -67,7 +92,7 @@ class FTPSession:
         return self.recorder
 
     async def reply(self, code: int, message: str) -> None:
-        if identity.is_tarpitted(self.ip):
+        if self.tarpitted:
             started = time.monotonic()
             try:
                 await asyncio.sleep(TARPIT_DELAY)
@@ -108,19 +133,16 @@ class FTPSession:
     async def cmd_user(self, arg: str) -> None:
         self.username = arg[:128]
         if arg.lower() in ("anonymous", "ftp"):
-            identity.score_named_event(self.ip, "FTP_ANON",
-                                       payload=arg[:120], service=SERVICE)
+            self.score("FTP_ANON", arg[:120])
         await self.reply(331, f"Password required for {arg}")
 
     async def cmd_pass(self, arg: str) -> None:
         identity.record_credential(self.ip, self.username, arg, SERVICE)
-        identity.score_named_event(
-            self.ip, "CREDENTIAL_ATTEMPT",
-            payload=f"{self.username}:{arg}"[:200], service=SERVICE,
-        )
+        self.score("CREDENTIAL_ATTEMPT", f"{self.username}:{arg}"[:200])
         if identity.detect_spray(self.ip):
-            identity.score_named_event(self.ip, "CREDENTIAL_SPRAY", service=SERVICE)
+            self.score("CREDENTIAL_SPRAY")
             identity.activate_tarpit(self.ip, "FTP credential spray", SERVICE)
+            self.engage()
         await self.reply(230, f"User {self.username} logged in")
 
     async def cmd_syst(self, _arg: str) -> None:
@@ -135,8 +157,7 @@ class FTPSession:
         await self.reply(257, f'"{self.cwd}" is the current directory')
 
     async def cmd_cwd(self, arg: str) -> None:
-        identity.score_named_event(self.ip, "RECON_LS",
-                                   payload=f"CWD {arg}"[:120], service=SERVICE)
+        self.score("RECON_LS", f"CWD {arg}"[:120])
         if arg.startswith("/"):
             self.cwd = arg.rstrip("/") or "/"
         else:
@@ -191,8 +212,7 @@ class FTPSession:
         await self.reply(200, "PORT command successful")
 
     async def cmd_list(self, arg: str) -> None:
-        identity.score_named_event(self.ip, "RECON_LS",
-                                   payload=f"LIST {arg}"[:120], service=SERVICE)
+        self.score("RECON_LS", f"LIST {arg}"[:120])
         await self.reply(150, "Opening ASCII mode data connection for file list")
         pair = await self.open_data()
         if pair is None:
@@ -213,8 +233,7 @@ class FTPSession:
         await self.reply(226, "Transfer complete")
 
     async def cmd_nlst(self, arg: str) -> None:
-        identity.score_named_event(self.ip, "RECON_LS",
-                                   payload=f"NLST {arg}"[:120], service=SERVICE)
+        self.score("RECON_LS", f"NLST {arg}"[:120])
         await self.reply(150, "Opening ASCII mode data connection for file list")
         pair = await self.open_data()
         if pair is None:
@@ -231,8 +250,7 @@ class FTPSession:
         await self.reply(226, "Transfer complete")
 
     async def cmd_retr(self, arg: str) -> None:
-        identity.score_named_event(self.ip, "RECON_LS",
-                                   payload=f"RETR {arg}"[:200], service=SERVICE)
+        self.score("FILE_DOWNLOAD", f"RETR {arg}"[:200])
         await self.reply(150, f"Opening BINARY mode data connection for {arg}")
         pair = await self.open_data()
         if pair is None:
@@ -246,13 +264,14 @@ class FTPSession:
         except OSError:
             pass
         await self.close_data()
+        self.rec().write_output(f"[data] sent 200 bytes for {arg}\r\n")
         await self.reply(226, "Transfer complete")
 
     async def cmd_stor(self, arg: str) -> None:
         """Accept the upload, count the bytes, keep nothing."""
-        identity.score_named_event(self.ip, "FILE_UPLOAD",
-                                   payload=f"STOR {arg}"[:200], service=SERVICE)
+        self.score("FILE_UPLOAD", f"STOR {arg}"[:200])
         identity.activate_tarpit(self.ip, "FTP upload attempt", SERVICE)
+        self.engage()
         await self.reply(150, f"Opening BINARY mode data connection for {arg}")
         pair = await self.open_data()
         if pair is None:
@@ -270,6 +289,11 @@ class FTPSession:
         except (OSError, asyncio.TimeoutError):
             pass
         await self.close_data()
+        # The control channel is what gets recorded, so a transfer that happens
+        # entirely on the data connection leaves no trace in the replay unless
+        # its outcome is written back here.
+        self.rec().write_output(
+            f"[data] received {received} bytes as {arg}, discarded\r\n")
         alerting.alert_event(
             ip=self.ip, event_type="FTP_UPLOAD_DISCARDED", service=SERVICE,
             reason=f"Discarded {received} bytes uploaded as {arg}",
@@ -329,6 +353,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
     try:
         if identity.is_tarpitted(ip):
+            session.engage()
             started = time.monotonic()
             try:
                 await asyncio.sleep(TARPIT_DELAY)
@@ -366,11 +391,21 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             await handler(session, arg.strip())
             if verb == "QUIT":
                 break
+            # The reply to the command that crossed the threshold has already
+            # gone out and been recorded; the connection stops here rather than
+            # running until the attacker's next one is refused.
+            if session.banned:
+                recorder.write_output("[banned mid-session, closing]\r\n")
+                break
     except (OSError, asyncio.IncompleteReadError):
         pass
     finally:
+        tarpit.end_hold(session.hold_key)
         tarpit.log_hold(ip, SERVICE, session.tarpit_seconds)
         if session.recorder is not None:
+            if session.tarpit_seconds:
+                session.recorder.write_output(
+                    f"[tarpit held this connection {session.tarpit_seconds:.0f}s]\r\n")
             session.recorder.close()
         await session.close_data()
         try:

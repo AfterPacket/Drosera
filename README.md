@@ -50,7 +50,7 @@ Internet
    ├─ :23   ─► fake telnetd
    ├─ :25   ─► fake smtpd    (advertises an open relay, delivers nothing)
    ├─ :3306 ─► fake mysqld   (protocol v10 wire format)
-   ├─ :445  ─► fake smbd     (SMB2, captures NTLMv2 responses)
+   ├─ :445  ─► fake smbd     (SMB2, browsable shares, captures NTLMv2)
    ├─ :139  ─► fake smbd     (NetBIOS)
    └─ :3389 ─► fake rdpd     (X.224)
 
@@ -107,9 +107,10 @@ capturing](#how-loot-works).
 
 Every text protocol is recorded as an [asciicast](https://docs.asciinema.org)
 covering the **whole connection** — the login attempt, the credentials, the
-shell if they open one, until they disconnect. SSH, telnet, FTP, SMTP, MySQL
-and the web shell all record; SMB and RDP do not, being binary protocols with
-no terminal to replay.
+shell if they open one, until they disconnect. Every service records. SMB and
+RDP are binary protocols with no terminal to replay, so theirs are a written
+account of the negotiation rather than a keystroke replay — see
+[below](#every-service-records).
 
 `session-cam` then renders finished recordings to video with a
 security-camera overlay — record dot, address, service, clock, running score,
@@ -310,11 +311,20 @@ one as it happens. It is read-only by construction: the dashboard reads the
 honeypot and no route that sends anything toward an attacker. Watching a session
 cannot become interfering with one.
 
+<a id="every-service-records"></a>
 Every interactive service is recorded — SSH, telnet, FTP, SMTP, MySQL, and now
 SMB and RDP. Those two are binary protocols, so their recordings are a written
-account of the negotiation (commands, share names, NTLM attempts, the X.224
-cookie) rather than a terminal replay, but they appear on the dashboard and in
-evidence bundles like everything else.
+account of the negotiation (commands, share names, files opened and read, NTLM
+attempts, the X.224 cookie) rather than a terminal replay, but they appear on
+the dashboard and in evidence bundles like everything else.
+
+On the web side, scanner probes and tarpit drips are recorded as well as the
+webshell. Previously only webshell sessions were, which meant the live feed
+showed almost nothing — probes and tarpits are the overwhelming majority of
+what arrives. A scan reads back as the sequence it is: which paths, in which
+order, with which user agent, then the tarpit engaging and how long the client
+stayed for it. Everything one address does over HTTP shares one recording.
+Set `CAM_RECORD_WEB_PROBES=false` to go back to webshell-only.
 
 ### Session playback
 
