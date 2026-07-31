@@ -6,6 +6,50 @@ next one will look just as innocent.
 
 ---
 
+## One probe was enough to identify the honeypot
+
+**Symptom.** A session that ends 2.8 seconds after a successful login, having
+run nothing:
+
+```
+20:21:35  ssh  CREDENTIAL_ATTEMPT  charles:charles
+20:21:35  ssh  PERSISTENCE_ATTEMPT cd ~; chattr -ia .ssh
+20:21:39  ssh  CREDENTIAL_ATTEMPT  345gs5662d34:345gs5662d34
+20:21:39  ssh  SESSION_END         Session closed after 2.8s
+```
+
+**Cause.** `check_auth_password()` ended:
+
+```python
+if identity.is_banned(self.ip):
+    return paramiko.AUTH_FAILED
+return paramiko.AUTH_SUCCESSFUL
+```
+
+Every credential succeeded. The second one there is not a guess — no machine
+has that account. It is an accept-all probe: offer something plausible, then
+offer something impossible, and if both work the server is not a server. We
+accepted it, and they left.
+
+**Why it is the expensive kind of bug.** Nothing failed. The credential was
+captured, the event was scored, the recording was written — the honeypot did
+every job it thought it had. What it lost was everything downstream: the
+loader, the payload, the second stage. The `chattr -ia .ssh` in the line above
+shows this was a worm with a persistence chain to run, and it ran none of it.
+
+**Fix.** `shared/credentials.py` decides. Common and guessable credentials are
+accepted, because those are what a neglected box with a weak password actually
+falls to; machine-generated strings are refused, because no administrator ever
+set one and that is exactly why a prober picks one. Telnet gets the same rule,
+and now closes the connection after three refusals rather than dropping into
+the shell anyway. `HONEYPOT_ACCEPT_ANY_PASSWORD=1` restores the old behaviour.
+
+**Avoid it.** "Accept everything" is not neutral, it is a signature. Anywhere
+the honeypot is more permissive than the machine it imitates, that difference
+is measurable from the outside in a single request.
+
+---
+
 ## SMB1 scanners were answered in a protocol they do not speak
 
 **Symptom.** One connection, five events, gone in a second — then the identical

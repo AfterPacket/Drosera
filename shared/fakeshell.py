@@ -1359,7 +1359,7 @@ class FakeShell:
     _HANDLERS: Dict[str, Callable[["FakeShell", List[str], str], str]] = {}
 
 
-def _cmd_chattr(self, args, _line):
+def _cmd_chattr(self, args, line):
     """Silence, which is what success looks like.
 
     `chattr -ia .ssh` is the first step of the standard SSH persistence chain:
@@ -1367,7 +1367,10 @@ def _cmd_chattr(self, args, _line):
     "command not found" both breaks the illusion and ends the intrusion before
     the interesting part -- the key they were about to install.
     """
-    self._score_once("PERSISTENCE_ATTEMPT", payload=" ".join(args)[:200])
+    # The whole line, not `" ".join(args)`. The dashboard lists this event under
+    # "Commands issued", and the arguments alone rendered as `-ia .ssh` -- a
+    # command nobody typed, sitting next to the real one it came from.
+    self._score_once("PERSISTENCE_ATTEMPT", payload=(line or " ".join(args))[:200])
     targets = [a for a in args if not a.startswith("-")]
     if not targets:
         return "Usage: chattr [-RVf] [-+=aAcCdDeijPsStTu] [-v version] files..."

@@ -12,7 +12,7 @@ import time
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, persona, rickroll, tarpit  # noqa: E402
+from shared import alerting, credentials, identity, persona, rickroll, tarpit  # noqa: E402
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -173,6 +173,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         recorder.write_output(banner)
 
         username = ""
+        authenticated = False
         for _ in range(3):
             prompt = f"{hostname} login: "
             writer.write(prompt.encode())
@@ -203,7 +204,29 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 await writer.drain()
                 recorder.write_output("Login incorrect\r\n")
                 return
+
+            # A generated credential cannot exist on a real machine, so
+            # accepting one says the box accepts anything. Refused here, and
+            # the loop asks again -- which is what a real login does, and gives
+            # a spray somewhere to keep spending its wordlist.
+            if not credentials.accepts(username, password):
+                writer.write(b"\r\nLogin incorrect\r\n")
+                await writer.drain()
+                recorder.write_output("Login incorrect\r\n")
+                username = ""
+                continue
+            authenticated = True
             break
+
+        # Falling out of the loop used to land in the shell regardless, which
+        # would have made the refusal above pure theatre -- three rejections and
+        # then a prompt anyway is a stranger thing to find than a box that
+        # accepts everything.
+        if not authenticated:
+            writer.write(b"\r\nMaximum number of tries exceeded\r\n")
+            await writer.drain()
+            recorder.write_output("Maximum number of tries exceeded\r\n")
+            return
 
         username = username or "root"
 

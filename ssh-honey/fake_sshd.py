@@ -20,7 +20,8 @@ import paramiko
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, identity, loot, persona, rickroll, scoring, tarpit  # noqa: E402
+from shared import (alerting, credentials, identity, loot, persona, rickroll,  # noqa: E402
+                    scoring, tarpit)
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -129,6 +130,16 @@ class HoneypotServer(paramiko.ServerInterface):
             identity.activate_tarpit(self.ip, "SSH credential spray", SERVICE)
 
         if identity.is_banned(self.ip):
+            recorder.write_output("Permission denied, please try again.\r\n")
+            return paramiko.AUTH_FAILED
+
+        # Not every credential. Accepting all of them is a one-probe honeypot
+        # test: a scanner offers a real guess, then a generated one that cannot
+        # exist anywhere, and concludes from two successes that nothing here is
+        # real. That is not hypothetical -- it cost us an engagement at 20:21,
+        # where `charles:charles` was followed by `345gs5662d34:345gs5662d34`
+        # and the session ended 2.8 seconds later.
+        if not credentials.accepts(username or "", password or ""):
             recorder.write_output("Permission denied, please try again.\r\n")
             return paramiko.AUTH_FAILED
         return paramiko.AUTH_SUCCESSFUL
