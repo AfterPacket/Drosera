@@ -609,6 +609,9 @@ conversation.
 ## Troubleshooting
 
 Everything below was hit during a real first deployment.
+[`FIXES.md`](FIXES.md) covers the bugs whose cause was nowhere near the symptom
+— worth skimming before a long debugging session, since two of them look
+exactly like "the database is gone".
 
 **Every container suddenly times out reaching Redis; the dashboard shows no
 attackers but the event feed keeps updating.** Stale nftables rules from a

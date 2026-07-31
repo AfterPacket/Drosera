@@ -121,7 +121,7 @@ honeypot container is a member of.
 | File | Purpose |
 |---|---|
 | `README.md` | Full deployment guide |
-| `bootstrap.sh` | Host preparation: storage, ufw, fail2ban, logrotate, watchdog, sysctl |
+| `bootstrap.sh` | Host preparation: storage, ufw, fail2ban, logrotate, watchdog, sysctl, egress rules |
 | `generate-persona.sh` | Writes `persona/persona.json`: randomised banners, hostnames, kernels, company, credentials and file sizes. Run once before going live; the result is gitignored and worth backing up |
 | `watchdog.sh` | Cron fail-safe: enforces the 90-day event-log retention, prunes storage under disk pressure, restarts dead or unhealthy containers |
 | `logrotate-drosera` | Retention policy for the evidence and audit logs. Deliberately does **not** cover `storage/logs/*.jsonl`, which is already one file per day |
