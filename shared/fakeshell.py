@@ -244,6 +244,39 @@ def scan_redirects(stage: str):
 # inside the quoted script matches and the wrapper is never reached.
 SHELL_COMMANDS = ("bash", "sh", "dash", "ash", "zsh", "ksh")
 
+BUSYBOX_VERSION = os.getenv("FAKE_BUSYBOX_VERSION", "1.30.1")
+BUSYBOX_BUILD = os.getenv("FAKE_BUSYBOX_BUILD", "2019-10-28 12:23:11 UTC")
+
+# What `busybox` and `busybox --list` report. Not the full applet set of a real
+# build -- the point is that the binary answers at all, since a loader reads
+# "command not found" here as "no busybox" and gives up on the target.
+BUSYBOX_APPLETS = (
+    "[", "[[", "ash", "awk", "base64", "basename", "cat", "chgrp", "chmod",
+    "chown", "chroot", "clear", "cp", "cut", "date", "dd", "df", "dirname",
+    "dmesg", "du", "echo", "egrep", "env", "expr", "false", "fgrep", "find",
+    "free", "grep", "gunzip", "gzip", "head", "hexdump", "hostname", "id",
+    "ifconfig", "init", "insmod", "kill", "killall", "ln", "login", "ls",
+    "lsmod", "md5sum", "mkdir", "mknod", "mktemp", "more", "mount", "mv",
+    "nc", "netstat", "nslookup", "ping", "printf", "ps", "pwd", "reboot",
+    "rm", "rmdir", "route", "sed", "seq", "sh", "sleep", "sort", "strings",
+    "sync", "tail", "tar", "tee", "telnet", "test", "tftp", "time", "top",
+    "touch", "tr", "true", "umount", "uname", "uniq", "unzip", "uptime",
+    "vi", "wc", "wget", "which", "whoami", "xargs", "yes",
+)
+
+# Listed by `enable` with no arguments. A loader sends it looking for a router
+# CLI's privileged mode; on Linux it is a bash builtin, and saying "command not
+# found" contradicts the `bash:` prefix on the error that says it.
+BASH_BUILTINS = (
+    ".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd",
+    "command", "compgen", "complete", "continue", "declare", "dirs", "disown",
+    "echo", "enable", "eval", "exec", "exit", "export", "false", "fc", "fg",
+    "getopts", "hash", "help", "history", "jobs", "kill", "let", "local",
+    "logout", "popd", "printf", "pushd", "pwd", "read", "readonly", "return",
+    "set", "shift", "shopt", "source", "suspend", "test", "times", "trap",
+    "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait",
+)
+
 # Shell grammar, which a real shell consumes rather than executing. These reach
 # the dispatcher because stages are split on `;` and `&&`, so the fragments of
 # a `case`/`esac` or `for`/`done` arrive looking like command names.
@@ -733,7 +766,9 @@ class FakeShell:
         command = tokens[0].rsplit("/", 1)[-1] if tokens else ""
         args = tokens[1:]
         via_busybox = False
-        if command == "busybox" and args:        # busybox uname -m -> uname -m
+        # `busybox uname -m` -> `uname -m`, but `busybox --list` is busybox's
+        # own option and must not be unwrapped into a command called --list.
+        if command == "busybox" and args and not args[0].startswith("-"):
             via_busybox = True
             command, args = args[0], args[1:]
 
@@ -1181,6 +1216,64 @@ class FakeShell:
             return f"curl: (7) Failed to connect to {host} port {port}: Connection timed out"
         return f"curl: (6) Could not resolve host: {host}"
 
+    def _cmd_ping(self, args: List[str], _line: str) -> str:
+        """Reachability, answered the same way wget answers it.
+
+        Mirai-family loaders ping before they fetch. The two have to agree: a
+        box whose ping succeeds and whose wget then times out is a box that
+        does not exist. So an address fails to route and a name fails to
+        resolve, exactly as _cmd_wget reports them.
+        """
+        target = next((a for a in args if not a.startswith("-")), "")
+        if not target:
+            return "ping: usage error: Destination address required"
+        self._sleep(3.0)
+        if self._is_ip_literal(target):
+            return (f"PING {target} ({target}) 56(84) bytes of data.\n\n"
+                    f"--- {target} ping statistics ---\n"
+                    "3 packets transmitted, 0 received, 100% packet loss, "
+                    "time 2045ms")
+        return f"ping: {target}: Temporary failure in name resolution"
+
+    def _cmd_busybox(self, args: List[str], _line: str) -> str:
+        """Bare `busybox`, which is a presence check and not a mistake.
+
+        `/bin/busybox <TAG>` was already answered with "applet not found", but
+        the loaders also run it with no arguments at all -- and that fell
+        through to "bash: busybox: command not found", which says the binary is
+        absent. On an embedded target that is the end of the conversation.
+
+        Applets it dispatches are handled in _run_stage; this is only the
+        banner and the --list forms.
+        """
+        if args and args[0] in ("--list", "--list-full"):
+            return "\n".join(sorted(BUSYBOX_APPLETS))
+        return (
+            f"BusyBox v{BUSYBOX_VERSION} ({BUSYBOX_BUILD}) multi-call binary.\n"
+            "BusyBox is copyrighted by many authors between 1998-2015.\n"
+            "Licensed under GPLv2. See source distribution for detailed\n"
+            "copyright notices.\n\n"
+            "Usage: busybox [function [arguments]...]\n"
+            "   or: busybox --list[-full]\n"
+            "   or: busybox --install [-s] [DIR]\n"
+            "   or: function [arguments]...\n\n"
+            "\tBusyBox is a multi-call binary that combines many common Unix\n"
+            "\tutilities into a single executable.  Most people will create a\n"
+            "\tlink to busybox for each function they wish to use and BusyBox\n"
+            "\twill act like whatever it was invoked as.\n\n"
+            "Currently defined functions:\n\t"
+            + ", ".join(sorted(BUSYBOX_APPLETS)))
+
+    def _cmd_enable(self, _args: List[str], _line: str) -> str:
+        """A bash builtin, not a missing command.
+
+        Loaders send `enable` hoping for a router CLI's privileged mode. On a
+        real Linux host it lists the shell's builtins, and answering "command
+        not found" for something every bash has is a plain contradiction with
+        the `bash:` prefix on the error itself.
+        """
+        return "\n".join(f"enable {name}" for name in BASH_BUILTINS)
+
     def _cmd_chmod(self, _args: List[str], _line: str) -> str:
         return ""
 
@@ -1584,6 +1677,11 @@ FakeShell._HANDLERS = {
     "w": FakeShell._cmd_w,
     "who": FakeShell._cmd_who,
     "env": FakeShell._cmd_env, "printenv": FakeShell._cmd_env, "set": FakeShell._cmd_env,
+    # Bare `busybox` is a presence check; with an applet name _run_stage has
+    # already unwrapped it before dispatch reaches here.
+    "busybox": FakeShell._cmd_busybox,
+    "ping": FakeShell._cmd_ping, "ping6": FakeShell._cmd_ping,
+    "enable": FakeShell._cmd_enable,
     "echo": FakeShell._cmd_echo,
     "find": FakeShell._cmd_find, "locate": FakeShell._cmd_find,
     "grep": FakeShell._cmd_grep, "egrep": FakeShell._cmd_grep,

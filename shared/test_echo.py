@@ -149,6 +149,32 @@ def main():
                  "Permission denied" in out, repr(out))
 
     # --- the busybox presence check --------------------------------------
+    #
+    # A telnet loader runs the shell-escape sequence then `/bin/busybox` with
+    # no arguments at all. That reported "command not found", which on an
+    # embedded target means the binary is absent and ends the conversation.
+    out = shell().run("/bin/busybox")
+    bad += check("bare busybox prints its banner",
+                 "BusyBox v" in out and "multi-call binary" in out, repr(out[:80]))
+    bad += check("bare busybox is not a missing command",
+                 "command not found" not in out and "applet not found" not in out)
+    out = shell().run("busybox --list")
+    bad += check("busybox --list is an option, not an applet name",
+                 "applet not found" not in out and "wget" in out, repr(out[:80]))
+
+    # ping has to agree with wget, or the pair contradict each other.
+    out = shell().run("ping -c 3 8.8.8.8")
+    bad += check("ping to an address reports loss, not a missing command",
+                 "100% packet loss" in out, repr(out))
+    out = shell().run("ping -c 3 example.com")
+    bad += check("ping to a name fails to resolve, as wget does",
+                 "Temporary failure in name resolution" in out, repr(out))
+
+    out = shell().run("enable")
+    bad += check("enable is a builtin, not a missing command",
+                 "command not found" not in out and "enable echo" in out,
+                 repr(out[:80]))
+
     out = shell().run("/bin/busybox MIRAI")
     bad += check("an unknown busybox applet reports 'applet not found'",
                  out == "MIRAI: applet not found", repr(out))
