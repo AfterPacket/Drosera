@@ -10,6 +10,7 @@ rather than raising into a protocol handler.
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import random
@@ -36,10 +37,70 @@ MAX_HISTORY = 200
 # crosses the ban threshold and writes a ufw deny rule against your address.
 # It also keeps your traffic out of the statistics, which is the other half of
 # the problem -- you are not a threat actor and should not be in the data.
-IGNORE_IPS = {
-    item.strip() for item in os.getenv("HONEYPOT_IGNORE_IPS", "").split(",")
-    if item.strip()
-}
+#
+# Entries may be single addresses or CIDR ranges.
+def _parse_networks(raw: str) -> list:
+    networks = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def _default_gateway() -> str:
+    """The bridge gateway address, read from the container's routing table.
+
+    This is the host reaching in, and it is the source of every health check,
+    every `deploy/smoke-test.sh` run and every curl an operator fires from the
+    box itself. Scored like an attacker it climbed to 27 of the 35-point ban
+    threshold in a few hours across all six services -- and the ban would have
+    been the damaging part, not the score: services would start refusing the
+    host, and fail2ban's action is `ufw insert 1 deny from <ip>`, which against
+    a bridge gateway cuts the host off from every container it runs.
+
+    Detected rather than configured because the subnet is Docker's to choose,
+    so a hardcoded 172.x would be wrong on someone else's deployment.
+    """
+    try:
+        with open("/proc/net/route", "r", encoding="ascii") as handle:
+            next(handle)                                  # header
+            for line in handle:
+                fields = line.split()
+                # Destination 0.0.0.0 is the default route; its gateway is
+                # stored as little-endian hex.
+                if len(fields) > 2 and fields[1] == "00000000" and fields[2] != "00000000":
+                    return str(ipaddress.IPv4Address(
+                        int(fields[2], 16).to_bytes(4, "little")))
+    except (OSError, ValueError, StopIteration):
+        pass
+    return ""
+
+
+IGNORE_NETWORKS = _parse_networks(os.getenv("HONEYPOT_IGNORE_IPS", ""))
+
+# On by default. An operator who genuinely wants to study traffic arriving from
+# the gateway -- a compromised sibling container, say -- can set this to 0.
+if os.getenv("HONEYPOT_IGNORE_GATEWAY", "1").strip().lower() not in (
+        "0", "false", "no", "off"):
+    _gateway = _default_gateway()
+    if _gateway:
+        IGNORE_NETWORKS.append(ipaddress.ip_network(f"{_gateway}/32"))
+
+
+def is_ignored(ip: str) -> bool:
+    """True for addresses that are ours, not an attacker's."""
+    if not IGNORE_NETWORKS:
+        return False
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(address in network for network in IGNORE_NETWORKS)
 
 # Read from the deployment's persona rather than hardcoded, because these are
 # exactly what an attacker compares against a published default to identify a
@@ -342,7 +403,7 @@ def score_event(ip: str, points: float, event_type: str, reason: str,
     """Apply points to an IP, append to history, and auto-ban past the threshold."""
     from . import alerting, scoring
 
-    if ip in IGNORE_IPS:
+    if is_ignored(ip):
         # No identity, no score, no log line. The operator is not a data point.
         return {"old_score": 0.0, "new_score": 0.0, "event": {}, "banned": False,
                 "tarpitted": False, "identity": {}, "ignored": True}
@@ -473,13 +534,13 @@ def is_tarpitted(ip: str) -> bool:
     # being added to the ignore list would otherwise stay tarpitted forever,
     # since the flag already sits in their stored identity. The symptom is a
     # blank terminal on your own honeypot, which is the tarpit working.
-    if ip in IGNORE_IPS:
+    if is_ignored(ip):
         return False
     return bool(get_or_create_identity(ip).get("tarpit_active"))
 
 
 def is_banned(ip: str) -> bool:
-    if ip in IGNORE_IPS:
+    if is_ignored(ip):
         return False
     client = _client()
     if client is None:

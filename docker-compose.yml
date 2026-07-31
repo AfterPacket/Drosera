@@ -45,6 +45,7 @@ x-honeypot-env: &honeypot-env
   # Comma-separated. Your own address belongs here, or browsing your own site
   # tarpits you, eventually bans you, and pollutes the statistics.
   HONEYPOT_IGNORE_IPS: ${HONEYPOT_IGNORE_IPS:-}
+  HONEYPOT_IGNORE_GATEWAY: ${HONEYPOT_IGNORE_GATEWAY:-1}
   # `nmap` in either fake shell reports on the attacker's own address. Set to 0
   # to keep them talking instead -- see .env.example for the trade-off.
   HONEYPOT_SCANBACK: ${HONEYPOT_SCANBACK:-1}

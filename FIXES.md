@@ -6,6 +6,45 @@ next one will look just as innocent.
 
 ---
 
+## The honeypot was working its way towards banning its own host
+
+**Symptom.** An attacker profile for `172.25.0.1` — the Docker bridge gateway.
+Score 27 of 35, all six services touched, 41 sessions, climbing steadily.
+
+**Cause.** That address is the host reaching into the containers: health checks,
+`deploy/smoke-test.sh`, and any `curl` run on the box. Nothing distinguished it
+from an attacker. `IGNORE_IPS` existed for exactly this, but it was an opt-in
+env var, empty by default, matched as an exact string — so it could not have
+covered a gateway whose address Docker chooses.
+
+**Why the score mattered more than it looked.** Eight more points and it bans.
+Then every service refuses the host, `smoke-test.sh` starts failing for reasons
+that have nothing to do with what it tests — and fail2ban's action is:
+
+```
+actionban = ufw insert 1 deny from <ip> to any
+```
+
+A deny rule against the bridge gateway cuts the host off from every container
+it runs. The appliance would have firewalled itself away from itself, and the
+symptom would have looked exactly like the nftables outage above: containers
+unreachable, no obvious cause. This deployment was saved by not having `ufw`
+installed, which is luck, not design.
+
+**Fix.** The gateway is detected from `/proc/net/route` and ignored by default
+(`HONEYPOT_IGNORE_GATEWAY=0` to opt out), rather than hardcoding a `172.x` that
+would be wrong elsewhere. `HONEYPOT_IGNORE_IPS` now accepts CIDR ranges as well
+as single addresses. The fail2ban jail also lists the Docker ranges in
+`ignoreip` — a second lock on the same door, because the failure mode is losing
+the whole stack rather than one service.
+
+**Avoid it.** Ask what a safety mechanism does when it fires on the wrong
+target. Scoring the host was untidy; *banning* it was the outage. A control
+whose worst case is self-inflicted denial of service needs a floor under it
+that does not depend on configuration nobody filled in.
+
+---
+
 ## Every rickroll recording was an empty file, and there were 321 of them
 
 **Symptom.** One banned address filled all five slots in the live feed, its
