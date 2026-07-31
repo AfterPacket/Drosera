@@ -35,10 +35,48 @@ SSH_BANNER = persona.get("ssh_banner")
 MAX_CONNECTIONS = int(os.getenv("SSH_MAX_CONNECTIONS", "200"))
 TARPIT_MAX_SECONDS = int(os.getenv("SSH_TARPIT_MAX_SECONDS", "1800"))
 TARPIT_BYTE_DELAY = float(os.getenv("SSH_TARPIT_BYTE_DELAY", "1.0"))
+
+# Gap between the junk lines that hold a tarpitted client. Shorter than it was
+# (5-12s) because the interval is what a client's read deadline measures: every
+# line resets it, so lines that arrive comfortably inside that deadline keep the
+# connection alive indefinitely, while a gap wider than it ends the hold. Wider
+# gaps are not "slower", they are shorter.
+TARPIT_LINE_MIN = float(os.getenv("SSH_TARPIT_LINE_MIN", "1.5"))
+TARPIT_LINE_MAX = float(os.getenv("SSH_TARPIT_LINE_MAX", "4.0"))
+
+# Concurrent tarpit holds allowed from one address. Holding for half an hour
+# means a scanner that reconnects every minute accumulates thirty simultaneous
+# slots, and MAX_CONNECTIONS is 200 -- so seven persistent scanners could take
+# the whole listener and leave nothing for anyone new. The cap is per address
+# rather than global so a flood costs its own source, not our coverage.
+TARPIT_PER_IP = int(os.getenv("SSH_TARPIT_PER_IP", "8"))
 AUTH_DELAY_RANGE = (1.0, 3.0)
 SESSION_IDLE_TIMEOUT = int(os.getenv("SSH_SESSION_TIMEOUT", "600"))
 
 _slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+
+# Tarpit holds currently running, per address. Guarded because the whole point
+# of a longer hold is that connections accumulate, and accumulation is exactly
+# what exhausts a fixed pool.
+_holds = {}
+_holds_lock = threading.Lock()
+
+
+def _take_hold_slot(ip: str) -> bool:
+    with _holds_lock:
+        if _holds.get(ip, 0) >= TARPIT_PER_IP:
+            return False
+        _holds[ip] = _holds.get(ip, 0) + 1
+        return True
+
+
+def _drop_hold_slot(ip: str) -> None:
+    with _holds_lock:
+        remaining = _holds.get(ip, 0) - 1
+        if remaining > 0:
+            _holds[ip] = remaining
+        else:
+            _holds.pop(ip, None)
 
 CLIENT_TOOLS = [
     ("libssh", "TOOL_HYDRA", "Hydra"),
@@ -285,6 +323,16 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
     RFC 4253 lets a server send arbitrary lines before its version string, so a
     conforming client keeps waiting. Capped so our own socket table stays bounded.
     """
+    if not _take_hold_slot(ip):
+        # Already holding as many of this address as we are willing to. Closing
+        # is the honest outcome: the alternative is letting one scanner fill
+        # the listener, which costs us far more than it costs them.
+        try:
+            sock.close()
+        except OSError:
+            pass
+        return
+
     identity.score_named_event(ip, "TARPIT_ENGAGED", payload="ssh tarpit", service=SERVICE)
     deadline = time.time() + TARPIT_MAX_SECONDS
     held = 0.0
@@ -310,23 +358,32 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
     # holds that is hours of imaginary time.
     last_ok = time.time()
     try:
-        sock.settimeout(TARPIT_BYTE_DELAY + 5)
-        for char in SSH_BANNER:
-            if time.time() > deadline:
-                break
-            sock.sendall(char.encode())
-            last_ok = time.time()
-            time.sleep(TARPIT_BYTE_DELAY)
+        sock.settimeout(TARPIT_LINE_MAX + 5)
+        # Never send the version string. This used to write SSH_BANNER first
+        # and then junk, which is backwards: once the version exchange
+        # completes the client expects KEXINIT, so trailing garbage is a
+        # protocol error it can act on -- and did, in about forty seconds
+        # every time.
+        #
+        # RFC 4253 4.2 lets a server send any number of other lines *before*
+        # its version string, and a conforming client must skip them and keep
+        # reading. Withholding the banner leaves it nothing to object to: the
+        # only way out is its own timeout. That is the whole of endlessh, and
+        # it is the difference between holding a scanner for forty seconds and
+        # holding it until it gives up on its own terms.
         while time.time() < deadline:
             junk = "".join(random.choice(string.ascii_letters + string.digits)
                            for _ in range(random.randint(8, 40)))
             sock.sendall((junk + "\r\n").encode())
             last_ok = time.time()
             recorder.write_output(junk + "\r\n")
-            time.sleep(random.uniform(5.0, 12.0))
+            # Short enough to keep resetting a per-read deadline, jittered so
+            # the interval is not itself a signature.
+            time.sleep(random.uniform(TARPIT_LINE_MIN, TARPIT_LINE_MAX))
     except (OSError, socket.timeout):
         pass
     finally:
+        _drop_hold_slot(ip)
         tarpit.end_hold(hold_key)
         held = max(last_ok - started, 0.0)
         recorder.write_output(

@@ -236,6 +236,9 @@ services:
       SSH_HOST_KEY: /app/state/ssh_host_key
       SSH_MAX_CONNECTIONS: ${SSH_MAX_CONNECTIONS:-200}
       SSH_TARPIT_MAX_SECONDS: ${SSH_TARPIT_MAX_SECONDS:-1800}
+      SSH_TARPIT_LINE_MIN: ${SSH_TARPIT_LINE_MIN:-1.5}
+      SSH_TARPIT_LINE_MAX: ${SSH_TARPIT_LINE_MAX:-4.0}
+      SSH_TARPIT_PER_IP: ${SSH_TARPIT_PER_IP:-8}
     ports:
       - "22:2222"
     volumes:
