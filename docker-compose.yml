@@ -49,6 +49,10 @@ x-honeypot-env: &honeypot-env
   HONEYPOT_IGNORE_GATEWAY: ${HONEYPOT_IGNORE_GATEWAY:-1}
   HONEYPOT_ACCEPT_ANY_PASSWORD: ${HONEYPOT_ACCEPT_ANY_PASSWORD:-0}
   HONEYPOT_ACCEPT_WORDLIST: ${HONEYPOT_ACCEPT_WORDLIST:-}
+  # Published defaults, so they are a fingerprint like any other -- change them
+  # per deployment for the same reason the persona exists.
+  FAKE_BUSYBOX_VERSION: ${FAKE_BUSYBOX_VERSION:-1.30.1}
+  FAKE_BUSYBOX_BUILD: ${FAKE_BUSYBOX_BUILD:-2019-10-28 12:23:11 UTC}
   # `nmap` in either fake shell reports on the attacker's own address. Set to 0
   # to keep them talking instead -- see .env.example for the trade-off.
   HONEYPOT_SCANBACK: ${HONEYPOT_SCANBACK:-1}
