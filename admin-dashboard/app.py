@@ -370,8 +370,29 @@ def logout():
 
 # ---------------------------------------------------------------- data access
 
+def honeypot_redis_error():
+    """None when redis-honeypot answers, otherwise why it does not.
+
+    Worth asking separately, because the identity store being unreachable and
+    the identity store being empty produce the same empty page otherwise. That
+    is a genuinely confusing failure -- the event feed keeps updating from disk
+    while every attacker profile reports "unknown IP", which reads like data
+    loss rather than a broken connection.
+    """
+    try:
+        _redis_honeypot().ping()
+        return None
+    except redis.RedisError as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
 def iter_identities():
-    """Yield (ip_hash, identity dict) for every tracked IP."""
+    """Yield (ip_hash, identity dict) for every tracked IP.
+
+    Swallows connection errors so a page still renders; callers that care about
+    the difference between "none" and "could not ask" should call
+    honeypot_redis_error() first.
+    """
     try:
         client = _redis_honeypot()
         for key in client.scan_iter("hp:identity:*", count=200):
@@ -873,7 +894,11 @@ def dashboard():
             "status": status_of(identity),
         })
     rows.sort(key=lambda r: r["last_seen"], reverse=True)
-    return render_template("dashboard.html", rows=rows, csrf_token=g.csrf_token)
+    # Only asked when the list came back empty: a healthy deployment renders
+    # this page constantly and does not need a PING every time.
+    return render_template("dashboard.html", rows=rows,
+                           redis_error=honeypot_redis_error() if not rows else None,
+                           csrf_token=g.csrf_token)
 
 
 # Wrappers an attacker types before the command that matters. Counting the

@@ -53,6 +53,19 @@
       </tbody>
     </table>
   </div>
+  {% elif redis_error %}
+  <div class="err">
+    <strong>Cannot reach redis-honeypot.</strong>
+    Attacker profiles, scores and ban state all live there, so this page and
+    every <span class="mono">/ip/</span> page will look empty until it answers
+    &mdash; the event feed below keeps working because it reads the log off
+    disk. Nothing is lost.
+    <div class="sub mono">{{ redis_error }}</div>
+    <div class="sub">
+      Check with <span class="mono">docker compose ps redis-honeypot</span> and
+      <span class="mono">docker compose logs --tail=40 redis-honeypot</span>.
+    </div>
+  </div>
   {% else %}
   <div class="empty">
     No source addresses recorded yet. Anything that connects to an exposed

