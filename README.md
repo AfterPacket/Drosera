@@ -170,6 +170,37 @@ Together those mean code execution inside a container is a dead end: nothing to
 write to, nothing to execute from, nothing to fetch. See `deploy/README.md` §18
 for the escape threat model and the commands to verify each control.
 
+## When the identity store goes away
+
+Redis holds every identity, score and ban. If it becomes unreachable the
+honeypot keeps answering connections and keeps writing them to
+`storage/logs/`, because that is a file and needs nothing else — but scoring,
+tarpitting and banning all stop. Enforcement is gone while collection carries
+on, and on a dashboard that looks exactly like a quiet day.
+
+So it says so, in three places:
+
+- **`IDENTITY_STORE_DEGRADED`** is written to the event log the moment it is
+  detected, and again as `IDENTITY_STORE_RECOVERED` when it comes back. Both
+  are in the Telegram alert set. The event log is on the filesystem, so this
+  path works precisely when Redis does not.
+- **The live feed** shows a banner explaining that profiles are unreachable
+  rather than an empty table.
+- **`./deploy/smoke-test.sh`** fails if any container cannot reach Redis.
+
+A circuit breaker sits under all of it. The cached client keeps accepting
+writes after the server has gone, so every call used to pay the full
+three-second timeout before falling back — on every connection, on every
+service. Slow enough to change how the honeypot behaves under load, which is a
+deception failure on top of an availability one. After three consecutive
+failures the breaker opens for 30 seconds and calls short-circuit straight to
+the local fallback; it closes again on the first success.
+
+The deliberate choice here is to **fail open, loudly**. Refusing connections
+while Redis is down would turn a degraded honeypot into a dead one and throw
+away the data that is still perfectly collectable. Tune with
+`REDIS_BREAKER_FAILURES` and `REDIS_BREAKER_COOLDOWN`.
+
 ## Fail-safes
 
 Built to survive unattended:

@@ -261,6 +261,11 @@ def alert_event(ip: str, event_type: str, reason: str = "", service: str = "",
 _TELEGRAM_EVENTS = {
     "BAN", "TARPIT_ENGAGED", "REVERSE_SHELL", "SQLI_OOB",
     "FILE_UPLOAD", "TOOL_METASPLOIT", "TOOL_SQLMAP",
+    # Not an attack -- the appliance telling you it has stopped enforcing.
+    # Losing the identity store leaves every service answering and logging
+    # while nothing is scored, tarpitted or banned, and that looks identical
+    # to a quiet day unless something says so out loud.
+    "IDENTITY_STORE_DEGRADED", "IDENTITY_STORE_RECOVERED",
 }
 
 

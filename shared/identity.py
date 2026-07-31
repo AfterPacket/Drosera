@@ -64,8 +64,78 @@ def hash_ip(ip: str) -> str:
     return hashlib.md5(ip.encode()).hexdigest()
 
 
+# Redis holds every identity, score and ban. Losing it does not stop the
+# honeypot -- connections are still answered and still logged to disk -- but it
+# does stop scoring, tarpitting and banning, which is most of the point. Two
+# things follow from that, and neither was true before an outage taught us:
+#
+#   1. It must be LOUD. A silent downgrade to "log only" looks exactly like a
+#      quiet day on the dashboard. A DEGRADED event goes to the JSONL log,
+#      which is on the filesystem and needs no Redis to write, so it appears in
+#      the live feed and in whatever alerting is configured.
+#   2. It must be FAST. The cached client keeps answering after the server has
+#      gone, so every call paid the full three-second timeout before falling
+#      back -- on every connection, on every service. That is slow enough to
+#      change how the honeypot behaves, which is a deception failure on top of
+#      an availability one. The breaker below short-circuits to the fallback
+#      until it is worth trying again.
+BREAKER_TRIP = int(os.getenv("REDIS_BREAKER_FAILURES", "3"))
+BREAKER_COOLDOWN = int(os.getenv("REDIS_BREAKER_COOLDOWN", "30"))
+
+_health = {"failures": 0, "open_until": 0.0, "degraded": False}
+_health_lock = threading.Lock()
+
+
+def _announce(event_type: str, reason: str) -> None:
+    """Record a state change to the event log. Never raises."""
+    try:
+        from . import alerting                       # deferred: avoids a cycle
+        alerting.alert_event(ip="0.0.0.0", event_type=event_type,
+                             reason=reason, service="identity")
+    except Exception:                                # noqa: BLE001
+        pass
+
+
+def _note_failure() -> None:
+    global _redis_client
+    with _health_lock:
+        _health["failures"] += 1
+        if _health["failures"] < BREAKER_TRIP:
+            return
+        _health["open_until"] = time.time() + BREAKER_COOLDOWN
+        first = not _health["degraded"]
+        _health["degraded"] = True
+    # Drop the cached client so the next attempt after the cooldown reconnects
+    # rather than reusing a socket to a server that is gone.
+    _redis_client = None
+    if first:
+        _announce("IDENTITY_STORE_DEGRADED",
+                  f"redis unreachable at {REDIS_HOST}:{REDIS_PORT}; "
+                  "connections are still logged but NOT scored, tarpitted or banned")
+
+
+def _note_success() -> None:
+    with _health_lock:
+        recovered = _health["degraded"]
+        _health["failures"] = 0
+        _health["open_until"] = 0.0
+        _health["degraded"] = False
+    if recovered:
+        _announce("IDENTITY_STORE_RECOVERED",
+                  "redis reachable again; scoring and enforcement resumed")
+
+
+def degraded() -> bool:
+    """True while the identity store is known to be unreachable."""
+    with _health_lock:
+        return _health["degraded"]
+
+
 def _client() -> Optional[redis.Redis]:
     global _redis_client
+    with _health_lock:
+        if _health["open_until"] > time.time():
+            return None                              # breaker open: fail fast
     if _redis_client is not None:
         return _redis_client
     with _redis_lock:
@@ -83,7 +153,9 @@ def _client() -> Optional[redis.Redis]:
                 client.ping()
                 _redis_client = client
             except Exception:
+                _note_failure()
                 return None
+    _note_success()
     return _redis_client
 
 
@@ -218,15 +290,21 @@ def get_or_create_identity(ip: str) -> Dict[str, Any]:
     try:
         cached = client.get(key)
         if cached:
+            _note_success()
             return json.loads(cached)
         identity = _generate(ip)
         # NX so two services racing on the same IP agree on one identity.
         if not client.set(key, json.dumps(identity), ex=IDENTITY_TTL, nx=True):
             cached = client.get(key)
             if cached:
+                _note_success()
                 return json.loads(cached)
+        _note_success()
         return identity
     except Exception:
+        # This is the call every connection makes, so it is where an outage is
+        # noticed first and where the breaker is armed.
+        _note_failure()
         return _fallback(ip)
 
 
