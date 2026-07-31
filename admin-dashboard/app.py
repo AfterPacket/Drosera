@@ -1732,6 +1732,8 @@ def api_ban(ip):
             identity = json.loads(raw)
             identity["banned"] = True
             identity["rickroll"] = True
+            # Banning overrides a standing unban rather than fighting it.
+            identity["ban_exempt_until"] = 0
             client.set(f"hp:identity:{digest}", json.dumps(identity), ex=7 * 24 * 3600)
     except (redis.RedisError, json.JSONDecodeError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -1765,12 +1767,24 @@ def api_unban(ip):
             identity = json.loads(raw)
             identity["banned"] = False
             identity["rickroll"] = False
+            # Same reason as the tarpit release: the score is untouched and
+            # still over the ban threshold, so without a window the next
+            # scored event re-bans within a second of them reconnecting --
+            # and writes another fail2ban line, adding a firewall rule rather
+            # than removing one.
+            identity["ban_exempt_until"] = time.time() + TARPIT_RELEASE_SECONDS
             client.set(f"hp:identity:{digest}", json.dumps(identity), ex=7 * 24 * 3600)
     except (redis.RedisError, json.JSONDecodeError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
     audit("MANUAL_UNBAN", target_ip=ip)
-    return jsonify({"ok": True, "ip": ip, "banned": False})
+    # The ufw rule is fail2ban's and outlives this: it holds for its own
+    # bantime regardless of what the dashboard says. Reported rather than
+    # attempted, because this container has no business running iptables.
+    return jsonify({"ok": True, "ip": ip, "banned": False,
+                    "exempt_seconds": TARPIT_RELEASE_SECONDS,
+                    "note": ("host firewall rule, if any, is held by fail2ban; "
+                             f"drop it with: fail2ban-client set honeypot unbanip {ip}")})
 
 
 def _set_tarpit(ip: str, active: bool):

@@ -474,7 +474,8 @@ def score_event(ip: str, points: float, event_type: str, reason: str,
     )
 
     newly_banned = False
-    if scoring.is_bannable(new_score) and not identity.get("banned"):
+    if (scoring.is_bannable(new_score) and not identity.get("banned")
+            and not is_ban_exempt(identity)):
         ban(ip, score=new_score, reason=event_type, tool=tool,
             services=",".join(touched))
         newly_banned = True
@@ -562,6 +563,13 @@ def release_tarpit(ip: str, reason: str = "Operator release",
     return identity
 
 
+def _exempt_until(identity: Dict[str, Any], field: str) -> bool:
+    try:
+        return float(identity.get(field) or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
+
+
 def is_exempt(identity: Dict[str, Any]) -> bool:
     """Whether an operator has released this address from the tarpit.
 
@@ -570,10 +578,21 @@ def is_exempt(identity: Dict[str, Any]) -> bool:
     dashboard's release button mean what it says, and it expires on its own so
     a release cannot silently become permanent.
     """
-    try:
-        return float(identity.get("tarpit_exempt_until") or 0) > time.time()
-    except (TypeError, ValueError):
-        return False
+    return _exempt_until(identity, "tarpit_exempt_until")
+
+
+def is_ban_exempt(identity: Dict[str, Any]) -> bool:
+    """Whether an operator has unbanned this address.
+
+    The same shape as the tarpit release and for the same reason -- the score
+    is left alone, so it is still over the ban threshold and the next scored
+    event re-bans -- but the consequence is worse. Every ban writes a line to
+    the fail2ban evidence log, and fail2ban's action is
+    `ufw insert 1 deny from <ip>`. An unban that is undone a second later
+    therefore leaves a second firewall rule behind it, and the operator sees
+    the address banned again with no idea why.
+    """
+    return _exempt_until(identity, "ban_exempt_until")
 
 
 def is_tarpitted(ip: str) -> bool:
@@ -612,18 +631,35 @@ def ban(ip: str, score: float = 0, reason: str = "MANUAL", tool: str = "",
             client.setex(f"hp:banned:{hash_ip(ip)}", ttl, "1")
         except Exception:
             pass
-    update_identity(ip, {"banned": True, "rickroll": True})
+    # Banning clears any standing unban: an operator putting someone back is
+    # overriding their earlier decision, not fighting it.
+    update_identity(ip, {"banned": True, "rickroll": True, "ban_exempt_until": 0})
     alerting.log_ban_event(ip, score=score, reason=reason, tool=tool, services=services)
 
 
-def unban(ip: str) -> None:
+def unban(ip: str, seconds: float = None) -> None:
+    """Lift a ban, and stop the score putting it straight back.
+
+    The score is left alone -- it is the record of what they did -- so it is
+    still over the ban threshold, and without an exemption the next scored
+    event re-bans within a second of the attacker reconnecting. That also
+    writes a second line to the fail2ban evidence log, so the unban would cost
+    an extra host firewall rule rather than removing one.
+
+    Note this does NOT remove an existing ufw rule. fail2ban owns those and
+    holds them for its own bantime; drop one by hand with:
+
+        sudo fail2ban-client set honeypot unbanip <ip>
+    """
+    window = RELEASE_SECONDS if seconds is None else seconds
     client = _client()
     if client is not None:
         try:
             client.delete(f"hp:banned:{hash_ip(ip)}")
         except Exception:
             pass
-    update_identity(ip, {"banned": False, "rickroll": False})
+    update_identity(ip, {"banned": False, "rickroll": False,
+                         "ban_exempt_until": time.time() + window})
 
 
 def record_credential(ip: str, username: str, password: str, service: str) -> int:

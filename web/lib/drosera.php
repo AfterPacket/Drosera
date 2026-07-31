@@ -687,6 +687,12 @@ function sb_tarpit_exempt(array $identity): bool
     return (float)($identity['tarpit_exempt_until'] ?? 0) > microtime(true);
 }
 
+/** The same, for an operator unban. See identity.is_ban_exempt. */
+function sb_ban_exempt(array $identity): bool
+{
+    return (float)($identity['ban_exempt_until'] ?? 0) > microtime(true);
+}
+
 function is_tarpitted(string $ip): bool
 {
     if (sb_is_ignored($ip)) {
@@ -830,7 +836,11 @@ function score_event(string $ip, string $eventType, string $payload = '', string
         'headers' => sb_request_headers(),
     ]);
 
-    if ($new >= BAN_THRESHOLD && empty($identity['banned'])) {
+    // Not while unbanned. The score is unchanged by an unban, so without this
+    // the next scored request re-bans -- and writes another fail2ban line, so
+    // lifting a ban would add a firewall rule instead of removing one.
+    if ($new >= BAN_THRESHOLD && empty($identity['banned'])
+        && !sb_ban_exempt($identity)) {
         ban_ip($ip, $new, $eventType, $tool, implode(',', $services));
         $identity['banned'] = true;
     }

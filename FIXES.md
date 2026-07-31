@@ -51,6 +51,22 @@ tarpitted again and nothing says why.
 the state is not the same as changing the outcome. The question to ask of any
 manual override is what recomputes it, and how soon.
 
+**Unban had it too, and worse.** `unban()` cleared the flag and left the score,
+so the next scored event re-banned on the same reasoning -- but a ban is not
+just a flag. It writes a line to `storage/evidence/fail2ban.log`, and
+fail2ban's action is `ufw insert 1 deny from <ip>`. An unban undone a second
+later therefore *added* a host firewall rule rather than removing one, and the
+operator saw the address banned again with no explanation. Same exemption,
+same expiry.
+
+Worth knowing separately: unbanning in the dashboard has never removed an
+existing ufw rule and still does not. Those belong to fail2ban, which holds
+them for its own `bantime` (7 days here). Drop one by hand:
+
+```
+sudo fail2ban-client set honeypot unbanip <ip>
+```
+
 ---
 
 ## One probe was enough to identify the honeypot
