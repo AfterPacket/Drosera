@@ -67,3 +67,9 @@ Thumbs.db
 # Project website. Deployed from its own host, not from this repo -- and kept
 # out of it so the marketing page and the appliance are never entangled.
 site/
+
+# Scratch file for `git commit -F COMMIT_MSG.txt`. PowerShell cannot pipe a
+# here-string into `git commit -F-`, so long messages go via a file -- and a
+# `git add -A` before the commit will otherwise sweep the message into the
+# commit it describes, which is how it landed in 75852a0.
+COMMIT_MSG.txt

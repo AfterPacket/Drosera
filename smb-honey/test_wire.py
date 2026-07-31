@@ -14,11 +14,56 @@ import os
 import pathlib
 import struct
 import sys
+import tempfile
+import types
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "smb-honey"))
 os.environ.setdefault("REDIS_HOST", "127.0.0.1")
+# Never the real storage: a test run should not land in the evidence log next
+# to actual attacker traffic.
+os.environ.setdefault("STORAGE_PATH", tempfile.mkdtemp(prefix="drosera-test-"))
+
+
+def stub_redis_if_missing() -> None:
+    """Let this run on a host that has no redis-py.
+
+    Nothing here exercises Redis -- these are wire-format checks -- but
+    importing the service pulls in shared.identity, which imports redis at
+    module scope. The package is installed inside the containers, so on the
+    host the import fails before a single check runs.
+
+    identity._client() catches any exception from the constructor and falls
+    back to its degraded path, so a stub that refuses to connect is
+    indistinguishable from Redis being down, which the appliance already
+    handles.
+    """
+    try:
+        import redis  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+
+    class Unavailable(Exception):
+        pass
+
+    class Redis:
+        def __init__(self, *args, **kwargs):
+            raise Unavailable("redis-py not installed; stubbed for tests")
+
+    module = types.ModuleType("redis")
+    module.Redis = Redis
+    module.RedisError = Unavailable
+    module.ConnectionError = Unavailable
+    module.TimeoutError = Unavailable
+    module.exceptions = types.SimpleNamespace(
+        RedisError=Unavailable, ConnectionError=Unavailable,
+        TimeoutError=Unavailable)
+    sys.modules["redis"] = module
+
+
+stub_redis_if_missing()
 
 import fake_smbd as s  # noqa: E402
 
