@@ -128,13 +128,31 @@ chmod 0644 /etc/cron.d/drosera-watchdog
 
 # Applied before the stack is started. Re-running this bounces the daemon, so it
 # only rewrites daemon.json when the content would actually change.
+# NOTE: `"icc": false` is deliberately NOT set here, and must not be added back.
+#
+# It reads like an obvious hardening win and it breaks the entire appliance.
+# Docker implements it by setting the `isolated` flag on each bridge port, not
+# by adding iptables rules, and it becomes the inherited default for every
+# user-defined bridge. Isolated ports can still reach the bridge itself, so the
+# host can talk to every container and the deployment looks healthy -- while no
+# container can reach Redis, identities stop being tracked, and scoring, bans
+# and tarpits all silently stop.
+#
+# It is close to undiagnosable from the usual evidence: DNS resolves, the
+# addresses are right, both containers are on the same bridge with their veths
+# UP, `iptables -L` shows nothing dropped anywhere, and connections simply time
+# out. The per-network `com.docker.network.bridge.enable_icc: "true"` in
+# docker-compose.yml does not reliably override it either.
+#
+# Container-to-container traffic on this box is between our own services on
+# networks no attacker can reach. Egress is what actually needs blocking, and
+# that is done properly below with DOCKER-USER rules.
 DAEMON_JSON=/etc/docker/daemon.json
 DESIRED_DAEMON=$(cat <<'EOF'
 {
   "no-new-privileges": true,
   "live-restore": true,
   "userland-proxy": false,
-  "icc": false,
   "log-driver": "json-file",
   "log-opts": { "max-size": "10m", "max-file": "3" },
   "default-ulimits": {
