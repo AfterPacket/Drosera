@@ -26,8 +26,8 @@ The whole appliance is that plant:
 
 | Sundew | Here |
 |---|---|
-| Looks like water | A convincing small-business site, real-looking banners, an SSH server that accepts your password |
-| The glue | The tarpit — a claimed 10 MB body trickled at ~3 KB/s, an SSH banner dripped a byte at a time |
+| Looks like water | A convincing small-business site, real-looking banners, an SSH server that accepts a weak password |
+| The glue | The tarpit — a claimed 10 MB body trickled at ~3 KB/s, and an SSH version string that never arrives at all |
 | Folding in slowly | Holds measured in minutes, deliberately not seconds; the cost is the attacker's time |
 | Digestion | Credentials, payload hashes, NTLMv2 responses and full session recordings turned into evidence |
 
@@ -277,6 +277,40 @@ score is one number per address in Redis, so an IP pushed over the threshold by
 SSH is tarpitted on SMB too. Sampling that state only at connection open left a
 gap — a long share enumeration would keep getting fast answers until it
 reconnected — so scored events now act on the verdict they already return.
+
+**What ends a hold is the client's read deadline, not our ceiling.** This is
+the least intuitive thing about tuning a tarpit, and the numbers say it
+plainly: `SSH_TARPIT_MAX_SECONDS` was 1800 and holds were ending at 38
+seconds. Two reasons, both about what the far side is measuring.
+
+The SSH tarpit withholds the version string entirely. RFC 4253 §4.2 lets a
+server send any number of lines before it, and a conforming client must skip
+them and keep reading — so there is nothing for it to object to and the only
+exit is its own timeout. Sending a valid banner first and junk afterwards, as
+this used to, completes the version exchange and makes the next byte a protocol
+error the client can act on immediately.
+
+And a client measures *silence*, not elapsed time. Every line resets its read
+deadline, so **shorter gaps hold it longer**: `SSH_TARPIT_LINE_MIN/MAX` at
+1.5–4s keeps a connection alive that a 5–12s gap would lose. Widening the
+interval does not make the tarpit slower, it makes it shorter.
+
+The cost is asymmetric in the right direction — a socket and a sleeping thread
+for us, a socket and a worker slot in their scan queue for them — but longer
+holds mean connections *accumulate*, which is the trap. At half an hour, a
+scanner reconnecting once a minute reaches thirty simultaneous slots against a
+200-connection listener. `SSH_TARPIT_PER_IP` caps concurrent holds per address
+so a flood costs its own source rather than our coverage of everyone else.
+
+**Logins are not all accepted.** Accepting every credential is a one-probe
+honeypot test: a scanner offers a plausible guess, then one that cannot exist
+anywhere, and two successes tell it nothing here is real. `shared/credentials.py`
+accepts common and guessable credentials — what a neglected box with a weak
+password actually falls to — and refuses machine-generated strings, which no
+administrator ever set and which is precisely why a prober picks one. Build a
+per-deployment list from your own captured logins with
+`deploy/extract-credentials.py`; the built-in list is published, and a published
+accept-list is the weakness it defends against.
 
 An **all-time** panel sits above the per-day view: unique addresses, addresses
 blocked, events, attacker-hours wasted, countries and the busiest day across the
@@ -952,8 +986,14 @@ Running on a live VPS taking real internet traffic. Confirmed in production:
   sessions rather than synthetic input.
 - The tarpit. One source accumulated 79 holds averaging ~63 seconds; the
   aggregate lands around 2,200 attacker-minutes per day at roughly 1.6
-  concurrent holds, with the HTTP tarpit contributing about 60%.
+  concurrent holds, with the HTTP tarpit contributing about 60%. Those figures
+  predate withholding the SSH version string, which removed the protocol error
+  that had been ending SSH holds at about 38 seconds regardless of the
+  configured ceiling.
 - Ban and tarpit thresholds, after recalibration against real scanner volume.
+- The credential policy, against a live accept-all probe: `charles:charles`
+  followed by `345gs5662d34:345gs5662d34`, where accepting both had ended the
+  engagement 2.8 seconds later.
 - The dashboard, stats, day-scoping and the attack map.
 - Daily history and lifetime totals. The event log is one file per UTC day and
   past days recompute from their own file, so the day picker walks the whole

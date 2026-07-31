@@ -6,6 +6,139 @@ next one will look just as innocent.
 
 ---
 
+## The tarpit sent a valid banner, then invalid garbage
+
+**Symptom.** `SSH_TARPIT_MAX_SECONDS=1800`, and every hold ending at the same
+place:
+
+```
+client gave up after 38s
+client gave up after 39s
+client gave up after 35s
+client gave up after 43s
+```
+
+**Cause.** `run_tarpit()` sent the version string first and junk afterwards:
+
+```python
+for char in SSH_BANNER:
+    sock.sendall(char.encode())      # version exchange completes here
+while time.time() < deadline:
+    sock.sendall((junk + "\r\n").encode())   # ...and this is now a violation
+```
+
+Once the version exchange completes, the client expects `KEXINIT`. Anything
+else is a protocol error it can act on — so it did, in about forty seconds,
+every time. The ceiling was never reached because the ceiling was never what
+ended the connection.
+
+Endlessh holds clients for days by doing the opposite: it never sends a version
+string at all. RFC 4253 §4.2 permits any number of lines before it and requires
+a conforming client to skip them, so there is nothing to object to and the only
+exit is the client's own timeout.
+
+**The second half.** A client measures silence, not elapsed time — every line
+resets its read deadline. The loop slept 5–12 seconds between lines, wide
+enough to lose a client with a 10-second read timeout during a gap. Shorter
+gaps hold longer, which reads backwards until you notice which side is doing
+the measuring.
+
+**Fix.** No version string, and `SSH_TARPIT_LINE_MIN/MAX` at 1.5–4s. Because
+holds now accumulate rather than expiring in under a minute,
+`SSH_TARPIT_PER_IP` caps concurrent holds per address — at half an hour, a
+scanner reconnecting once a minute reaches thirty slots against a
+200-connection listener, and seven of those would take the whole thing.
+
+**Avoid it.** A timeout you control is not the one that matters. Before tuning
+any limit, check which end is actually terminating the exchange — the observed
+number here was 2% of the configured one, and that gap was the entire finding.
+
+---
+
+## Command substitution stopped at the first inner parenthesis
+
+**Symptom.** An attacker's recon script answered with its own source code:
+
+```
+"UNAME:$(uname -s -v -n -m || /bin/uname -s -v -n -m || ...)"
+```
+
+**Cause.** The substitution pattern could not match nested parentheses:
+
+```python
+_SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+```
+
+Every SSH dropper opens with a line shaped like
+
+```sh
+uname=$(uname -s -v -n -m 2>/dev/null || ( [ -f /proc/version ] && head -1 ... ))
+```
+
+and `[^()]*` stops dead at that inner `(`. The substitution never matched, so
+the assignment stored its own source text, and `echo "UNAME:$uname"` handed the
+attacker back the command they had just sent.
+
+Two smaller tells rode along with it. `case ... in *x*) ;; *) ... esac` is split
+on `;` like anything else, so its fragments arrived looking like command names
+and produced `bash: case: command not found` — which no shell has ever printed.
+And `rm` refused to delete a file the attacker had just written, chmod'd and
+executed successfully; the inconsistency is louder than strictness.
+
+**Why it hid.** Nothing errored. `_cmd_echo` did its job perfectly, printing a
+variable whose value happened to be the attacker's script. The transcript looked
+like a shell answering questions, and the profiling scripts that run this are
+precisely the ones that never come back — so the absence looked like disinterest.
+
+**Fix.** A scanner that tracks paren depth and quoting instead of a regex.
+Shell grammar keywords resolve to silence, as does anything ending in `)`,
+which is a case-branch label and never a command name. Files created in the
+session can be deleted.
+
+**Avoid it.** `[^()]*` is a bet that the input has no nesting. Attacker input is
+the worst possible place to make that bet, and the failure was silent in both
+directions: no exception, and output that looked like output.
+
+---
+
+## Bare `busybox` said the binary was not installed
+
+**Symptom.** A telnet loader runs its shell-escape sequence and leaves eight
+seconds later:
+
+```
+enable / system / shell / sh / linuxshell / ping ; s / /bin/busybox
+```
+
+**Cause.** `/bin/busybox <TAG>` was already answered correctly with
+`applet not found`, but the unwrap required arguments:
+
+```python
+if command == "busybox" and args:      # bare `busybox` has none
+```
+
+With no arguments it fell through to `bash: busybox: command not found`, which
+on an embedded target means the binary is absent — and busybox is the whole
+toolchain those loaders depend on, so that is the end of the conversation.
+
+Two neighbours in the same session were also wrong. `ping` reported
+`command not found`, and it exists on essentially every Linux host. `enable` did
+too, and it is a bash *builtin* — the error message denying it starts with
+`bash:`, which contradicts itself.
+
+**Fix.** Bare `busybox` prints a version banner and applet list, `--list` is
+treated as busybox's own option rather than an applet name, and `enable` lists
+builtins. `ping` answers — and answers the way `wget` does, an address failing
+to route and a name failing to resolve, because a box whose ping succeeds and
+whose wget then times out is a box that does not exist.
+
+**Avoid it.** "Command not found" is a claim about the machine, and it has to be
+consistent with every other claim. The busybox version string is now
+`FAKE_BUSYBOX_VERSION` for the same reason the persona is generated: a constant
+published in this repository identifies deployments that never changed it.
+
+---
+
 ## "Release tarpit" lasted exactly one packet
 
 **Symptom.** An operator releases an address from the tarpit to watch it work,
