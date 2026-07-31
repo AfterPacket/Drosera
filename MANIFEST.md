@@ -125,6 +125,7 @@ honeypot container is a member of.
 | `generate-persona.sh` | Writes `persona/persona.json`: randomised banners, hostnames, kernels, company, credentials and file sizes. Run once before going live; the result is gitignored and worth backing up |
 | `watchdog.sh` | Cron fail-safe: enforces the 90-day event-log retention, prunes storage under disk pressure, restarts dead or unhealthy containers |
 | `logrotate-drosera` | Retention policy for the evidence and audit logs. Deliberately does **not** cover `storage/logs/*.jsonl`, which is already one file per day |
+| `clean-stale-nft.sh` | Removes `raw` PREROUTING rules naming a bridge that no longer exists. Docker leaks these when a network is destroyed during a daemon restart, and they then drop every packet to the addresses they name — invisibly, since that chain runs before conntrack and before FORWARD |
 | `update-geoip.sh` | Fetches the MaxMind GeoLite2 database with the operator's credentials. Run from cron; MaxMind refreshes weekly |
 | `update-worldmap.sh` | Fetches the Natural Earth land outline for the attack map. Public domain, so the result can be committed |
 | `preflight.sh` | Static validation before deploying: Python/PHP/shell syntax, `docker compose config` on both profiles, `.env` sanity, git-safety of secret paths, host RAM and `vm.max_map_count` |

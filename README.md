@@ -437,6 +437,16 @@ docker compose up -d --build      # --build matters; see below
 ./deploy/smoke-test.sh
 ```
 
+If an update requires restarting the Docker daemon, **stop the stack first**.
+Destroying networks while the daemon restarts leaves stale nftables rules that
+silently drop all container-to-container traffic — see Troubleshooting.
+
+```bash
+docker compose down
+sudo systemctl restart docker
+docker compose up -d --build
+```
+
 If `.env.example` gained keys since your `.env` was written, diff them before
 restarting — a missing key falls back to a default that may not be what you
 want:
@@ -568,6 +578,50 @@ conversation.
 ## Troubleshooting
 
 Everything below was hit during a real first deployment.
+
+**Every container suddenly times out reaching Redis; the dashboard shows no
+attackers but the event feed keeps updating.** Stale nftables rules from a
+bridge that no longer exists.
+
+```bash
+sudo ./deploy/clean-stale-nft.sh
+```
+
+Docker ≥28 writes rules into the `raw` PREROUTING chain so a published port
+cannot be bypassed by addressing a container directly:
+
+```
+ip daddr 172.25.0.2 iifname != "br-4964bdc7466b" drop
+```
+
+They are meant to go with the network. Destroy a network while the daemon is
+restarting — `systemctl restart docker` then `docker compose down`, say — and
+they leak. The named bridge stops existing, and from then on the rule drops
+*every* packet to that address, because none of them can have arrived on an
+interface that is gone.
+
+It defeats every normal diagnostic, so recognise it by the pattern rather than
+by hunting:
+
+| Looks like | Actually because |
+|---|---|
+| `iptables -L` shows nothing dropped | `raw` PREROUTING runs before conntrack *and* before FORWARD |
+| The bridge seems healthy — ARP resolves | ARP is not IP, so the rule does not match it |
+| The **host** can reach the container fine | Host traffic goes through OUTPUT, not PREROUTING |
+| Adding `ACCEPT` to `DOCKER-USER` changes nothing | The packet is already gone by then |
+| `tcpdump` on the veth shows the SYN, on the bridge shows nothing | Dropped at bridge ingress, between the two |
+
+Confirm directly with `sudo nft list chain ip raw PREROUTING` — look for a rule
+with a high drop count naming a `br-…` that `ip link show` cannot find.
+`./deploy/smoke-test.sh` now checks for this.
+
+**Avoid it** by stopping the stack *before* touching the daemon, never after:
+
+```bash
+docker compose down            # first
+sudo systemctl restart docker  # then
+docker compose up -d --build
+```
 
 **Honeypot ports are not listening.** `docker inspect <c> --format '{{json
 .NetworkSettings.Ports}}'` returns `null` while `.HostConfig.PortBindings` looks

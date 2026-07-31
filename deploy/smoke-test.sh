@@ -301,6 +301,39 @@ else
     fail "admin-dashboard CANNOT reach redis-admin -- sessions and audit will fail"
 fi
 
+# Stale nftables rules left behind by a destroyed bridge.
+#
+# Docker >=28 writes rules into the `raw` PREROUTING chain to stop published
+# ports being bypassed by addressing a container directly:
+#
+#   ip daddr 172.25.0.2 iifname != "br-<id>" drop
+#
+# They are supposed to go with the network. When a network is destroyed while
+# the daemon is restarting -- `systemctl restart docker` followed by
+# `compose down`, say -- they leak, and the bridge they name stops existing.
+# The rule then drops EVERY packet to that address, because none of them can
+# have arrived on an interface that is gone.
+#
+# It is close to undiagnosable by normal means: `raw` PREROUTING runs before
+# conntrack and before FORWARD, so nothing shows in DOCKER-USER or
+# DOCKER-FORWARD, ARP still works because it is not IP, the host can still
+# reach the container because host traffic uses OUTPUT rather than PREROUTING,
+# and iptables -L never shows the rule at all. Cheap to check, so check it.
+if command -v nft >/dev/null 2>&1; then
+    stale=""
+    for br in $(sudo -n nft list chain ip raw PREROUTING 2>/dev/null \
+                | grep -o 'br-[0-9a-f]\{12\}' | sort -u); do
+        ip link show "$br" >/dev/null 2>&1 || stale="${stale} ${br}"
+    done
+    if [ -z "$stale" ]; then
+        pass "no stale nft rules from destroyed bridges"
+    else
+        fail "stale nft rules reference missing bridge(s):${stale}"
+        printf '        these silently drop all traffic to the addresses they name.\n'
+        printf '        clear with: deploy/clean-stale-nft.sh\n'
+    fi
+fi
+
 printf '\n'
 if [ "$FAILED" -gt 0 ]; then
     printf '\033[31m%d check(s) failed\033[0m\n' "$FAILED"
