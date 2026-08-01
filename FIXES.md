@@ -6,6 +6,48 @@ next one will look just as innocent.
 
 ---
 
+## Wiping the search index made the shipper think it was already done
+
+**Symptom.** Two dashboards over the same events, disagreeing by an order of
+magnitude:
+
+| | Drosera | Kibana |
+|---|---|---|
+| Events | 136,791 | ~3,900 |
+| Attacker-hours | 228 | 9.3 |
+
+**Cause.** `elastic-shipper` checkpoints how far into each log file it has read,
+in `storage/.elastic-shipper.json`. That file lives on the **storage volume**;
+the documents live in **Elasticsearch**. Deleting the Elasticsearch volume —
+which is the standard fix for a cluster that will not start — leaves the
+checkpoint behind, still claiming six days of events were shipped. The shipper
+resumes from those offsets and forwards only what has arrived since.
+
+**Why it hid.** Nothing failed. The shipper logged `elasticsearch ready`, then
+`N events shipped since start` with a small but non-zero N, which is exactly
+what a healthy shipper on a quiet honeypot looks like. The only symptom was a
+number being too low in a different application, and "the new dashboard shows
+less than the old one" reads as a query problem long before it reads as a
+missing-data problem.
+
+**Fix.** `reconcile_state()` runs after provisioning and compares the two: if
+the checkpoint claims meaningful progress and the index holds almost nothing,
+it deletes the checkpoint and re-ships. Safe because document ids are
+`sha1(file:offset)`, so a resend overwrites rather than duplicates — that
+property was already in the design and is what makes self-correction cheap.
+
+Deliberately a floor rather than an equality test. Documents expire under ILM
+while the checkpoint keeps its offsets, so "fewer documents than bytes shipped"
+is normal on an old deployment; only a near-empty index against a substantial
+checkpoint means the index was reset underneath us.
+
+**Avoid it.** State describing a remote system, stored locally, will eventually
+disagree with it. The question to ask of any checkpoint is what happens when
+the thing it describes is rebuilt without it — and if the answer is "silence",
+it needs a reconciliation step rather than a comment.
+
+---
+
 ## The tarpit sent a valid banner, then invalid garbage
 
 **Symptom.** `SSH_TARPIT_MAX_SECONDS=1800`, and every hold ending at the same

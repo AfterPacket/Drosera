@@ -49,6 +49,13 @@ ILM_POLICY = f"{INDEX_PREFIX}-retention"
 PIPELINE = f"{INDEX_PREFIX}-events"
 RETENTION_DAYS = int(os.getenv("ELASTIC_RETENTION_DAYS", "90"))
 
+# Thresholds for deciding the index was reset underneath us. A checkpoint
+# claiming less than this has shipped almost nothing anyway, so re-reading it
+# costs nothing and proves nothing; an index holding more than this is clearly
+# alive and should not be re-sent over.
+RESET_MIN_BYTES = int(os.getenv("ELASTIC_RESET_MIN_BYTES", "65536"))
+RESET_MAX_DOCS = int(os.getenv("ELASTIC_RESET_MAX_DOCS", "100"))
+
 POLL_SECONDS = int(os.getenv("ELASTIC_POLL_SECONDS", "15"))
 BATCH_LINES = int(os.getenv("ELASTIC_BATCH_LINES", "500"))
 MAX_LINE_BYTES = 256 * 1024
@@ -370,6 +377,59 @@ def load_state() -> Dict[str, int]:
         return {}
 
 
+def indexed_count() -> Optional[int]:
+    """How many documents Elasticsearch is actually holding for us."""
+    status, body = es("GET", f"/{INDEX_PREFIX}-*/_count")
+    if status != 200 or not isinstance(body, dict):
+        return None
+    count = body.get("count")
+    return count if isinstance(count, int) else None
+
+
+def reconcile_state() -> None:
+    """Drop the checkpoint if Elasticsearch has clearly lost what it describes.
+
+    The checkpoint records how far into each log file we have read, and it lives
+    on the storage volume -- not in Elasticsearch. Delete the search index and
+    the two disagree silently: the shipper believes it already sent six days of
+    events, the cluster holds none of them, and nothing reports an error. The
+    only symptom is a dashboard whose numbers are an order of magnitude below
+    the honeypot's own, which is a slow thing to notice and a confusing thing to
+    diagnose.
+
+    Re-shipping is safe rather than merely tolerable: document ids are
+    sha1(file:offset), so a resend overwrites the same document. The cost of
+    being wrong here is one redundant pass over the logs; the cost of not
+    checking is data that never arrives.
+
+    Deliberately a floor, not an equality check. Documents legitimately expire
+    under ILM while the checkpoint keeps its offsets, so "fewer than we sent"
+    is normal for an old deployment. Only an index that is empty, or nearly so,
+    against a checkpoint claiming substantial progress means the index was
+    reset underneath us.
+    """
+    state = load_state()
+    if not state:
+        return
+
+    claimed = sum(v for v in state.values() if isinstance(v, int))
+    if claimed < RESET_MIN_BYTES:
+        return
+
+    count = indexed_count()
+    if count is None:                       # cluster unreachable; leave it be
+        return
+    if count > RESET_MAX_DOCS:
+        return
+
+    log(f"checkpoint claims {claimed} bytes shipped but the index holds "
+        f"{count} documents -- reshipping from the start")
+    try:
+        STATE_FILE.unlink()
+    except OSError as error:
+        log(f"could not clear the checkpoint: {error}")
+
+
 def save_state(state: Dict[str, int]) -> None:
     tmp = STATE_FILE.with_suffix(".tmp")
     try:
@@ -517,6 +577,9 @@ def main() -> int:
     if not wait_for_elastic():
         return 1
     provision()
+    # After provision(), so the template and pipeline exist before anything is
+    # re-sent, and before the first cycle reads the checkpoint.
+    reconcile_state()
 
     if "--once" in sys.argv:
         log(f"shipped {cycle()} events")
