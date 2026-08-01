@@ -214,8 +214,26 @@ def ensure_template() -> None:
                     },
                     "service": {"type": "keyword"},
                     "event_type": {"type": "keyword"},
-                    "reason": {"type": "text"},
-                    "payload_excerpt": {"type": "text"},
+                    # text for searching, keyword for counting. Without the
+                    # sub-field these can be matched but never aggregated, so
+                    # "the twenty passwords most often tried" -- which is the
+                    # obvious question to ask of this data -- is unanswerable
+                    # in Kibana even though every attempt is stored.
+                    #
+                    # ignore_above is 512 rather than the usual 256 because
+                    # alerting caps payload_excerpt at 500 characters, and a
+                    # lower limit would silently drop the longest commands out
+                    # of the aggregatable copy while leaving them searchable.
+                    "reason": {
+                        "type": "text",
+                        "fields": {"keyword": {"type": "keyword",
+                                               "ignore_above": 512}},
+                    },
+                    "payload_excerpt": {
+                        "type": "text",
+                        "fields": {"keyword": {"type": "keyword",
+                                               "ignore_above": 512}},
+                    },
                     "score_delta": {"type": "float"},
                     "cumulative_score": {"type": "float"},
                     "tool_detected": {"type": "keyword"},
