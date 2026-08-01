@@ -611,9 +611,16 @@ only the observed block is real. `HONEYPOT_SCANBACK=0` turns it off, which you
 may want: a careful attacker reads that block and leaves, and the rest of the
 session goes with them.
 
-**GeoIP** — country and city on every attacker, and coordinates for the Kibana
-map. Needs a free [MaxMind](https://www.maxmind.com/en/geolite2/signup)
-GeoLite2 database, which is licensed and cannot ship here:
+**GeoIP and ASN** — country, city and coordinates for the Kibana map, plus the
+network each address belongs to. The script fetches both free MaxMind editions,
+`GeoLite2-City` and `GeoLite2-ASN`, under one licence key; they are licensed and
+cannot ship here.
+
+ASN is the more useful half for anything you intend to act on. Country names a
+jurisdiction; `source.as.organization` names a hosting provider with an abuse
+desk, and attacks cluster by provider far harder than by country. It also
+separates rented infrastructure from compromised home devices, which is a real
+signal about who you are looking at.
 
 ```bash
 # MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY in .env, then

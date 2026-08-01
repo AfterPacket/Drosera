@@ -62,8 +62,11 @@ MAX_LINE_BYTES = 256 * 1024
 TIMEOUT = float(os.getenv("ELASTIC_TIMEOUT_SECONDS", "30"))
 
 GEOIP_DB = Path(os.getenv("GEOIP_DB", "/geoip/GeoLite2-City.mmdb"))
+# Shipped separately by MaxMind; City carries no ASN. Same free licence key.
+ASN_DB = Path(os.getenv("GEOIP_ASN_DB", "/geoip/GeoLite2-ASN.mmdb"))
 
 _geoip_reader = None
+_asn_reader = None
 
 
 def log(message: str) -> None:
@@ -217,6 +220,14 @@ def ensure_template() -> None:
                                     "city_name": {"type": "keyword"},
                                 }
                             },
+                            "as": {
+                                "properties": {
+                                    "number": {"type": "long"},
+                                    # keyword, not text: the whole point is
+                                    # counting addresses per provider.
+                                    "organization": {"type": "keyword"},
+                                }
+                            },
                         }
                     },
                     "service": {"type": "keyword"},
@@ -334,6 +345,32 @@ def _geoip():
     return _geoip_reader
 
 
+def _asn():
+    """The ASN database, which MaxMind ship separately from City.
+
+    Country says where the machine is; ASN says whose machine it is, and that
+    is the more actionable of the two. Attacks cluster by hosting provider far
+    harder than by country -- "DigitalOcean, 400 addresses" names somebody with
+    an abuse desk, where "Germany" names a jurisdiction.
+
+    Absent is normal, exactly as for City: a deployment without the file gets
+    no source.as and nothing else changes.
+    """
+    global _asn_reader
+    if _asn_reader is not None:
+        return _asn_reader
+    if not ASN_DB.is_file():
+        return None
+    try:
+        import maxminddb
+        _asn_reader = maxminddb.open_database(str(ASN_DB))
+        log(f"asn enabled from {ASN_DB}")
+    except Exception as error:                          # noqa: BLE001
+        log(f"asn unavailable: {error}")
+        _asn_reader = None
+    return _asn_reader
+
+
 def enrich(event: Dict[str, Any]) -> Dict[str, Any]:
     """Attach source.geo so Kibana's map visualisations have something to plot."""
     ip = event.get("real_ip")
@@ -371,11 +408,28 @@ def enrich(event: Dict[str, Any]) -> Dict[str, Any]:
         if country_code and country_code != "XX":
             geo["country_iso_code"] = country_code
 
-    if geo:
+    autonomous_system: Dict[str, Any] = {}
+    asn_reader = _asn()
+    if asn_reader is not None:
+        try:
+            record = asn_reader.get(ip) or {}
+            number = record.get("autonomous_system_number")
+            org = record.get("autonomous_system_organization")
+            if number:
+                autonomous_system["number"] = number
+            if org:
+                autonomous_system["organization"] = org
+        except Exception:                               # noqa: BLE001
+            pass
+
+    if geo or autonomous_system:
         event.setdefault("source", {})
         if isinstance(event["source"], dict):
             event["source"]["ip"] = ip
-            event["source"]["geo"] = geo
+            if geo:
+                event["source"]["geo"] = geo
+            if autonomous_system:
+                event["source"]["as"] = autonomous_system
 
     # Which deployment this came from. Only meaningful when several instances
     # ship to one Elasticsearch -- without it their events merge into an

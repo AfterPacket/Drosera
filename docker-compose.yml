@@ -591,6 +591,8 @@ services:
       ELASTIC_RETENTION_DAYS: ${ELASTIC_RETENTION_DAYS:-90}
       ELASTIC_POLL_SECONDS: ${ELASTIC_POLL_SECONDS:-15}
       GEOIP_DB: /geoip/GeoLite2-City.mmdb
+      # Separate edition; absent is fine and simply yields no source.as.
+      GEOIP_ASN_DB: /geoip/GeoLite2-ASN.mmdb
     volumes:
       # Read-write only because the offset checkpoint lives beside the logs.
       # It never writes into logs/ itself.

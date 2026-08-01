@@ -24,8 +24,12 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR" || exit 1
 
 TARGET_DIR="${REPO_DIR}/elastic/geoip"
-TARGET="${TARGET_DIR}/GeoLite2-City.mmdb"
-URL="https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz"
+
+# City gives coordinates for the map; ASN gives the network the address belongs
+# to, which is the more actionable of the two -- attacks cluster by hosting
+# provider far harder than by country, and a provider has an abuse desk where a
+# country does not. MaxMind ship them as separate editions under one licence.
+EDITIONS="GeoLite2-City GeoLite2-ASN"
 
 log() { printf '[%s] %s\n' "$(date -Is)" "$*"; }
 
@@ -53,32 +57,48 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-
-log "downloading GeoLite2-City"
-if ! curl -fsSL --retry 3 --retry-delay 5 -u "${ACCOUNT}:${KEY}" \
-        "$URL" -o "${WORK}/geolite.tar.gz"; then
-    # 401 here is almost always the Account ID being confused with the key.
-    log "download failed -- check the account ID and license key"
-    exit 1
-fi
-
-if ! tar -xzf "${WORK}/geolite.tar.gz" -C "$WORK"; then
-    log "archive could not be extracted"
-    exit 1
-fi
-
-FOUND="$(find "$WORK" -name 'GeoLite2-City.mmdb' -print -quit)"
-if [ -z "$FOUND" ]; then
-    log "no GeoLite2-City.mmdb inside the archive"
-    exit 1
-fi
-
 mkdir -p "$TARGET_DIR"
-# Install to a temp name and rename: readers mmap this file, so replacing it
-# in place could hand a container a half-written database.
-install -m 0644 "$FOUND" "${TARGET}.new"
-mv -f "${TARGET}.new" "$TARGET"
-log "installed $(du -h "$TARGET" | cut -f1) to ${TARGET}"
+
+INSTALLED=0
+for EDITION in $EDITIONS; do
+    ARCHIVE="${WORK}/${EDITION}.tar.gz"
+    URL="https://download.maxmind.com/geoip/databases/${EDITION}/download?suffix=tar.gz"
+
+    log "downloading ${EDITION}"
+    if ! curl -fsSL --retry 3 --retry-delay 5 -u "${ACCOUNT}:${KEY}" \
+            "$URL" -o "$ARCHIVE"; then
+        # 401 here is almost always the Account ID being confused with the key.
+        log "${EDITION}: download failed -- check the account ID and license key"
+        continue
+    fi
+
+    if ! tar -xzf "$ARCHIVE" -C "$WORK"; then
+        log "${EDITION}: archive could not be extracted"
+        continue
+    fi
+
+    FOUND="$(find "$WORK" -name "${EDITION}.mmdb" -print -quit)"
+    if [ -z "$FOUND" ]; then
+        log "${EDITION}: no ${EDITION}.mmdb inside the archive"
+        continue
+    fi
+
+    TARGET="${TARGET_DIR}/${EDITION}.mmdb"
+    # Install to a temp name and rename: readers mmap this file, so replacing
+    # it in place could hand a container a half-written database.
+    install -m 0644 "$FOUND" "${TARGET}.new"
+    mv -f "${TARGET}.new" "$TARGET"
+    log "installed $(du -h "$TARGET" | cut -f1) to ${TARGET}"
+    INSTALLED=$((INSTALLED + 1))
+done
+
+# One edition failing should not discard the other -- a deployment with City
+# and no ASN still maps attacks, and saying so beats exiting on the first
+# problem and leaving the operator to guess which half worked.
+if [ "$INSTALLED" -eq 0 ]; then
+    log "nothing installed"
+    exit 1
+fi
 
 # Readers hold the file open, so they need a restart to pick up the new one.
 if command -v docker >/dev/null; then
