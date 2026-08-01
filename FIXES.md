@@ -46,6 +46,32 @@ disagree with it. The question to ask of any checkpoint is what happens when
 the thing it describes is rebuilt without it — and if the answer is "silence",
 it needs a reconciliation step rather than a comment.
 
+**A second gap behind the first.** With the backfill fixed, the two still
+disagreed — 98,696 against 136,791. The shipper globbed `*.jsonl`, and
+logrotate's `copytruncate` had left this:
+
+```
+0 bytes     2026-07-28.jsonl        <- what the glob matched
+14,007,027  2026-07-28.jsonl.1      <- where the events were
+```
+
+The glob still matched a file, the shipper still read it to the end, and it
+reported success. Fourteen megabytes were absent from the index with nothing
+anywhere describing a gap — an empty file reads identically to a finished one.
+
+`read_day()` in the dashboard had already been taught to merge rotated
+siblings; the shipper had not, so the two readers disagreed by exactly the
+files one of them could see. Now `log_files()` globs `*.jsonl*` for both, and
+names any compressed sibling it skips rather than passing over it quietly —
+byte offsets into a gzip stream are not offsets into the events, so those need
+decompressing rather than pretending.
+
+**And a correction that came out of it.** Reading the score distribution
+mid-backfill suggested nothing exceeded 85, and therefore that a ban threshold
+of 150 was unreachable. On the complete data the distribution runs to 260 and
+121 addresses have been blocked. The setting was working the whole time.
+Partial data does not look partial; it looks like an answer.
+
 ---
 
 ## The tarpit sent a valid banner, then invalid garbage

@@ -566,12 +566,41 @@ def ship_file(path: Path, state: Dict[str, int]) -> int:
     return sent
 
 
-def cycle() -> int:
+def log_files() -> List[Path]:
+    """Every event log, including the rotated siblings.
+
+    `*.jsonl` alone misses them, and missing them is silent: logrotate's
+    copytruncate leaves `2026-07-28.jsonl` at zero bytes with the day's events
+    in `2026-07-28.jsonl.1`, so the glob still matches a file and still reads it
+    to the end. Fourteen megabytes of events were absent from the search index
+    with nothing anywhere reporting a gap -- the shipper had genuinely read
+    every byte it could see.
+
+    The admin dashboard's read_day() already merges these; this is the same
+    correction on the other reader. The stanza that created them is gone, so
+    this is mostly about the files it left behind -- but a deployment that
+    rotates these logs by some other means should not quietly lose them either.
+    """
     if not LOG_DIR.is_dir():
-        return 0
+        return []
+    files = []
+    for path in sorted(LOG_DIR.glob("*.jsonl*")):
+        if path.suffix in (".gz", ".bz2", ".xz", ".zst"):
+            # Offsets into a compressed stream are not byte offsets into the
+            # events, so the checkpoint would be meaningless. Named rather than
+            # skipped in silence, which is the failure this whole function is
+            # correcting.
+            log(f"skipping compressed log {path.name}; decompress it to ship it")
+            continue
+        if path.is_file():
+            files.append(path)
+    return files
+
+
+def cycle() -> int:
     state = load_state()
     total = 0
-    for path in sorted(LOG_DIR.glob("*.jsonl")):
+    for path in log_files():
         total += ship_file(path, state)
     return total
 
