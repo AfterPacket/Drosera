@@ -14,7 +14,13 @@
 #
 #   DROSERA_INSTANCE=vps-fra-01           # names this sensor in every document
 #   ELASTIC_URL=https://es.example.net:9200
-#   ELASTIC_PASSWORD=<the hive's elastic password>
+#   ELASTIC_USERNAME=sensor_fra01         # NOT `elastic`
+#   ELASTIC_PASSWORD=<that sensor's own password>
+#
+# Give each sensor its own append-only account rather than sharing the hive's
+# `elastic` superuser -- otherwise one compromised sensor can delete the whole
+# fleet's evidence. The role and per-sensor users are created on the hive; see
+# "Give each sensor its own account first" in the README.
 #
 # What this does NOT do, and you should decide deliberately:
 #

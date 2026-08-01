@@ -1025,14 +1025,64 @@ until the hive decides how. Three ways, cheapest first:
    somewhere the shipper container can reach, which means giving it egress
    anyway — so it buys less than it looks like it does.
 
-On the hive, nothing changes except making Elasticsearch reachable. On each
-sensor:
+### Give each sensor its own account first
+
+`ELASTIC_PASSWORD` is the `elastic` superuser — full cluster admin. Copying it
+to every sensor means one compromised sensor can read, write **and delete** the
+whole fleet's evidence. Ten minutes of work removes almost all of that blast
+radius, and it is much easier to do before the first sensor than after the
+third.
+
+On the **hive**, create a role that can only append:
 
 ```bash
-# .env
+cd /opt/drosera
+
+docker compose exec -T elasticsearch sh -c 'curl -s -u "elastic:$ELASTIC_PASSWORD" \
+  -X POST "localhost:9200/_security/role/drosera_sensor" \
+  -H "Content-Type: application/json" -d "{
+    \"cluster\": [\"monitor\"],
+    \"indices\": [{
+      \"names\": [\"drosera-*\"],
+      \"privileges\": [\"create_index\",\"create\",\"index\",\"auto_configure\"]
+    }]
+  }"'
+```
+
+Then one user per sensor, each with its own password
+(`openssl rand -base64 24`):
+
+```bash
+docker compose exec -T elasticsearch sh -c 'curl -s -u "elastic:$ELASTIC_PASSWORD" \
+  -X POST "localhost:9200/_security/user/sensor_fra01" \
+  -H "Content-Type: application/json" -d "{
+    \"password\": \"<generated>\",
+    \"roles\": [\"drosera_sensor\"]
+  }"'
+```
+
+The `sh -c '...'` wrapper matters: without it `$ELASTIC_PASSWORD` expands on
+your own shell, where it is not set, and the request goes out with an empty
+password.
+
+Check the restriction is real rather than assumed — this must return **403**:
+
+```bash
+docker compose exec -T elasticsearch curl -s -o /dev/null -w '%{http_code}\n' \
+  -u "sensor_fra01:<generated>" \
+  -X DELETE "localhost:9200/drosera-2026.08.01"
+```
+
+The hive's superuser password then never leaves the hive.
+
+### Starting the sensor
+
+```bash
+# .env on the sensor
 DROSERA_INSTANCE=vps-fra-01
 ELASTIC_URL=https://es.internal.example:9200
-ELASTIC_PASSWORD=<the hive's>
+ELASTIC_USERNAME=sensor_fra01
+ELASTIC_PASSWORD=<that sensor's password, not the hive's>
 
 docker compose -f docker-compose.yml -f deploy/sensor.yml \
     --profile elastic up -d --no-deps elastic-shipper
@@ -1051,6 +1101,33 @@ docker compose logs --tail=20 elastic-shipper     # on the sensor
 You want `elasticsearch ready`, then `N events shipped since start`. In Kibana
 on the hive, `instance: vps-fra-01` should start matching documents within a
 poll interval.
+
+**Expect 403s in the sensor's log, and do not chase them.** The shipper creates
+the ILM policy, the ingest pipeline, the Kibana data view and the
+`kibana_system` password at startup. A write-only account cannot do any of
+that, and should not be able to — the hive already did it once. Ingestion is
+unaffected; `events shipped since start` is the line that tells you it works.
+
+### What the separation does and does not buy
+
+`elastic-shipper` is on no honeypot network, so there is no path from an
+attacker to it or from it back to them, and it inherits the same hardening as
+everything else: read-only rootfs, all capabilities dropped, no-new-privileges.
+Three things survive that and are worth deciding about rather than assuming:
+
+- **It is network-isolated from the honeypot, not data-isolated.** The shipper
+  parses `payload_excerpt` — attacker command lines, hex of uploaded bytes,
+  NTLM blobs — which reach it over the shared volume. The trust boundary is not
+  where the network diagram puts it, and the consequence of a parser bug is now
+  "has egress" rather than "crashes".
+- **The egress is not scoped to the hive.** `shipper-egress` is a plain bridge
+  and reaches the whole internet. A `DOCKER-USER` rule restricting it to the
+  hive's address and port makes the route match its purpose;
+  `deploy/drosera-firewall.sh` is where such rules live.
+- **You are centralising other people's credentials.** Captured passwords are
+  frequently reused from prior breaches. One box now holds them for every
+  sensor, which is a reason to protect the hive better than the sensors rather
+  than a reason not to do this.
 
 ## Requirements
 
