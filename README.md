@@ -971,6 +971,43 @@ Detonation. Copy the hash-named file to a machine you are willing to lose.
 Running attacker code on the box that is taking the attacks defeats the point
 of every other control in this repository.
 
+## Several instances, one Elasticsearch
+
+Events can be aggregated across deployments; live sessions cannot. The split is
+worth understanding before planning around it.
+
+**What aggregates.** `elastic-shipper` reads `storage/logs/*.jsonl` and writes
+to whatever `ELASTIC_URL` names. Point several instances at one Elasticsearch,
+give each a `DROSERA_INSTANCE` name, and Kibana shows all of them together —
+every event, credential, IOC and score, filterable by instance. This is the
+sensor-and-hive arrangement T-Pot uses, and the shipper needs no changes for it.
+
+```bash
+# on each sensor
+DROSERA_INSTANCE=vps-fra-01
+ELASTIC_URL=https://es.example.net:9200
+ELASTIC_PASSWORD=<the central cluster's>
+```
+
+**What does not.** The operator dashboard is single-instance by construction.
+Its live feed tails `.cast` files on the local storage volume and its attacker
+profiles come from the local Redis, so neither has anything to read about
+another host. Federating those means shipping recordings, which is a different
+and much larger problem: they are large, they are attacker-controlled content,
+and the whole point of the current design is that the dashboard only ever reads
+files a container next to it wrote.
+
+The practical arrangement is Kibana for the fleet view and each instance's own
+dashboard, over its own SSH tunnel, for live sessions and playback.
+
+**Before you do it.** `elastic-internal` is `internal: true` — no egress, on
+purpose. Shipping to a remote cluster means attaching `elastic-shipper` to a
+network that has some, which is the same class of decision as enabling
+second-stage retrieval. Two things follow: use TLS, because Elasticsearch basic
+auth over plain HTTP puts the cluster password on the wire; and keep the
+central cluster off every network a honeypot container can reach, since it now
+holds the record for all of them.
+
 ## Requirements
 
 Ubuntu 22.04/24.04, Docker 24+ with Compose v2, 2 vCPU / 4 GB / 40 GB, a domain

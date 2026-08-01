@@ -39,6 +39,11 @@ ES_PASSWORD = os.getenv("ELASTIC_PASSWORD", "")
 KIBANA_URL = os.getenv("KIBANA_URL", "http://kibana:5601").rstrip("/")
 KIBANA_PASSWORD = os.getenv("KIBANA_PASSWORD", "")
 
+# Names this deployment when several ship into one Elasticsearch. Empty for a
+# single instance, where every document would carry the same value and the
+# field would only cost storage.
+INSTANCE = os.getenv("DROSERA_INSTANCE", "").strip()
+
 INDEX_PREFIX = os.getenv("ELASTIC_INDEX_PREFIX", "drosera")
 ILM_POLICY = f"{INDEX_PREFIX}-retention"
 PIPELINE = f"{INDEX_PREFIX}-events"
@@ -328,6 +333,13 @@ def enrich(event: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(event["source"], dict):
             event["source"]["ip"] = ip
             event["source"]["geo"] = geo
+
+    # Which deployment this came from. Only meaningful when several instances
+    # ship to one Elasticsearch -- without it their events merge into an
+    # undifferentiated pile and "which of my honeypots saw this" stops being
+    # answerable. Absent by default, so a single-instance index is unchanged.
+    if INSTANCE:
+        event["instance"] = INSTANCE
     return event
 
 

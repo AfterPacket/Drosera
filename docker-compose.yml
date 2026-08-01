@@ -571,8 +571,14 @@ services:
         condition: service_healthy
     environment:
       STORAGE_DIR: /var/honeypot/storage
-      ELASTIC_URL: http://elasticsearch:9200
-      ELASTIC_USERNAME: elastic
+      # Overridable so several deployments can ship into one Elasticsearch.
+      # Doing that means giving this container egress, which the elastic
+      # network deliberately does not have -- see "Several instances, one
+      # Elasticsearch" in the README before changing it.
+      ELASTIC_URL: ${ELASTIC_URL:-http://elasticsearch:9200}
+      ELASTIC_USERNAME: ${ELASTIC_USERNAME:-elastic}
+      # Names this deployment when its events land beside another's.
+      DROSERA_INSTANCE: ${DROSERA_INSTANCE:-}
       # Empty rather than a compose-level hard requirement: interpolation runs
       # over the whole file regardless of profiles, so `:?` here would stop the
       # honeypot booting for anyone not using Elasticsearch. The shipper checks
