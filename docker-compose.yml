@@ -73,8 +73,9 @@ x-honeypot-env: &honeypot-env
   # Read by shared/tarpit.py in the asyncio services.
   TARPIT_BYTE_DELAY: ${TARPIT_BYTE_DELAY:-1.5}
   TARPIT_MAX_BYTE_GAP: ${TARPIT_MAX_BYTE_GAP:-10}
-  TARPIT_STALL_MIN: ${TARPIT_STALL_MIN:-4}
-  TARPIT_STALL_MAX: ${TARPIT_STALL_MAX:-15}
+  TARPIT_STALL_MIN: ${TARPIT_STALL_MIN:-2}
+  TARPIT_STALL_MAX: ${TARPIT_STALL_MAX:-6}
+  HONEYPOT_PAYLOAD_CHARS: ${HONEYPOT_PAYLOAD_CHARS:-500}
 
 # Flattened rather than merging *hardening in: nested YAML merge keys inside an
 # anchor that is itself merged are handled inconsistently across parsers.

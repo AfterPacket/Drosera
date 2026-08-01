@@ -242,6 +242,18 @@ def scan_redirects(stage: str):
 # Shells, for the wrapper check in _run_stage. `bash -c '<script>'` must be
 # dispatched before anything scans the stage for `./payload`, or the pattern
 # inside the quoted script matches and the wrapper is never reached.
+# How much of a command line is kept as evidence.
+#
+# Was 200, which cut every dropper chain in half -- the recon block these open
+# with runs to a couple of thousand characters, so what landed in the evidence
+# log stopped at `2>/dev/null ||` and the interesting half was gone. alerting
+# truncates at 500 regardless, so anything above that was never stored anyway;
+# this just stops throwing away 300 characters we were always going to keep.
+#
+# Loader URLs are unaffected either way: ioc.record() sees the whole line
+# before any of this runs.
+PAYLOAD_CHARS = int(os.getenv("HONEYPOT_PAYLOAD_CHARS", "500"))
+
 SHELL_COMMANDS = ("bash", "sh", "dash", "ash", "zsh", "ksh")
 
 BUSYBOX_VERSION = os.getenv("FAKE_BUSYBOX_VERSION", "1.30.1")
@@ -471,7 +483,7 @@ class FakeShell:
         if not line:
             return ""
         self.history.append(line)
-        self._score_always("WEBSHELL_CMD", payload=line[:200])
+        self._score_always("WEBSHELL_CMD", payload=line[:PAYLOAD_CHARS])
 
         # Retrieval targets, before the line is dispatched. On a box with no
         # egress the fetch these name will always fail, so the URL is the only
@@ -1279,7 +1291,7 @@ class FakeShell:
 
     def _cmd_base64(self, args: List[str], line: str) -> str:
         if "-d" in args or "--decode" in args:
-            self._score_always("REVERSE_SHELL", payload=line[:200])
+            self._score_always("REVERSE_SHELL", payload=line[:PAYLOAD_CHARS])
             return "bash: /dev/tcp/127.0.0.1/4444: Connection timed out"
         return ""
 
@@ -1541,7 +1553,8 @@ def _cmd_chattr(self, args, line):
     # The whole line, not `" ".join(args)`. The dashboard lists this event under
     # "Commands issued", and the arguments alone rendered as `-ia .ssh` -- a
     # command nobody typed, sitting next to the real one it came from.
-    self._score_once("PERSISTENCE_ATTEMPT", payload=(line or " ".join(args))[:200])
+    self._score_once("PERSISTENCE_ATTEMPT",
+                     payload=(line or " ".join(args))[:PAYLOAD_CHARS])
     targets = [a for a in args if not a.startswith("-")]
     if not targets:
         return "Usage: chattr [-RVf] [-+=aAcCdDeijPsStTu] [-v version] files..."

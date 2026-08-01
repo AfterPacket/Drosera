@@ -30,9 +30,20 @@ BYTE_DELAY = float(os.getenv("TARPIT_BYTE_DELAY", "1.5"))
 # Ceiling on the gap between two bytes. Pacing a short PDU across a ten-minute
 # window would otherwise mean half-minute silences, and clients start giving up.
 MAX_BYTE_GAP = float(os.getenv("TARPIT_MAX_BYTE_GAP", "10"))
+# Gap before each response to a tarpitted client.
+#
+# Was 4-15s. The SSH tarpit taught the same lesson the hard way: a client
+# measures silence, not elapsed time, and a gap wider than its read deadline
+# ends the hold rather than lengthening it. Fifteen seconds is past the
+# patience of several of the clients in the logs, so the wide end of that range
+# was losing connections it was supposed to be keeping.
+#
+# These delay a protocol *response* rather than trickling junk, so the client
+# is blocked waiting on us throughout -- which is the point. Shorter and more
+# frequent holds longer, and holding longer is the entire product.
 STALL_RANGE = (
-    float(os.getenv("TARPIT_STALL_MIN", "4")),
-    float(os.getenv("TARPIT_STALL_MAX", "15")),
+    float(os.getenv("TARPIT_STALL_MIN", "2")),
+    float(os.getenv("TARPIT_STALL_MAX", "6")),
 )
 
 
