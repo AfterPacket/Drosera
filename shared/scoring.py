@@ -58,6 +58,49 @@ SCORES = {
     "TOOL_OTHER": (2, "Automated scanner detected"),
 }
 
+# MITRE ATT&CK technique per event type, as (id, name).
+#
+# A separate table rather than a third element in SCORES: the score is a policy
+# knob an operator tunes, and the technique is a fact about what the behaviour
+# is. Tying them together would mean re-deciding the taxonomy every time
+# somebody adjusts a weight.
+#
+# Only the events that genuinely correspond to a technique are listed. An
+# unmapped event is left unmapped -- CONNECTION_ANY is a TCP connection, not
+# T1021, and inflating the coverage would make the resulting chart a
+# description of this table rather than of the traffic.
+TECHNIQUES = {
+    "CREDENTIAL_ATTEMPT": ("T1110", "Brute Force"),
+    "CREDENTIAL_SPRAY": ("T1110.003", "Password Spraying"),
+    "WEBSHELL_CMD": ("T1059", "Command and Scripting Interpreter"),
+    "DROPPED_BINARY_EXEC": ("T1204.002", "User Execution: Malicious File"),
+    "PHP_EVAL_ATTEMPT": ("T1059.004", "Unix Shell"),
+    "REVERSE_SHELL": ("T1071", "Application Layer Protocol"),
+    "LOADER_URL": ("T1105", "Ingress Tool Transfer"),
+    "FILE_UPLOAD": ("T1105", "Ingress Tool Transfer"),
+    "FILE_DOWNLOAD": ("T1005", "Data from Local System"),
+    "PERSISTENCE_ATTEMPT": ("T1098.004", "SSH Authorized Keys"),
+    "SQLI_BASIC": ("T1190", "Exploit Public-Facing Application"),
+    "SQLI_UNION_BLIND": ("T1190", "Exploit Public-Facing Application"),
+    "SQLI_OOB": ("T1190", "Exploit Public-Facing Application"),
+    "SCANNER_PATH_HIT": ("T1595.003", "Active Scanning: Wordlist Scanning"),
+    "SMB_ENUM": ("T1135", "Network Share Discovery"),
+    "RECON_LS": ("T1083", "File and Directory Discovery"),
+    "READ_PASSWD": ("T1003.008", "OS Credential Dumping: /etc/passwd"),
+    "READ_SHADOW": ("T1003.008", "OS Credential Dumping: /etc/shadow"),
+    "PROCESS_ENUM": ("T1057", "Process Discovery"),
+    "NETWORK_ENUM": ("T1046", "Network Service Discovery"),
+    "DOCKER_K8S_ENUM": ("T1613", "Container and Resource Discovery"),
+    "SMTP_RELAY": ("T1071.003", "Mail Protocols"),
+    "RATE_LIMIT_ABUSE": ("T1499", "Endpoint Denial of Service"),
+    "TOOL_SQLMAP": ("T1595.002", "Vulnerability Scanning"),
+    "TOOL_NUCLEI": ("T1595.002", "Vulnerability Scanning"),
+    "TOOL_NIKTO": ("T1595.002", "Vulnerability Scanning"),
+    "TOOL_METASPLOIT": ("T1588.002", "Obtain Capabilities: Tool"),
+    "TOOL_HYDRA": ("T1110", "Brute Force"),
+    "TOOL_MASSCAN": ("T1595.001", "Scanning IP Blocks"),
+}
+
 BAN_THRESHOLD = int(os.getenv("HONEYPOT_BAN_THRESHOLD", "35"))
 TARPIT_THRESHOLD = int(os.getenv("HONEYPOT_TARPIT_THRESHOLD", "5"))
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "60"))
@@ -66,6 +109,11 @@ RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "60"))
 def get_score(event_type: str) -> tuple:
     """Get (points, description) for an event type."""
     return SCORES.get(event_type, (0, "Unknown event"))
+
+
+def get_technique(event_type: str):
+    """(id, name) for an event type, or None where no technique applies."""
+    return TECHNIQUES.get(event_type)
 
 
 def is_bannable(total_score: float) -> bool:

@@ -23,6 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# Safe at module scope: scoring imports nothing but os, so there is no cycle
+# back through here. identity defers its own scoring import because identity
+# and alerting import each other.
+from . import scoring
+
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage"))
 LOG_DIR = STORAGE_DIR / "logs"
 SESSION_DIR = STORAGE_DIR / "sessions"
@@ -244,6 +249,16 @@ def alert_event(ip: str, event_type: str, reason: str = "", service: str = "",
         "fake_hostname": fake_hostname,
         "banned": banned,
     }
+
+    # ATT&CK technique, where the event corresponds to one. Written here rather
+    # than at each call site so it cannot drift between services, and omitted
+    # entirely for events that are not a technique -- a TCP connection is not
+    # T1021, and mapping everything would make the resulting chart a picture of
+    # our own table rather than of the traffic.
+    technique = scoring.get_technique(event_type)
+    if technique:
+        event["technique_id"], event["technique"] = technique
+
     if headers:
         event["headers"] = headers
     if extra:

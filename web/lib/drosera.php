@@ -889,8 +889,53 @@ function sb_append_line(string $path, string $line): void
     @fclose($handle);
 }
 
+/**
+ * MITRE ATT&CK technique per event type, as [id, name].
+ *
+ * Kept in step with shared/scoring.py by hand, because the two tiers do not
+ * share code. Only the web tier's own event types are listed -- the Python
+ * services write theirs through shared/alerting.py and never come through
+ * here.
+ */
+const TECHNIQUES = [
+    'CREDENTIAL_ATTEMPT'  => ['T1110', 'Brute Force'],
+    'CREDENTIAL_SPRAY'    => ['T1110.003', 'Password Spraying'],
+    'WEBSHELL_CMD'        => ['T1059', 'Command and Scripting Interpreter'],
+    'PHP_EVAL_ATTEMPT'    => ['T1059.004', 'Unix Shell'],
+    'REVERSE_SHELL'       => ['T1071', 'Application Layer Protocol'],
+    'FILE_UPLOAD'         => ['T1105', 'Ingress Tool Transfer'],
+    'SQLI_BASIC'          => ['T1190', 'Exploit Public-Facing Application'],
+    'SQLI_UNION_BLIND'    => ['T1190', 'Exploit Public-Facing Application'],
+    'SQLI_OOB'            => ['T1190', 'Exploit Public-Facing Application'],
+    'SCANNER_PATH_HIT'    => ['T1595.003', 'Active Scanning: Wordlist Scanning'],
+    'RECON_LS'            => ['T1083', 'File and Directory Discovery'],
+    'READ_PASSWD'         => ['T1003.008', 'OS Credential Dumping: /etc/passwd'],
+    'READ_SHADOW'         => ['T1003.008', 'OS Credential Dumping: /etc/shadow'],
+    'PROCESS_ENUM'        => ['T1057', 'Process Discovery'],
+    'NETWORK_ENUM'        => ['T1046', 'Network Service Discovery'],
+    'DOCKER_K8S_ENUM'     => ['T1613', 'Container and Resource Discovery'],
+    'RATE_LIMIT_ABUSE'    => ['T1499', 'Endpoint Denial of Service'],
+    'PERSISTENCE_ATTEMPT' => ['T1098.004', 'SSH Authorized Keys'],
+    'TOOL_SQLMAP'         => ['T1595.002', 'Vulnerability Scanning'],
+    'TOOL_NUCLEI'         => ['T1595.002', 'Vulnerability Scanning'],
+    'TOOL_NIKTO'          => ['T1595.002', 'Vulnerability Scanning'],
+    'TOOL_METASPLOIT'     => ['T1588.002', 'Obtain Capabilities: Tool'],
+    'TOOL_HYDRA'          => ['T1110', 'Brute Force'],
+    'TOOL_MASSCAN'        => ['T1595.001', 'Scanning IP Blocks'],
+];
+
 function sb_write_event(array $event): void
 {
+    // Tagged here rather than at each call site, so the two dozen places that
+    // write events cannot drift from each other. Events with no corresponding
+    // technique are left untagged: an HTTP request is not an ATT&CK technique,
+    // and mapping everything would make the chart describe this table instead
+    // of the traffic.
+    $type = (string)($event['event_type'] ?? '');
+    if (isset(TECHNIQUES[$type])) {
+        [$event['technique_id'], $event['technique']] = TECHNIQUES[$type];
+    }
+
     sb_append_line(
         STORAGE_PATH . '/logs/' . gmdate('Y-m-d') . '.jsonl',
         json_encode($event, JSON_UNESCAPED_SLASHES) . "\n"

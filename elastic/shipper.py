@@ -244,6 +244,10 @@ def ensure_template() -> None:
                     "score_delta": {"type": "float"},
                     "cumulative_score": {"type": "float"},
                     "tool_detected": {"type": "keyword"},
+                    # ATT&CK. Both keyword: the id sorts and filters, the name
+                    # is what a chart axis should read.
+                    "technique_id": {"type": "keyword"},
+                    "technique": {"type": "keyword"},
                     "tarpit_active": {"type": "boolean"},
                     "banned": {"type": "boolean"},
                     "services_touched": {"type": "keyword"},
