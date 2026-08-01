@@ -68,6 +68,19 @@ Thumbs.db
 # out of it so the marketing page and the appliance are never entangled.
 site/
 
+# Working notes for this checkout. Local only: it names the production path,
+# describes what the storage volume holds and explains how the demo relates to
+# the appliance -- an accurate description of the deployment, which is exactly
+# what should not ship with the code an attacker can already read.
+CLAUDE.md
+
+# The public demo. A separate deployment that consumes the built dashboard
+# image and shows synthetic data -- see CLAUDE.md. Kept out of the repository
+# for the same reason site/ is: it is a different product with a different
+# audience, and entangling the two is how real captured credentials end up on
+# a public URL.
+demo/
+
 # Scratch file for `git commit -F COMMIT_MSG.txt`. PowerShell cannot pipe a
 # here-string into `git commit -F-`, so long messages go via a file -- and a
 # `git add -A` before the commit will otherwise sweep the message into the
