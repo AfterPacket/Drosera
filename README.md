@@ -1008,6 +1008,50 @@ auth over plain HTTP puts the cluster password on the wire; and keep the
 central cluster off every network a honeypot container can reach, since it now
 holds the record for all of them.
 
+### Setting one up
+
+Elasticsearch is **unpublished by default** — `9200` is exposed to its own
+Docker network and bound to nothing on the host, so no sensor can reach it
+until the hive decides how. Three ways, cheapest first:
+
+1. **A private network.** WireGuard or Tailscale between the hosts, then point
+   `ELASTIC_URL` at the hive's private address. Nothing is published to the
+   internet, and the shipper's egress reaches one address rather than all of
+   them. This is the one to prefer.
+2. **Published with TLS.** Bind `9200` on the hive, terminate TLS in front of
+   it, and restrict the source addresses at the firewall. More moving parts,
+   and the cluster password is now protecting an internet-facing service.
+3. **An SSH tunnel per sensor.** Works, but the tunnel has to terminate
+   somewhere the shipper container can reach, which means giving it egress
+   anyway — so it buys less than it looks like it does.
+
+On the hive, nothing changes except making Elasticsearch reachable. On each
+sensor:
+
+```bash
+# .env
+DROSERA_INSTANCE=vps-fra-01
+ELASTIC_URL=https://es.internal.example:9200
+ELASTIC_PASSWORD=<the hive's>
+
+docker compose -f docker-compose.yml -f deploy/sensor.yml \
+    --profile elastic up -d --no-deps elastic-shipper
+```
+
+`deploy/sensor.yml` adds the one network the shipper needs. `--no-deps` stops
+Compose starting a local Elasticsearch the sensor has no use for — without it
+the sensor runs its own cluster alongside the shipper and quietly wastes 2 GB.
+
+Confirm it landed:
+
+```bash
+docker compose logs --tail=20 elastic-shipper     # on the sensor
+```
+
+You want `elasticsearch ready`, then `N events shipped since start`. In Kibana
+on the hive, `instance: vps-fra-01` should start matching documents within a
+poll interval.
+
 ## Requirements
 
 Ubuntu 22.04/24.04, Docker 24+ with Compose v2, 2 vCPU / 4 GB / 40 GB, a domain

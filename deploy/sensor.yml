@@ -1,0 +1,40 @@
+# Sensor mode: ship this deployment's events to a central Elasticsearch.
+#
+# Overlay on the main compose file. Only changes one thing -- it gives
+# elastic-shipper a network with egress, because `elastic-internal` is
+# `internal: true` and a sensor has to reach a cluster on another host.
+#
+#   docker compose -f docker-compose.yml -f deploy/sensor.yml \
+#       --profile elastic up -d --no-deps elastic-shipper
+#
+# `--no-deps` matters: elastic-shipper depends on the local elasticsearch, and
+# without it Compose starts a cluster this host does not need.
+#
+# In .env on the sensor:
+#
+#   DROSERA_INSTANCE=vps-fra-01           # names this sensor in every document
+#   ELASTIC_URL=https://es.example.net:9200
+#   ELASTIC_PASSWORD=<the hive's elastic password>
+#
+# What this does NOT do, and you should decide deliberately:
+#
+#   * It gives the shipper a route off this box. It reads events off the
+#     storage volume and is on no honeypot network, so nothing an attacker
+#     touches gains a path out -- but the container itself now has one.
+#   * It does not add TLS. Elasticsearch basic auth over plain http puts the
+#     cluster password on the wire, and that password is the whole fleet's
+#     record. Use https, or carry it over a private network (WireGuard,
+#     Tailscale) and point ELASTIC_URL at the private address.
+#   * It does not publish anything on the hive. Elasticsearch there is
+#     unpublished by default -- reachable only from its own Docker network --
+#     so the hive needs its own decision about how sensors reach it.
+
+services:
+  elastic-shipper:
+    networks: [elastic-internal, shipper-egress]
+
+networks:
+  shipper-egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-shipper
