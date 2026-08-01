@@ -2404,6 +2404,30 @@ def admin_settings():
         clips_stored = sum(1 for path in CLIP_DIR.iterdir() if path.is_file())
     except OSError:
         clips_stored = 0
+
+    # Generated-response mode. The broker is on llm-egress and this app is on
+    # admin-internal, with no route between them on purpose, so it leaves its
+    # counters on the storage volume the same way its work arrives.
+    #
+    # "Configured" and "running" are reported separately because they fail
+    # apart: HONEYPOT_LLM=1 without the llm profile up looks enabled from the
+    # env and answers nothing, which is precisely the state worth being able to
+    # see from here rather than inferring from a shell that went quiet.
+    llm = {
+        "configured": os.getenv("HONEYPOT_LLM", "0").strip().lower()
+                      in ("1", "true", "yes", "on"),
+        "running": False,
+    }
+    try:
+        status = json.loads(
+            (STORAGE_DIR / "llm" / "status.json").read_text(encoding="utf-8"))
+        if isinstance(status, dict):
+            llm.update(status)
+            # It publishes every five seconds. A minute of silence means the
+            # container is gone, not that it is idle.
+            llm["running"] = (time.time() - float(status.get("updated") or 0)) < 60
+    except (OSError, ValueError, TypeError):
+        pass
     settings = {
         "ban_threshold": os.getenv("HONEYPOT_BAN_THRESHOLD", "35"),
         "tarpit_threshold": os.getenv("HONEYPOT_TARPIT_THRESHOLD", "5"),
@@ -2420,7 +2444,7 @@ def admin_settings():
         "clips_stored": clips_stored,
     }
     return render_template("settings.html", channels=channels, settings=settings,
-                           csrf_token=g.csrf_token)
+                           llm=llm, csrf_token=g.csrf_token)
 
 
 @app.route("/healthz")

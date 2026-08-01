@@ -1,18 +1,25 @@
 # Drosera honeypot appliance.
 #
 # CONTAINMENT MODEL
-#   - honeypot-internal, admin-internal and elastic-internal are all
-#     `internal: true`: no container on them can reach the internet. Published
-#     ports still work (Docker DNATs those on the host), so inbound traffic
-#     arrives normally while outbound is impossible. This is what stops the box
-#     being usable as a pivot or a relay.
-#   - cam-egress is the single exception. Its members -- session-cam, intel,
-#     and certbot under its profile -- are on no other network and listen on
-#     nothing. Work reaches them over the storage volume, never a socket, so
-#     they can deliver clips and look up hashes without giving anything on the
-#     honeypot side a path to the internet. Note what intel does NOT do: it
+#   - admin-internal and elastic-internal are `internal: true`: no container on
+#     them can reach the internet, and nothing else needs to reach them.
+#   - honeypot-internal is NOT internal, despite being the network that most
+#     needs to be. Docker installs no DNAT for published ports on an internal
+#     network, so every `ports:` entry would silently stop working. Egress from
+#     it is blocked at the host firewall instead, by DOCKER-USER rules that
+#     bootstrap.sh installs; deploy/smoke-test.sh asserts that ssh-honey cannot
+#     reach 1.1.1.1. The full reasoning is on the network itself, below.
+#   - Two networks have egress, and neither has a honeypot container on it.
+#     cam-egress carries session-cam, intel and certbot; llm-egress carries
+#     llm-broker and, under its profile, ollama. Members of both listen on
+#     nothing reachable from the honeypot side: work arrives over the storage
+#     volume, never a socket, so a clip can be delivered and a model can be
+#     asked without anything an attacker touches gaining a path out.
+#   - What those containers open matters as much as what they can reach. intel
 #     reads the JSON sidecars and the hash in the filename, never the captured
-#     bytes, so the one container with egress never opens attacker input.
+#     bytes. llm-broker is the exception and is documented as one: attacker
+#     command text is its input, which is why it carries no third-party Python
+#     and why a cloud provider needs a second switch to enable.
 #   - Every container: non-root (UID 1000), read-only root filesystem, all
 #     capabilities dropped, no-new-privileges, pids and memory capped.
 #   - Services bind unprivileged ports inside the container; the host maps the
@@ -76,6 +83,16 @@ x-honeypot-env: &honeypot-env
   TARPIT_STALL_MIN: ${TARPIT_STALL_MIN:-2}
   TARPIT_STALL_MAX: ${TARPIT_STALL_MAX:-6}
   HONEYPOT_PAYLOAD_CHARS: ${HONEYPOT_PAYLOAD_CHARS:-500}
+  # Optional LLM answers for commands the fake shell does not implement. Off
+  # unless this is 1 AND the llm profile is up -- with the flag on and no
+  # broker running, nothing ever writes a reply and the shell falls back to
+  # `command not found` on its own. These containers still have no egress; the
+  # request crosses to llm-broker on the storage volume. See shared/llm.py.
+  HONEYPOT_LLM: ${HONEYPOT_LLM:-0}
+  HONEYPOT_LLM_TIMEOUT: ${HONEYPOT_LLM_TIMEOUT:-6}
+  HONEYPOT_LLM_ENGAGED_TIMEOUT: ${HONEYPOT_LLM_ENGAGED_TIMEOUT:-20}
+  HONEYPOT_LLM_MAX_PENDING: ${HONEYPOT_LLM_MAX_PENDING:-32}
+  HONEYPOT_LLM_MAX_CHARS: ${HONEYPOT_LLM_MAX_CHARS:-2000}
 
 # Flattened rather than merging *hardening in: nested YAML merge keys inside an
 # anchor that is itself merged are handled inconsistently across parsers.
@@ -607,6 +624,91 @@ services:
     pids_limit: 128
     cpus: 0.50
 
+  # ------------------------------------------------------- generated responses
+
+  # The only container permitted to talk to a language model.
+  #
+  # It is on llm-egress and on no honeypot network, it listens on nothing, and
+  # it accepts no connection. The fake shell reaches it by writing a file to the
+  # storage volume, exactly as session-cam is reached -- because the container
+  # that can call an API must not be reachable from the container an attacker is
+  # typing into.
+  #
+  # Under a profile, so `docker compose up -d` without it leaves the appliance
+  # exactly as it was. HONEYPOT_LLM=1 with this profile down is harmless: no
+  # reply is ever written and every unknown command falls back on its timeout.
+  llm-broker:
+    build: { context: ./llm-broker, dockerfile: Dockerfile }
+    container_name: hp-llm-broker
+    profiles: [llm]
+    <<: *hardening
+    environment:
+      STORAGE_DIR: /var/honeypot/storage
+      HONEYPOT_LLM_PROVIDER: ${HONEYPOT_LLM_PROVIDER:-ollama}
+      HONEYPOT_LLM_MODEL: ${HONEYPOT_LLM_MODEL:-}
+      HONEYPOT_LLM_API_KEY: ${HONEYPOT_LLM_API_KEY:-}
+      # Second switch, deliberately separate from HONEYPOT_LLM. Turning the
+      # feature on and agreeing to send attacker command text and this
+      # deployment's persona to a third party are different decisions, and the
+      # broker refuses to start a cloud provider without this one.
+      HONEYPOT_LLM_ALLOW_EGRESS: ${HONEYPOT_LLM_ALLOW_EGRESS:-0}
+      HONEYPOT_LLM_OLLAMA_URL: ${HONEYPOT_LLM_OLLAMA_URL:-http://ollama:11434}
+      HONEYPOT_LLM_MAX_CALLS_HOUR: ${HONEYPOT_LLM_MAX_CALLS_HOUR:-500}
+      HONEYPOT_LLM_MAX_CALLS_IP_HOUR: ${HONEYPOT_LLM_MAX_CALLS_IP_HOUR:-60}
+      HONEYPOT_LLM_MAX_TOKENS: ${HONEYPOT_LLM_MAX_TOKENS:-400}
+      HONEYPOT_LLM_TEMPERATURE: ${HONEYPOT_LLM_TEMPERATURE:-0.4}
+      HONEYPOT_LLM_MAX_CHARS: ${HONEYPOT_LLM_MAX_CHARS:-2000}
+      HONEYPOT_LLM_MAX_LINES: ${HONEYPOT_LLM_MAX_LINES:-60}
+      HONEYPOT_LLM_REQUEST_TIMEOUT: ${HONEYPOT_LLM_REQUEST_TIMEOUT:-15}
+      HONEYPOT_LLM_MAX_AGE: ${HONEYPOT_LLM_MAX_AGE:-25}
+    volumes:
+      - ./storage:/var/honeypot/storage
+    tmpfs:
+      - /tmp:size=8m,mode=1777,noexec,nosuid,nodev
+    networks: [llm-egress]
+    mem_limit: 128m
+    pids_limit: 64
+    cpus: 0.25
+
+  # Local model, so that the default configuration sends nothing anywhere.
+  #
+  # Its own profile: a deployment using a cloud provider does not want several
+  # gigabytes of resident model, and one using Ollama does not want an API key.
+  #
+  #   docker compose --profile llm --profile ollama up -d
+  #   docker compose exec ollama ollama pull llama3.2:3b
+  #
+  # Worth being clear about what this container is. Attacker command text
+  # reaches it as prompt input, and it is on a network with egress because that
+  # is how `ollama pull` fetches a model. It is therefore the least contained
+  # thing here after session-cam: capabilities dropped and limits set, but a
+  # writable rootfs, because it writes the models it downloads. It is on no
+  # honeypot network, which is the property that actually matters.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: hp-ollama
+    profiles: [ollama]
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      # Unload after five minutes idle. A honeypot is quiet for hours at a
+      # time and there is no reason to hold gigabytes resident through it.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+    volumes:
+      - ollama-models:/root/.ollama
+    networks: [llm-egress]
+    # A 3B model needs roughly 4GB resident. Raise this before raising the
+    # model size, or the pull succeeds and every generation is OOM-killed.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-6g}
+    pids_limit: 256
+
   # ------------------------------------------------------------ operator panel
 
   admin-dashboard:
@@ -745,10 +847,29 @@ networks:
     driver_opts:
       com.docker.network.bridge.enable_icc: "true"
 
+  # llm-broker and ollama. No honeypot container is a member, so the fake shell
+  # has no route to either -- it reaches the broker by writing a file, the same
+  # way it reaches session-cam.
+  #
+  # enable_icc is true here, unlike cam-egress. The members of cam-egress never
+  # open a socket to each other so it costs nothing to forbid it; these two do,
+  # because the broker calls Ollama over HTTP. Stating it explicitly keeps that
+  # from depending on whatever the daemon default happens to be.
+  llm-egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+
 volumes:
   redis-honeypot-data:
   redis-admin-data:
   ssh-host-key:
+  # Downloaded models. Named, so `docker compose down` does not throw away
+  # several gigabytes that then have to come back over the network.
+  ollama-models:
   elasticsearch-data:
   # Account key and issued certificates. Losing this is not fatal -- certbot
   # re-registers and re-issues -- but it does burn Let's Encrypt rate limit.

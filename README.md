@@ -103,6 +103,91 @@ input is processed in full — because passing that check is what convinces the
 worm to go on and drop its real payload, which is [the thing actually worth
 capturing](#how-loot-works).
 
+## Generated responses
+
+Off by default. The fake shell implements a long list of commands and answers
+everything else with `command not found`. With `HONEYPOT_LLM=1` the ones it does
+not implement can be answered by a model instead — so `tcpdump`, `iotop` or
+whatever they reach for next produces plausible output rather than a dead end.
+
+Three things deliberately do not change:
+
+**Every emulated command stays deterministic.** The model is consulted at one
+point, after the handler table has declined. `ls`, `uname`, `cat` and the rest
+answer from the fake filesystem exactly as before, at the same speed.
+
+**The busybox applet probe is answered first.** A loader runs
+`/bin/busybox MIRAI` and looks for exactly `applet not found` before starting
+its infection chain. A model asked what that prints gives a reasonable, wrong
+answer, and the cost is the payload that was about to be dropped.
+
+**Failure means the old behaviour.** Broker down, out of budget, timed out, or
+a response that failed validation — all of them fall through to
+`command not found`. A shell that pauses six seconds and then apologises for
+being an AI identifies itself in one line; not knowing `tcpdump` is the most
+ordinary thing a stripped container can do.
+
+### The honeypot still has no egress
+
+`ssh-honey` cannot reach the internet — `smoke-test.sh` asserts it — and this
+feature does not change that. `shared/llm.py` opens no socket. It writes the
+request to the storage volume, and `llm-broker` picks it up from a network no
+honeypot container is on, exactly as `session-cam` receives its work. The
+container that can call an API is not reachable from the container an attacker
+is typing into.
+
+### Local by default
+
+```bash
+docker compose --profile llm --profile ollama up -d
+docker compose exec ollama ollama pull llama3.2:3b
+```
+
+That runs the model on the host, and nothing leaves it. Budget roughly 4 GB
+resident for a 3B model and raise `OLLAMA_MEM_LIMIT` before raising the model
+size.
+
+The cloud providers — `anthropic`, `openai`, `xai` — need a second switch:
+
+```
+HONEYPOT_LLM_PROVIDER=anthropic
+HONEYPOT_LLM_ALLOW_EGRESS=1
+HONEYPOT_LLM_API_KEY=...
+```
+
+The broker refuses to start one without `HONEYPOT_LLM_ALLOW_EGRESS=1`, because
+turning the feature on and agreeing to what it sends are different decisions.
+What it sends is the attacker's command text and this deployment's persona.
+Command lines routinely carry credentials — `mysql -u root -phunter2` — which
+this appliance treats as other people's breached passwords everywhere else, and
+the persona is the fingerprint that identifies this host. An attacker also
+decides how many commands they type, so on a metered provider they decide the
+bill; `HONEYPOT_LLM_MAX_CALLS_HOUR` is the ceiling on that.
+
+### Engagement mode
+
+Once a session is past the tarpit threshold the priority inverts. Looking brisk
+stops mattering and holding them starts, so the wait stretches to
+`HONEYPOT_LLM_ENGAGED_TIMEOUT` and the prompt favours answers that invite
+another command — a directory with a few plausible entries rather than an empty
+one, a config file hinting at another path.
+
+The flag follows the session rather than the snapshot it opened with: scoring
+already returns the updated record, so a session that earns the tarpit halfway
+through switches over immediately.
+
+### Watching it
+
+The Settings page shows whether the mode is configured, whether a broker is
+actually publishing, calls used against the hourly cap, and counts of answered,
+rejected and throttled. Configured-but-not-running is called out separately,
+because that state looks enabled in the environment and answers nothing.
+
+**Rejected** is the interesting number. The attacker controls the input, so
+they will try to talk the model out of character, and any response carrying an
+apology, a refusal, a mention of instructions or a markdown fence is discarded
+rather than sent. A rising count means somebody is working on it.
+
 ## The session camera
 
 Every text protocol is recorded as an [asciicast](https://docs.asciinema.org)
@@ -433,6 +518,7 @@ web/              nginx + PHP-FPM, public site, webshell, tarpit engine
 {ssh,ftp,telnet,smtp,mysql,smb,rdp}-honey/   protocol emulators
 session-cam/      renders sessions to video and delivers them
 intel/            VirusTotal hash lookups for quarantined payloads
+llm-broker/       optional generated answers for unimplemented commands
 elastic/          ships events to Elasticsearch; Kibana stats
 admin-dashboard/  Flask operator UI
 nginx/            site config

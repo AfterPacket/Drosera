@@ -38,6 +38,69 @@
 </div>
 
 <div class="card">
+  <h2>Generated responses</h2>
+  <table>
+    <tbody>
+      <tr><th>Mode</th>
+        <td>
+          {% if not llm.configured %}
+            <span class="pill off">DISABLED</span>
+          {% elif not llm.running %}
+            <span class="pill off">NO BROKER</span>
+          {% elif not llm.ready %}
+            <span class="pill off">NOT STARTED</span>
+          {% else %}
+            <span class="pill on">ACTIVE</span>
+          {% endif %}
+        </td></tr>
+
+      {% if llm.configured and not llm.running %}
+        <tr><th>Why</th>
+            <td class="muted">HONEYPOT_LLM is set, but no broker is publishing.
+              Start it with <span class="mono">docker compose --profile llm up -d</span>.
+              Until then every unknown command answers
+              <span class="mono">command not found</span>, as it did before.</td></tr>
+      {% elif llm.running and not llm.ready %}
+        <tr><th>Why</th><td class="muted">{{ llm.note }}</td></tr>
+      {% endif %}
+
+      {% if llm.running %}
+        <tr><th>Provider</th>
+            <td class="mono">{{ llm.provider }}{% if llm.model %} &middot; {{ llm.model }}{% endif %}</td></tr>
+        <tr><th>Data leaving the box</th>
+            <td class="muted">
+              {% if llm.provider == 'ollama' %}
+                None. The model runs locally and no request crosses the network.
+              {% else %}
+                Attacker command text and this deployment's persona are sent to
+                {{ llm.provider }}. Command lines routinely carry credentials.
+              {% endif %}
+            </td></tr>
+        <tr><th>Calls this hour</th>
+            <td class="mono">{{ llm.calls_this_hour }} / {{ llm.max_calls_hour }}</td></tr>
+        <tr><th>Answered</th><td class="mono">{{ llm.answered }}</td></tr>
+        <tr><th>Rejected</th>
+            <td><span class="mono">{{ llm.rejected }}</span>
+              <span class="muted">&mdash; failed validation and fell back; a model
+                that broke character never reaches the attacker</span></td></tr>
+        <tr><th>Throttled</th>
+            <td><span class="mono">{{ llm.throttled }}</span>
+              <span class="muted">&mdash; over the hourly or per-address cap</span></td></tr>
+        <tr><th>Errors</th>
+            <td><span class="mono">{{ llm.errors }}</span>
+              {% if llm.last_error %}<span class="muted">&mdash; {{ llm.last_error }}</span>{% endif %}</td></tr>
+      {% endif %}
+
+      <tr><th>Scope</th>
+          <td class="muted">Only commands the fake shell does not implement. Every
+            emulated command stays deterministic, and the busybox applet probe is
+            answered before a model is consulted &mdash; a generated answer there
+            would end the infection chain that is worth capturing.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
   <h2>Thresholds and limits</h2>
   <table>
     <tr><th>Ban threshold</th><td class="mono">{{ settings.ban_threshold }} points</td></tr>

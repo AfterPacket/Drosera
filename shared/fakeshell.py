@@ -6,6 +6,11 @@ in-Redis filesystem. Unknown commands get a plausible bash error.
 
 Latency tiers mimic real work so an attacker's timing heuristics agree with the
 story the rest of the honeypot tells.
+
+With HONEYPOT_LLM=1 the *only* thing that changes is what an unknown command
+answers: instead of `command not found` it may get a generated reply. Every
+command in the table below stays deterministic, and so does the busybox applet
+probe, because those answers are load-bearing -- see shared/llm.py.
 """
 
 import ipaddress
@@ -16,7 +21,7 @@ import shlex
 import time
 import zlib
 
-from . import ioc, loot, persona
+from . import ioc, llm, loot, persona
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -384,6 +389,10 @@ class FakeShell:
         self.written: Dict[str, str] = {}
         # Bounds nested `bash -c` and self-invoking scripts. See _run_script.
         self._script_depth = 0
+        # Whether this session is one worth holding. Only consulted when the
+        # optional LLM mode is on, where it buys a longer wait and a prompt
+        # that favours answers inviting another command.
+        self.engaged = bool(identity.get("tarpit_active"))
 
     # ---------------------------------------------------------------- helpers
 
@@ -408,10 +417,47 @@ class FakeShell:
         if event_type in self._scored_once:
             return
         self._scored_once.add(event_type)
-        self._score(self.ip, event_type, payload=payload, service=self.service)
+        self._note(self._score(self.ip, event_type, payload=payload,
+                               service=self.service))
 
     def _score_always(self, event_type: str, payload: str = "") -> None:
-        self._score(self.ip, event_type, payload=payload, service=self.service)
+        self._note(self._score(self.ip, event_type, payload=payload,
+                               service=self.service))
+
+    def _note(self, result: Any) -> None:
+        """Keep the tarpit flag current from whatever scoring just returned.
+
+        The identity handed to __init__ is a snapshot taken when the session
+        opened, but a session that earns the tarpit earns it partway through --
+        so reading the flag only at the start means the mode meant to hold
+        someone never switches on for the session that provoked it. Scoring
+        already returns the updated record, so this costs no extra round trip.
+        """
+        if isinstance(result, dict) and result.get("tarpit_active"):
+            self.engaged = True
+
+    def _ask_model(self, stage: str) -> Optional[str]:
+        """A generated answer for a command nothing in the table implements.
+
+        No latency is faked around this one. The wait is real work happening,
+        and it lands in the same one-to-three-second band the SLOW tier already
+        occupies, so a generated answer is not separable by timing from a
+        handler that sleeps -- which is the point of the tiers.
+        """
+        if not llm.enabled():
+            return None
+
+        return llm.ask(
+            stage,
+            ip=self.ip,
+            cwd=self.cwd,
+            hostname=self.hostname,
+            username=self.username,
+            os_name=self.identity.get("fake_os", "Ubuntu 22.04.3 LTS"),
+            service=self.service,
+            history=self.history,
+            engaged=self.engaged,
+        )
 
     # ------------------------------------------------------------ filesystem
 
@@ -837,7 +883,21 @@ class FakeShell:
                 # exactly "applet not found" to confirm busybox is installed
                 # before it starts the infection chain. Answering with bash's
                 # "command not found" fails that check and ends the session.
+                #
+                # This returns before the LLM is consulted, and must keep doing
+                # so. A model asked what `busybox MIRAI` prints will answer
+                # something reasonable and wrong, and the cost of that is the
+                # whole infection chain -- the part actually worth capturing.
                 return f"{command}: applet not found"
+
+            # The only place a model is consulted, and only once every
+            # deterministic answer above has declined. None means off,
+            # unavailable, out of budget, or a response that failed validation;
+            # all four fall through to the error this has always returned.
+            generated = self._ask_model(stage)
+            if generated is not None:
+                return self._finish(generated, redirect_op, redirect_target, depth)
+
             return f"bash: {command}: command not found"
 
         return self._finish(handler(self, args, stage),

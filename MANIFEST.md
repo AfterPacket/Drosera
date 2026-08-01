@@ -29,6 +29,7 @@ services were stubs.
 | `persona.py` | Reads `/persona/persona.json`: the machine this deployment pretends to be. Banners, hostname/kernel/user pools, shell history, honeytoken credentials, fake-file sizes. Falls back to published defaults so a fresh clone runs |
 | `rickroll.py` | Loads `rickroll.txt` for the SSH and telnet ban paths, which drip it through `tarpit.drip`/`drip_sync` rather than sending it at once. `HONEYPOT_RICKROLL=0` restores the silent drop |
 | `rickroll.txt` | The art itself, read by all three tiers. LF in the repository; converted to CRLF for the terminal services because a socket has no line discipline. Bind-mounted into the web container at `/rickroll.txt` — `web/` is the only thing that container gets, so this one file is mounted explicitly, at the root rather than under the read-only `/var/www/html` mount. `deploy/preflight.sh` asserts it |
+| `llm.py` | Optional generated answers for commands `fakeshell.py` does not implement. Opens no socket: the honeypot containers have no egress, so a request is written to `storage/llm/requests/` and `llm-broker` answers it. Every failure path returns `None` and the shell prints `command not found` as before, including a fast-fail when no broker is publishing |
 | `__init__.py` | Re-exports the public surface |
 
 ## `web/` — public site, webshell, tarpit
@@ -137,6 +138,16 @@ honeypot container is a member of.
 |---|---|
 | `vt.py` | VirusTotal hash lookups for quarantined payloads. Runs on `cam-egress` with no listening ports. Reads the JSON sidecars and the hash in the filename, never a captured sample, so the one container with internet access never opens attacker input. Sends a hash and not the file — see the module docstring for why that is a decision rather than a default |
 | `Dockerfile` | stdlib only. Depends on `shared/__init__.py` importing lazily; an eager import there lands here |
+
+## `llm-broker/`
+
+Under the `llm` profile. Absent from a default deployment.
+
+| File | Purpose |
+|---|---|
+| `broker.py` | The only container permitted to talk to a language model. Runs on `llm-egress` with no listening ports; work arrives over the storage volume, as it does for `session-cam`. Supports Ollama, Anthropic, OpenAI and xAI. Enforces hourly and per-address call caps, and validates every response before it can reach an attacker — anything reading like an assistant is discarded in favour of the fallback. Publishes counters to `storage/llm/status.json` for the Settings page |
+| `test_broker.py` | Pins both edges of `sanitise()`: plausible terminal output survives, anything that broke character does not. Also covers the budget and prompt construction |
+| `Dockerfile` | stdlib only, deliberately. This container has both internet access and attacker-derived input in memory, so it carries no third-party Python to audit |
 
 ## `persona/`
 
