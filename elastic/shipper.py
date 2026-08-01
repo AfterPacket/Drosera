@@ -292,9 +292,23 @@ def ensure_kibana_data_view() -> bool:
     if status in (200, 201):
         log("kibana data view created")
         return True
+
+    # Kibana answers a duplicate with 400 and a message, not the 409 the shape
+    # of the operation suggests. Treating that as failure meant the one status
+    # it actually returns for "already done" was the one that kept it retrying
+    # -- forever, once per cycle, for a view that existed the whole time.
+    #
+    # Matched on the message rather than the bare status: 400 is also what a
+    # genuinely malformed request gets, and swallowing that would hide a real
+    # error behind an assumption.
+    detail = (raw or b"").decode("utf-8", "replace")
+    if status == 400 and "duplicate" in detail.lower():
+        log("kibana data view already present")
+        return True
     if status == 409:
         return True
-    log(f"kibana data view pending ({status}); will retry")
+
+    log(f"kibana data view pending ({status}); will retry: {detail[:200]}")
     return False
 
 
