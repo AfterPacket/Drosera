@@ -167,12 +167,26 @@ def http_crash(method: str = "GET") -> bytes:
 
 
 def ssh_crash() -> bytes:
-    """Malformed SSH protocol data.
+    """Malformed pre-banner data for SSH. No version string, deliberately.
 
-    SSH starts with version string; malform everything after that.
+    This used to lead with b"SSH-2.0-OpenSSH_8.0\\r\\n", which was wrong twice.
+
+    It ended the connection. RFC 4253 4.2 lets a server send arbitrary lines
+    *before* its version string and a conforming client must keep reading, so
+    withholding the banner leaves nothing to object to -- but once the version
+    exchange completes the client expects KEXINIT, and garbage instead of one is
+    a protocol error it can act on. fake_sshd.run_tarpit() documents learning
+    that the expensive way, and crash mode was reintroducing it: the address
+    would be dropped in about forty seconds rather than held until its own
+    timeout.
+
+    And it was a fingerprint. The banner is meant to come from the persona --
+    fake_sshd sets SSH_BANNER = persona.get("ssh_banner") precisely so it is not
+    a constant anyone can grep this repository for. Crash mode handed out a
+    hardcoded one, so an attacker comparing a crashed connection against a
+    normal one saw two different servers, one of them published here.
     """
-    valid = b"SSH-2.0-OpenSSH_8.0\r\n"
-    return valid + for_protocol("ssh")
+    return for_protocol("ssh")
 
 
 def telnet_crash() -> bytes:

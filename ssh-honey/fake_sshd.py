@@ -577,8 +577,12 @@ def handle_client(sock: socket.socket, addr) -> None:
         #
         # So: the garbage replaces the version string, and then the hold runs on
         # the same socket. That is what activate_crash means by the two running
-        # alongside each other, and both are unparseable, so nothing the client
-        # receives ever becomes a protocol error it can act on.
+        # alongside each other. crash.ssh_crash() withholds the banner for the
+        # same reason run_tarpit does -- see its docstring, which is where the
+        # version string used to be sent and where that cost forty seconds a
+        # connection. How much of the hold survives still depends on the client:
+        # OpenSSH rejects a banner line with non-printable bytes and leaves, a
+        # naive scanner keeps reading. Denial always, the long hold often.
         crashed = identity.is_crashed(ip)
         if crashed:
             try:

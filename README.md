@@ -125,8 +125,20 @@ On SSH and telnet the garbage goes out **and then the connection is held**,
 rather than being closed. That ordering matters: closing after the garbage
 would have made the harsher tier the cheaper one — a tenth of a second against
 the tarpit's minutes — for exactly the addresses that scored their way past 15.
-Both the tarpit's junk and crash mode's are unparseable, so nothing the client
-receives becomes a protocol error it can act on and disconnect over.
+On SSH the garbage carries no version string, for the reason the tarpit carries
+none either: completing the version exchange and then sending junk hands the
+client a protocol error it can act on, where withholding the banner leaves it
+nothing to object to under RFC 4253 §4.2.
+
+How long the hold actually lasts depends on how strict the client is, and the
+two goals genuinely pull against each other. The tarpit's junk is *legal* —
+printable characters, CRLF-terminated — precisely so a conforming client keeps
+waiting. Crash mode's is illegal by construction, and a strict client such as
+OpenSSH rejects a banner line containing non-printable bytes and leaves at once.
+So you keep the fingerprint denial in every case, and you collect the long hold
+from the lenient scanners, which are a good share of what reaches this tier
+anyway. If holding matters more to you than denial for a given deployment,
+`HONEYPOT_CRASH=0` leaves the tarpit doing what it does best.
 
 **Know what it costs before you raise it.** The garbage is sent *before* the
 handshake, so an address in crash mode stops offering credentials, transcripts,
