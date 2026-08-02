@@ -232,6 +232,13 @@ def ensure_template() -> None:
                     },
                     "service": {"type": "keyword"},
                     "event_type": {"type": "keyword"},
+                    # Which mechanism spent the attacker's time: tarpit, crash,
+                    # bang or ban. Mapped explicitly so "which of these actually
+                    # costs them more, over time" is one split in Kibana rather
+                    # than a regex over `reason` -- and keyword rather than the
+                    # text default, because dynamic mapping would make it
+                    # searchable but not aggregatable, which is the wrong half.
+                    "hold_kind": {"type": "keyword"},
                     # text for searching, keyword for counting. Without the
                     # sub-field these can be matched but never aggregated, so
                     # "the twenty passwords most often tried" -- which is the

@@ -171,8 +171,22 @@ def end_hold(key: Optional[str]) -> None:
         pass
 
 
-def log_hold(ip: str, service: str, seconds: float, reason: str = "") -> None:
-    """Record how long a connection was pinned. Matches ssh-honey's TARPIT_HELD."""
+def log_hold(ip: str, service: str, seconds: float, reason: str = "",
+             kind: str = "tarpit") -> None:
+    """Record how long a connection was pinned. Matches ssh-honey's TARPIT_HELD.
+
+    This is the single home for held_seconds. Every mechanism that costs an
+    attacker time reports it here and nowhere else, so summing the field over
+    the event log is a total rather than a double count -- the exit bang used
+    to report its own duration a second time on its SESSION_BANG event, which
+    made any naive "attacker minutes" aggregation in Kibana count it twice.
+
+    `kind` is what a chart splits on: "tarpit" for the ordinary drain, "crash"
+    for the pre-handshake tier, "bang" for the denied ending. A keyword field
+    rather than prose in `reason`, because comparing the three over time is the
+    question worth asking of this data and parsing a sentence to answer it is
+    how that comparison silently goes wrong.
+    """
     if seconds <= 0:
         return
     alerting.alert_event(
@@ -182,4 +196,5 @@ def log_hold(ip: str, service: str, seconds: float, reason: str = "") -> None:
         reason=reason or f"{service} tarpit held connection {seconds:.0f}s",
         tarpit_active=True,
         held_seconds=round(seconds, 1),
+        hold_kind=kind,
     )

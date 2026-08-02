@@ -384,15 +384,17 @@ def bang(sock: socket.socket, ip: str, recorder=None, ident: dict = None) -> Non
     finally:
         _drop_hold_slot(ip)
         tarpit.end_hold(hold_key)
-        tarpit.log_hold(ip, SERVICE, held, reason="ssh session bang")
-        # Carrying the score and the persona the way every other event does.
-        # Without them the bang arrived in Elasticsearch with cumulative_score 0
-        # and an empty fake_hostname, which reads as "this address has done
-        # nothing" for a session that just finished being fully recorded.
+        # The duration is reported here and only here. SESSION_BANG below
+        # deliberately carries no held_seconds: it did, and a sum of the field
+        # across the log then counted every bang twice.
+        tarpit.log_hold(ip, SERVICE, held, reason="ssh session bang", kind="bang")
+        # Score and persona the way every other event carries them. Without
+        # them the bang arrived in Elasticsearch with cumulative_score 0 and an
+        # empty fake_hostname, which reads as "this address has done nothing"
+        # for a session that had just been recorded in full.
         alerting.alert_event(
             ip=ip, event_type="SESSION_BANG", service=SERVICE,
             reason=f"session ended with a corrupted stream after {held:.0f}s",
-            held_seconds=round(held, 1),
             cumulative_score=float((ident or {}).get("score") or 0),
             fake_hostname=(ident or {}).get("fake_hostname") or "",
         )
@@ -483,6 +485,10 @@ def run_tarpit(sock: socket.socket, ip: str, reason: str = "ssh tarpit") -> None
             ip=ip, event_type="TARPIT_HELD", service=SERVICE,
             reason=f"{reason} held connection {held:.0f}s",
             tarpit_active=True, held_seconds=round(held, 1),
+            # Written directly rather than through log_hold, so the keyword has
+            # to be set here too or SSH's tarpit holds would be the only ones
+            # missing from a chart split on hold_kind.
+            hold_kind="crash" if reason == "ssh crash mode" else "tarpit",
         )
         try:
             sock.close()

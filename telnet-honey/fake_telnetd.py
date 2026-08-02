@@ -120,7 +120,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             if recorder is not None:
                 recorder.write_output(f"\r\ndelivered over {held:.0f}s\r\n")
                 recorder.close()
-            tarpit.log_hold(ip, SERVICE, held, reason="telnet rickroll (banned)")
+            tarpit.log_hold(ip, SERVICE, held, reason="telnet rickroll (banned)",
+                            kind="ban")
         writer.close()
         return
 
@@ -156,7 +157,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             held = time.monotonic() - started
             recorder.write_output(f"held {held:.0f}s\r\n")
             recorder.close()
-            tarpit.log_hold(ip, SERVICE, held, reason="telnet crash mode")
+            tarpit.log_hold(ip, SERVICE, held, reason="telnet crash mode",
+                            kind="crash")
             writer.close()
         return
 
@@ -375,11 +377,12 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             finally:
                 tarpit.end_hold(hold_key)
                 held = time.monotonic() - started
-                tarpit.log_hold(ip, SERVICE, held, reason="telnet session bang")
+                # Duration reported here and only here -- see fake_sshd.bang().
+                tarpit.log_hold(ip, SERVICE, held,
+                                reason="telnet session bang", kind="bang")
                 alerting.alert_event(
                     ip=ip, event_type="SESSION_BANG", service=SERVICE,
                     reason=f"session ended with garbage after {held:.0f}s",
-                    held_seconds=round(held, 1),
                     cumulative_score=float(ident.get("score") or 0),
                     fake_hostname=ident.get("fake_hostname") or "",
                 )
