@@ -350,7 +350,26 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 await writer.drain()
                 if recorder is not None:
                     recorder.write_output("\r\n[connection corrupted]\r\n")
-                await asyncio.sleep(CRASH_HOLD_SECONDS)
+
+                # Read rather than sleep, so the hold is measured instead of
+                # assumed. asyncio.sleep() cannot notice the peer hanging up,
+                # so it logged the full window every time -- a bot that dropped
+                # instantly still credited us with sixty seconds it never spent.
+                # Over the volume this fires at, that is hours of imaginary time
+                # in "attacker-minutes wasted", which is the same trap the SSH
+                # tarpit's last_ok bookkeeping exists to avoid.
+                deadline = time.monotonic() + CRASH_HOLD_SECONDS
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        chunk = await asyncio.wait_for(reader.read(256),
+                                                       timeout=remaining)
+                    except asyncio.TimeoutError:
+                        break           # sat through the whole window
+                    if not chunk:
+                        break           # EOF: they left, and now we know when
             except (OSError, asyncio.TimeoutError, ConnectionResetError):
                 pass
             finally:
@@ -361,6 +380,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                     ip=ip, event_type="SESSION_BANG", service=SERVICE,
                     reason=f"session ended with garbage after {held:.0f}s",
                     held_seconds=round(held, 1),
+                    cumulative_score=float(ident.get("score") or 0),
+                    fake_hostname=ident.get("fake_hostname") or "",
                 )
 
         if recorder is not None:

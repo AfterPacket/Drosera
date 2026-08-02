@@ -322,7 +322,7 @@ class SFTPSink(paramiko.SFTPServerInterface):
         return paramiko.SFTP_PERMISSION_DENIED
 
 
-def bang(sock: socket.socket, ip: str, recorder=None) -> None:
+def bang(sock: socket.socket, ip: str, recorder=None, ident: dict = None) -> None:
     """End a fully recorded session with corruption instead of a clean close.
 
     The sundew does not release a live insect, and until this existed Drosera
@@ -359,12 +359,25 @@ def bang(sock: socket.socket, ip: str, recorder=None) -> None:
         sock.sendall(crash.ssh_crash())
         if recorder is not None:
             recorder.write_output("\r\n[connection corrupted]\r\n")
+
         # No close and no disconnect message. A strict client aborts on the MAC
         # failure and is gone in milliseconds; a sloppy one sits here. Both get
         # the broken ending, which is the part that always works.
+        #
+        # Read rather than sleep, for the reason run_tarpit tracks last_ok: a
+        # sleep loop cannot see the peer hang up, so it reports the full window
+        # every time and credits us with time nobody spent. Recv returns b"" on
+        # close, which is the only honest place to stop counting.
         deadline = time.time() + CRASH_HOLD_SECONDS
+        sock.settimeout(2.0)
         while time.time() < deadline:
-            time.sleep(min(2.0, max(0.1, deadline - time.time())))
+            try:
+                if not sock.recv(256):
+                    break               # peer closed
+            except socket.timeout:
+                continue                # still connected, still waiting
+            except OSError:
+                break
         held = time.time() - started
     except OSError:
         held = time.time() - started
@@ -372,10 +385,16 @@ def bang(sock: socket.socket, ip: str, recorder=None) -> None:
         _drop_hold_slot(ip)
         tarpit.end_hold(hold_key)
         tarpit.log_hold(ip, SERVICE, held, reason="ssh session bang")
+        # Carrying the score and the persona the way every other event does.
+        # Without them the bang arrived in Elasticsearch with cumulative_score 0
+        # and an empty fake_hostname, which reads as "this address has done
+        # nothing" for a session that just finished being fully recorded.
         alerting.alert_event(
             ip=ip, event_type="SESSION_BANG", service=SERVICE,
             reason=f"session ended with a corrupted stream after {held:.0f}s",
             held_seconds=round(held, 1),
+            cumulative_score=float((ident or {}).get("score") or 0),
+            fake_hostname=(ident or {}).get("fake_hostname") or "",
         )
         try:
             sock.close()
@@ -743,7 +762,7 @@ def handle_client(sock: socket.socket, addr) -> None:
         # never fire. This applies to any session that got as far as a shell,
         # which is the same thing as "we have finished digesting it".
         if crash.enabled():
-            bang(sock, ip, server.rec() if server is not None else None)
+            bang(sock, ip, server.rec() if server is not None else None, ident)
             return
 
         try:
