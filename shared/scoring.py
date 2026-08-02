@@ -63,6 +63,10 @@ SCORES = {
     # has been scored -- it is a record of how the session ended, not of
     # anything the attacker did to earn points.
     "SESSION_BANG": (0, "Session denied a clean ending"),
+    # Verdicts, not attacker behaviour -- the attacker earned their points when
+    # the payload landed, and scoring them again for what VirusTotal later says
+    # would let an external service move a local score.
+    "LOOT_CLEAN": (0, "Quarantined sample known to VirusTotal, no detections"),
 }
 
 # MITRE ATT&CK technique per event type, as (id, name).

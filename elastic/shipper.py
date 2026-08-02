@@ -239,6 +239,15 @@ def ensure_template() -> None:
                     # text default, because dynamic mapping would make it
                     # searchable but not aggregatable, which is the wrong half.
                     "hold_kind": {"type": "keyword"},
+                    # Loot, as fields rather than as a sentence. The digest and
+                    # the family name used to exist only inside payload_excerpt,
+                    # which can be searched but not grouped -- so "the sample
+                    # dropped most often" and "the family we see most" were
+                    # unanswerable about data we hold in full.
+                    "loot_sha256": {"type": "keyword"},
+                    "loot_size": {"type": "long"},
+                    "vt_malicious": {"type": "integer"},
+                    "vt_label": {"type": "keyword"},
                     # text for searching, keyword for counting. Without the
                     # sub-field these can be matched but never aggregated, so
                     # "the twenty passwords most often tried" -- which is the

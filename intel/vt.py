@@ -202,9 +202,34 @@ def run_once() -> None:
                 source or "0.0.0.0", "LOOT_MALICIOUS", service="intel",
                 payload=(f"{digest} flagged by {verdict['malicious']} engines "
                          f"({label})")[:200],
+                # Structured as well as narrated. The sentence above is what an
+                # operator reads in an alert; these are what Kibana can group
+                # by, and without them "which sample keeps coming back" and
+                # "which family dominates" are unanswerable -- the digest was
+                # only ever inside a phrase.
+                loot_sha256=digest,
+                loot_size=int(meta.get("size") or 0),
+                vt_malicious=int(verdict.get("malicious") or 0),
+                vt_label=label,
             )
         elif verdict.get("known"):
             log(f"{digest[:16]} known, 0 detections")
+            # Recorded but not alerted. This is the boring outcome and stays
+            # out of the notable set, but a verdict breakdown that omits it is
+            # not a breakdown -- it would show malicious against unknown and
+            # silently drop every sample that came back clean, making the
+            # quarantine look far worse than it is.
+            meta = loot.read_meta(digest) or {}
+            sightings = meta.get("sightings") or []
+            alerting.alert_event(
+                (sightings[-1].get("ip", "") if sightings else "") or "0.0.0.0",
+                "LOOT_CLEAN", service="intel",
+                payload=f"{digest} known to VirusTotal, 0 detections"[:200],
+                loot_sha256=digest,
+                loot_size=int(meta.get("size") or 0),
+                vt_malicious=0,
+                vt_label="clean",
+            )
         else:
             # Unknown to VT is the interesting case, not the boring one: it
             # means nobody has submitted it, which for a live drop suggests
@@ -216,6 +241,10 @@ def run_once() -> None:
             alerting.alert_event(
                 source or "0.0.0.0", "LOOT_UNKNOWN", service="intel",
                 payload=f"{digest} unknown to VirusTotal ({meta.get('size', 0)}B)"[:200],
+                loot_sha256=digest,
+                loot_size=int(meta.get("size") or 0),
+                vt_malicious=0,
+                vt_label="unknown",
             )
 
         time.sleep(REQUEST_INTERVAL)
