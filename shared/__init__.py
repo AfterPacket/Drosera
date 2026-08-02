@@ -33,6 +33,7 @@ _EXPORTS = {
     "is_crashed": "identity",
     "is_tarpitted": "identity",
     "record_credential": "identity",
+    "release_crash": "identity",
     "release_tarpit": "identity",
     "score_event": "identity",
     "score_named_event": "identity",

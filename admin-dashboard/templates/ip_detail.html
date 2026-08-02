@@ -84,6 +84,10 @@
     <button class="act" data-action="unban" data-ip="{{ ip }}">Unban</button>
     <button class="act" data-action="tarpit" data-ip="{{ ip }}">Tarpit</button>
     <button class="act" data-action="untarpit" data-ip="{{ ip }}">Release tarpit</button>
+    {# Crash mode answers before the handshake, so an address left in it stops
+       producing credentials, transcripts and payloads. Nothing expires the flag
+       on its own -- this button is the only way back out. #}
+    <button class="act" data-action="uncrash" data-ip="{{ ip }}">Release crash mode</button>
     <a class="act primary" href="{{ url_for('api_export', ip=ip) }}">Export evidence bundle</a>
     <span id="action-status" class="muted"></span>
   </div>

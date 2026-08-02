@@ -22,46 +22,61 @@ $path = parse_url($requestUri, PHP_URL_PATH) ?: '/';
 
 log_request($ip, ['tab' => $_GET['tab'] ?? null, 'action' => $_GET['action'] ?? null]);
 
-// Check for crash mode before any content
+// Crash mode, before any content.
+//
+// This cannot malform HTTP the way shared/crash.py can on a raw socket, and it
+// is written not to pretend otherwise: nginx and PHP-FPM frame the response, so
+// a hand-written status line echoed here would be body text inside a perfectly
+// well-formed reply, and a Content-Length that disagrees with what is echoed
+// only produces an "upstream sent more data than specified" line in our own
+// error log. What is left -- a body no parser gets anything out of -- is the
+// part that was ever going to reach the scanner.
 if (sb_is_crashed($ip)) {
+    $payload = random_bytes(random_int(512, 4096));
     header('Content-Type: application/octet-stream');
-    header('Content-Length: ' . strlen($crash_payload));
+    header('Content-Length: ' . strlen($payload));
     header('Connection: close');
-    // Generate malformed HTTP response
-    $crash_response = "HTTP/1.1 200 OK\r\n";
-    $crash_response .= "Server: Apache\r\n";
-    $crash_response .= "Content-Type: text/html; charset=UTF-8\r\n";
-    $crash_response .= "Content-Length: " . random_int(999999, 9999999) . "\r\n";
-    $crash_response .= "\r\n";
-    // Send partial content then garbage
-    echo substr($crash_response, 0, random_int(10, strlen($crash_response) - 1));
-    for ($i = 0; $i < random_int(100, 500); $i++) {
-        echo chr(random_int(0, 255));
-    }
+    echo $payload;
     exit;
 }
 
-// Detect nmap in User-Agent
+// nmap names itself in the NSE User-Agent. Word-bounded: an unbounded, case
+// insensitive "NSE" also matches "license", "consent" and "AdSense", and a
+// false positive here scores an ordinary crawler as a scanner.
 $ua = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
-if (stripos($ua, 'nmap') !== false || stripos($ua, 'NSE') !== false) {
-    score_event($ip, 'TOOL_NMAP', 'nmap detected in User-Agent: ' . substr($ua, 0, 100), 'nmap');
-    // Check if this triggered crash mode
-    if (score_event($ip, 'TOOL_NMAP')['new_score'] >= CRASH_THRESHOLD) {
+if (preg_match('/\b(nmap|nse|nping|ndiff|zenmap)\b/i', $ua) === 1) {
+    // Scored once. Calling score_event twice to read the score back charged the
+    // points twice and wrote two events for one request.
+    $result = score_event($ip, 'TOOL_NMAP', 'nmap User-Agent: ' . mb_substr($ua, 0, 200), 'nmap');
+
+    if (CRASH_ENABLED && (float)($result['new_score'] ?? 0) >= CRASH_THRESHOLD) {
         sb_activate_crash($ip, 'nmap detected (score threshold)');
+        $payload = random_bytes(random_int(512, 4096));
         header('Content-Type: application/octet-stream');
-        echo random_bytes(random_int(256, 2048));
+        header('Content-Length: ' . strlen($payload));
+        echo $payload;
         exit;
     }
-    // Return fake nmap result
+
+    // The ports Drosera really listens on, so this agrees with what their own
+    // scan finds on a second look. Keep in step with shared/nmap.py and the
+    // published ports in docker-compose.yml.
     header('Content-Type: text/plain');
-    echo "Starting Nmap\r\n";
-    echo "Nmap scan report for $ip\r\n";
-    echo "22/tcp    open    ssh\r\n";
-    echo "23/tcp    open    telnet\r\n";
-    echo "80/tcp    open    http\r\n";
-    echo "443/tcp   open    https\r\n";
-    echo "3306/tcp  open    mysql\r\n";
-    echo "445/tcp   open    microsoft-ds\r\n";
+    echo "Starting Nmap 7.80 ( https://nmap.org )\n";
+    echo "Nmap scan report for $ip\n";
+    echo "Host is up (0.0024s latency).\n";
+    echo "Not shown: 991 filtered ports\n";
+    echo "PORT      STATE SERVICE\n";
+    echo "21/tcp    open  ftp\n";
+    echo "22/tcp    open  ssh\n";
+    echo "23/tcp    open  telnet\n";
+    echo "25/tcp    open  smtp\n";
+    echo "80/tcp    open  http\n";
+    echo "443/tcp   open  https\n";
+    echo "445/tcp   open  microsoft-ds\n";
+    echo "3306/tcp  open  mysql\n";
+    echo "3389/tcp  open  ms-wbt-server\n";
+    echo "\nNmap done: 1 IP address (1 host up) scanned in 1.84 seconds\n";
     exit;
 }
 

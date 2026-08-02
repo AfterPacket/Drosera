@@ -58,6 +58,7 @@ SCORES = {
     "TOOL_NMAP": (5, "Nmap detected"),
     "TOOL_OTHER": (2, "Automated scanner detected"),
     "CRASH_ENGAGED": (0, "Crash mode activated for IP"),
+    "CRASH_RELEASED": (0, "Crash mode released for IP"),
 }
 
 # MITRE ATT&CK technique per event type, as (id, name).
@@ -101,6 +102,7 @@ TECHNIQUES = {
     "TOOL_METASPLOIT": ("T1588.002", "Obtain Capabilities: Tool"),
     "TOOL_HYDRA": ("T1110", "Brute Force"),
     "TOOL_MASSCAN": ("T1595.001", "Scanning IP Blocks"),
+    "TOOL_NMAP": ("T1046", "Network Service Discovery"),
 }
 
 BAN_THRESHOLD = int(os.getenv("HONEYPOT_BAN_THRESHOLD", "35"))

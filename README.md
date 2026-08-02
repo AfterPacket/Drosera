@@ -81,13 +81,14 @@ this aggressive — and it is why you must not co-host anything real on the box.
 
 ## How it responds
 
-Three tiers, driven by a cumulative per-IP score:
+Four tiers, driven by a cumulative per-IP score:
 
 | Tier | Trigger | Response |
 |---|---|---|
 | 1 | Unknown visitor | Serve the convincing fake site. Log silently |
-| 2 | Confirmed scanner (tool in User-Agent, or a known probe path) | Engage the tarpit: claim a 10 MB body, then trickle bytes at ~3 KB/s until they give up |
-| 3 | Score ≥ 35 | Ban, and write a fail2ban line that firewalls them at the host. One last tarpit on the way out: browsers are redirected to a rickroll, and everything that ignores redirects — which is most of what gets banned — gets the same joke dripped as ASCII art, on the web and over SSH and telnet alike |
+| 2 | Confirmed scanner (tool in User-Agent, or a known probe path), or score ≥ 5 | Engage the tarpit: claim a 10 MB body, then trickle bytes at ~3 KB/s until they give up |
+| 3 | Score ≥ 15 | [Crash mode](#crash-mode): answer with procedurally generated malformed data instead of a protocol, before the handshake. Optional, and it costs you the intelligence — read the section before raising it |
+| 4 | Score ≥ 35 | Ban, and write a fail2ban line that firewalls them at the host. One last tarpit on the way out: browsers are redirected to a rickroll, and everything that ignores redirects — which is most of what gets banned — gets the same joke dripped as ASCII art, on the web and over SSH and telnet alike |
 
 Scores accumulate across *every* service. An attacker who probes the web shell
 and then tries SSH is one profile, with one consistent fake machine identity —
@@ -102,6 +103,74 @@ The fake shell answers well enough to get past a worm's capability check —
 input is processed in full — because passing that check is what convinces the
 worm to go on and drop its real payload, which is [the thing actually worth
 capturing](#how-loot-works).
+
+### Crash mode
+
+The tier between the tarpit and the ban. Past `HONEYPOT_CRASH_THRESHOLD` an
+address is answered with procedurally generated malformed data instead of a
+protocol — truncated headers, unterminated frames, impossible lengths, raw
+bytes — which is meant to hang or break the tool doing the scanning. No two
+responses are alike, so a scanner that adapts to one gets a different one next
+time, and there is nothing static to write a signature against.
+
+**Know what it costs before you raise it.** The garbage is sent *before* the
+handshake, so an address in crash mode stops offering credentials, transcripts,
+uploaded payloads and commands — it never gets far enough to offer any. That is
+the same trade the SSH honeypot declines for Hydra, where recognising the tool
+and stonewalling it throws away the wordlist it was about to hand over. Crash
+mode buys their time and spends your intelligence. The default sits well above
+the tarpit (5) and below the ban (35) for that reason: it applies to addresses
+long past ordinary background noise, and everything worth collecting from them
+has already been collected.
+
+```
+HONEYPOT_CRASH=1               # 0 disables it, and releases anyone already flagged
+HONEYPOT_CRASH_THRESHOLD=15    # between the tarpit (5) and the ban (35)
+HONEYPOT_CRASH_GARBAGE_MIN=512
+HONEYPOT_CRASH_GARBAGE_MAX=8192
+```
+
+The two size bounds are bandwidth. The upper one is roughly what a single
+crashed connection costs you, so raising it is a bill rather than a setting.
+
+Nothing expires the flag on its own inside the identity's seven-day TTL, so
+there are two ways back out. `HONEYPOT_CRASH=0` releases *every* flagged address
+at once rather than stranding them — the switch is read on each check, not only
+when the flag is set. For one address, **Release crash mode** on the profile
+page clears it and holds it clear for `HONEYPOT_TARPIT_RELEASE_SECONDS`; the
+release carries a deadline rather than just flipping the flag, because the score
+is the record of what they did and is left alone, so a bare flag flip would
+last until their next scored event. Releasing an address from the tarpit, or
+unbanning it, releases crash mode with it and on the same deadline — an address
+still handed garbage before the handshake has not been released at all.
+
+Over HTTP the effect is weaker than on a raw socket and is written not to
+pretend otherwise: nginx and PHP-FPM frame the response, so what reaches the
+scanner is a well-formed reply with a body no parser gets anything out of.
+
+### On nmap: detected, scored, never answered in kind
+
+`nmap` naming itself — in an HTTP User-Agent, an SSH version string, a telnet
+service probe — scores five points and nothing more. The connection carries on,
+so whatever probe follows is still recorded.
+
+**Drosera does not scan anybody back**, and `shared/nmap.py` is detection-only
+by design, not by omission. `AUTHORIZATION.md` §2 attests that the deployment is
+passive and targets no third-party system, and §7 that the architecture makes
+scanning back impossible from this box — statements you may have to stand behind
+in front of a hosting provider or a CERT. The connecting address is very often a
+compromised third party rather than the attacker, which makes a scan back a live
+port scan aimed at another victim. It could not work here anyway: egress from
+the honeypot subnet is dropped at the host firewall, `nmap` is in none of the
+images, and OS fingerprinting needs `CAP_NET_RAW`, which `cap_drop: [ALL]`
+removes. Every call would fall through to a fabricated result — and a fabricated
+port scan written to `storage/loot/` is indistinguishable from a real one in the
+evidence bundle you hand an abuse desk.
+
+What an attacker who runs `nmap` *at the honeypot* gets back is a generated
+report showing the ports Drosera really listens on, so it agrees with what their
+own scan finds on a second look. See [Scan-back](#optional-extras) for the same
+question inside the fake shell.
 
 ## Generated responses
 
@@ -697,6 +766,10 @@ only the observed block is real. `HONEYPOT_SCANBACK=0` turns it off, which you
 may want: a careful attacker reads that block and leaves, and the rest of the
 session goes with them.
 
+The same holds one layer down, where the protocol honeypots detect nmap on the
+wire rather than in a typed command — see [On nmap](#on-nmap-detected-scored-never-answered-in-kind).
+Neither path opens a socket at anybody.
+
 **GeoIP and ASN** — country, city and coordinates for the Kibana map, plus the
 network each address belongs to. The script fetches both free MaxMind editions,
 `GeoLite2-City` and `GeoLite2-ASN`, under one licence key; they are licensed and
@@ -1258,8 +1331,9 @@ Running on a live VPS taking real internet traffic. Confirmed in production:
 - Sortable tables, including IP columns ordered by octet.
 
 Not yet confirmed in production, because they are recent: the persona layer,
-payload quarantine and VirusTotal enrichment, scan-back, and the two fixes that
-stop worms disconnecting early (`bash -c` unwrapping and pipelined input).
+payload quarantine and VirusTotal enrichment, scan-back, crash mode and its
+release control, and the two fixes that stop worms disconnecting early
+(`bash -c` unwrapping and pipelined input).
 Watch `docker compose logs -f intel` and your loot directory after deploying
 those, and run `./deploy/preflight.sh` first — it catches the import and syntax
 faults that otherwise surface as a restart loop.

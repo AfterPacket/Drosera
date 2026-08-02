@@ -268,6 +268,7 @@ def _generate(ip: str) -> Dict[str, Any]:
         "tarpit_active": False,
         "tarpit_exempt_until": 0,
         "crash_active": False,
+        "crash_exempt_until": 0,
         "services_touched": [],
         "session_history": [],
         "credentials": [],
@@ -553,8 +554,13 @@ def release_tarpit(ip: str, reason: str = "Operator release",
     from . import alerting
 
     window = RELEASE_SECONDS if seconds is None else seconds
+    # Crash mode goes with it, on the same deadline. It is the harsher tier of
+    # the same escalation, so an operator releasing someone from the tarpit and
+    # finding them still answered with garbage has not been released at all.
     identity = update_identity(ip, {"tarpit_active": False,
-                                    "tarpit_exempt_until": time.time() + window})
+                                    "tarpit_exempt_until": time.time() + window,
+                                    "crash_active": False,
+                                    "crash_exempt_until": time.time() + window})
     alerting.alert_event(
         ip=ip,
         event_type="TARPIT_RELEASED",
@@ -577,14 +583,26 @@ def activate_crash(ip: str, reason: str = "Threshold reached",
     """Flag an IP for crash mode -- send malformed responses to crash their tools.
 
     Runs alongside the tarpit: they get both slow drain and parsing garbage.
-    Once triggered, stays active until ban or session end. Responses are
-    procedurally generated so no two are identical -- a scanner that adapts to
-    one crash gets a different one next time.
+    Responses are procedurally generated so no two are identical -- a scanner
+    that adapts to one crash gets a different one next time.
+
+    Understand what this costs before raising it above the ban threshold. Crash
+    mode answers *before* the handshake, so a flagged address stops producing
+    credentials, transcripts, uploads and commands entirely -- the same trade
+    fake_sshd.py declines for Hydra, where recognising the tool and stonewalling
+    it throws away the wordlist it was about to hand over. It buys their time
+    and spends our intelligence.
+
+    release_crash() is the way back out, and an operator needs it: nothing
+    expires this on its own inside the identity's 7-day TTL.
     """
-    from . import alerting
+    from . import alerting, crash
+
+    if not crash.enabled():
+        return get_or_create_identity(ip)
 
     identity = get_or_create_identity(ip)
-    if identity.get("crash_active"):
+    if identity.get("crash_active") or is_crash_exempt(identity):
         return identity
 
     identity = update_identity(ip, {"crash_active": True})
@@ -601,11 +619,46 @@ def activate_crash(ip: str, reason: str = "Threshold reached",
     return identity
 
 
+def release_crash(ip: str, reason: str = "Operator release",
+                  seconds: float = None) -> Dict[str, Any]:
+    """Take an IP out of crash mode, and keep it out for a while.
+
+    An exemption with a deadline rather than a flag flip, for the reason
+    release_tarpit() gives: the score is the record of what they did and is left
+    alone, so it is still over CRASH_THRESHOLD and the next scored event would
+    re-engage crash mode in the same second the attacker reconnects.
+    """
+    from . import alerting
+
+    window = RELEASE_SECONDS if seconds is None else seconds
+    identity = update_identity(ip, {"crash_active": False,
+                                    "crash_exempt_until": time.time() + window})
+    alerting.alert_event(
+        ip=ip,
+        event_type="CRASH_RELEASED",
+        reason=reason,
+        cumulative_score=float(identity.get("score") or 0),
+        crash_active=False,
+    )
+    return identity
+
+
+def is_crash_exempt(identity: Dict[str, Any]) -> bool:
+    """Whether an operator has released this address from crash mode."""
+    return _exempt_until(identity, "crash_exempt_until")
+
+
 def is_crashed(ip: str) -> bool:
     """Whether an IP is in crash mode."""
-    if is_ignored(ip):
+    from . import crash
+
+    # Checked here rather than only at the call sites, so turning HONEYPOT_CRASH
+    # off releases every address already flagged instead of stranding them.
+    if not crash.enabled() or is_ignored(ip):
         return False
     identity = get_or_create_identity(ip)
+    if is_crash_exempt(identity):
+        return False
     return bool(identity.get("crash_active"))
 
 
@@ -697,8 +750,13 @@ def unban(ip: str, seconds: float = None) -> None:
             client.delete(f"hp:banned:{hash_ip(ip)}")
         except Exception:
             pass
+    # Crash mode lifts with the ban, and on the same deadline. An unbanned
+    # address that is still handed malformed responses before the handshake is
+    # unbanned in the firewall and nowhere else.
     update_identity(ip, {"banned": False, "rickroll": False,
-                         "ban_exempt_until": time.time() + window})
+                         "ban_exempt_until": time.time() + window,
+                         "crash_active": False,
+                         "crash_exempt_until": time.time() + window})
 
 
 def record_credential(ip: str, username: str, password: str, service: str) -> int:

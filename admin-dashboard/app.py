@@ -1838,6 +1838,41 @@ def api_untarpit(ip):
     return _set_tarpit(safe_ip(ip), False)
 
 
+@app.route("/api/uncrash/<path:ip>", methods=["POST"])
+@require_auth
+def api_uncrash(ip):
+    """Take an address out of crash mode.
+
+    The one control the feature shipped without, and the reason it needed one:
+    crash mode answers before the handshake, so a flagged address stops
+    producing credentials, transcripts and payloads entirely, and nothing
+    expires the flag inside the identity's 7-day TTL. Without this the only way
+    back was editing Redis by hand.
+
+    An exemption with a deadline rather than a flag flip, for the same reason
+    _set_tarpit gives: the score is unchanged and still over CRASH_THRESHOLD, so
+    clearing the flag alone lasts until their next scored event.
+    """
+    ip = safe_ip(ip)
+    digest = hashlib.md5(ip.encode()).hexdigest()
+    try:
+        client = _redis_honeypot()
+        raw = client.get(f"hp:identity:{digest}")
+        if not raw:
+            return jsonify({"ok": False,
+                            "error": "no identity recorded for that address"}), 404
+        identity = json.loads(raw)
+        identity["crash_active"] = False
+        identity["crash_exempt_until"] = time.time() + TARPIT_RELEASE_SECONDS
+        client.set(f"hp:identity:{digest}", json.dumps(identity), ex=7 * 24 * 3600)
+    except (redis.RedisError, json.JSONDecodeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    audit("MANUAL_UNCRASH", target_ip=ip)
+    return jsonify({"ok": True, "ip": ip, "crash_active": False,
+                    "exempt_seconds": TARPIT_RELEASE_SECONDS})
+
+
 EXPORT_CHUNK = 256 * 1024
 
 

@@ -12,7 +12,6 @@ import time
 
 sys.path.insert(0, "/app")
 
-from pathlib import Path  # noqa: E402
 from shared import (alerting, crash, credentials, identity, nmap, persona,  # noqa: E402
                     rickroll, scoring, tarpit)
 from shared.fakeshell import FakeShell  # noqa: E402
@@ -141,6 +140,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         await writer.drain()
 
         # A real terminal answers negotiation promptly; scanners usually do not.
+        # Bound before the read, not inside it: a client that connects and sends
+        # nothing is the single most common case here, and it leaves the name
+        # unassigned on the timeout path that every line below then reads.
+        probe = b""
         negotiated = False
         try:
             probe = await asyncio.wait_for(reader.read(64), timeout=3)
@@ -152,18 +155,16 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 ip, "TOOL_OTHER", payload="no IAC response (non-terminal client)",
                 tool="Automated telnet client", service=SERVICE,
             )
-            # Check for nmap patterns in the probe
-            if nmap.is_nmap_probe_path(str(probe[:64])):
-                identity.score_named_event(
-                    ip, "TOOL_NMAP", payload="nmap detected via telnet probe",
+            # nmap's telnet service probes name the tool in what they send. The
+            # banner test, not the path test: a telnet client sends no request
+            # path, so is_nmap_probe_path() could only ever have been false here.
+            # Detection only -- the address is not scanned back, see shared/nmap.py.
+            if nmap.is_nmap_useragent(probe.decode("latin-1", "replace")):
+                result = identity.score_named_event(
+                    ip, "TOOL_NMAP", payload=probe[:200].decode("latin-1", "replace"),
                     tool="nmap", service=SERVICE,
                 )
-                # Scan the attacker back
-                scan_result = nmap.scan_attacker(ip, timeout=5)
-                nmap.store_scan(Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage")), ip, scan_result)
-                # Check if this triggered crash mode
-                ident = identity.get_or_create_identity(ip)
-                if scoring.should_crash(float(ident.get("score") or 0)):
+                if crash.enabled() and scoring.should_crash(float(result.get("new_score") or 0)):
                     identity.activate_crash(ip, reason="nmap detected", service=SERVICE)
 
         # Opened above the tarpit, not below it. A held client usually gives up

@@ -48,6 +48,16 @@ x-honeypot-env: &honeypot-env
   HONEYPOT_BAN_THRESHOLD: ${HONEYPOT_BAN_THRESHOLD:-35}
   HONEYPOT_TARPIT_THRESHOLD: ${HONEYPOT_TARPIT_THRESHOLD:-5}
   HONEYPOT_TARPIT_RELEASE_SECONDS: ${HONEYPOT_TARPIT_RELEASE_SECONDS:-3600}
+  # Crash mode: malformed responses, sent before the handshake. Understand the
+  # trade before raising the threshold -- an address in crash mode stops giving
+  # up credentials, transcripts and payloads, because it never gets far enough
+  # to offer any. Between the tarpit (5) and the ban (35) by default, so it
+  # applies to addresses already well past ordinary noise. Set HONEYPOT_CRASH=0
+  # to keep them talking instead; that also releases anyone already flagged.
+  HONEYPOT_CRASH: ${HONEYPOT_CRASH:-1}
+  HONEYPOT_CRASH_THRESHOLD: ${HONEYPOT_CRASH_THRESHOLD:-15}
+  HONEYPOT_CRASH_GARBAGE_MIN: ${HONEYPOT_CRASH_GARBAGE_MIN:-512}
+  HONEYPOT_CRASH_GARBAGE_MAX: ${HONEYPOT_CRASH_GARBAGE_MAX:-8192}
   HONEYPOT_BAN_TTL: ${HONEYPOT_BAN_TTL:-604800}
   HONEYPOT_MAX_STORAGE_MB: ${HONEYPOT_MAX_STORAGE_MB:-4096}
   # Comma-separated. Your own address belongs here, or browsing your own site

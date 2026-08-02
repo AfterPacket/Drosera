@@ -26,6 +26,16 @@ define('RATE_LIMIT_RPM', (int)(getenv('RATE_LIMIT_RPM') ?: 60));
 define('BAN_THRESHOLD', (int)(getenv('HONEYPOT_BAN_THRESHOLD') ?: 35));
 define('TARPIT_THRESHOLD', (int)(getenv('HONEYPOT_TARPIT_THRESHOLD') ?: 5));
 define('CRASH_THRESHOLD', (int)(getenv('HONEYPOT_CRASH_THRESHOLD') ?: 15));
+// Off switch for crash mode, matching shared/crash.py. Compared explicitly for
+// the same reason HONEYPOT_RICKROLL is below: `?:` reads '0' as falsy and would
+// silently re-enable the thing the operator just turned off.
+define('CRASH_ENABLED', !in_array(
+    strtolower(trim((string)getenv('HONEYPOT_CRASH'))),
+    ['0', 'false', 'no', 'off'], true));
+// How long an operator release holds. Shared with the tarpit release so a single
+// dashboard action does not leave the two tiers on different deadlines.
+define('TARPIT_RELEASE_SECONDS',
+    (float)(getenv('HONEYPOT_TARPIT_RELEASE_SECONDS') ?: 3600));
 define('RICKROLL_URL', getenv('RICKROLL_URL') ?: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
 // Compared explicitly rather than with ?:, which would read '0' as falsy and
 // silently re-enable the thing the operator just turned off.
@@ -131,7 +141,10 @@ const SCORES = [
     'TOOL_NIKTO'          => [3,  'Nikto detected'],
     'TOOL_HYDRA'          => [4,  'Hydra detected'],
     'TOOL_MASSCAN'        => [3,  'Masscan detected'],
+    'TOOL_NMAP'           => [5,  'Nmap detected'],
     'TOOL_OTHER'          => [2,  'Automated scanner detected'],
+    'CRASH_ENGAGED'       => [0,  'Crash mode activated for IP'],
+    'CRASH_RELEASED'      => [0,  'Crash mode released for IP'],
 ];
 
 /* Cloudflare edge ranges. CF-Connecting-IP is honoured only from these peers. */
@@ -460,6 +473,9 @@ function sb_generate_identity(string $ip): array
         'score' => 0,
         'tool_detected' => null,
         'tarpit_active' => false,
+        'tarpit_exempt_until' => 0,
+        'crash_active' => false,
+        'crash_exempt_until' => 0,
         'services_touched' => [],
         'session_history' => [],
         'credentials' => [],
@@ -767,25 +783,66 @@ function ban_ip(string $ip, float $score, string $reason, string $tool = '', str
     ]);
 }
 
+/** The same again, for crash mode. See identity.is_crash_exempt. */
+function sb_crash_exempt(array $identity): bool
+{
+    return (float)($identity['crash_exempt_until'] ?? 0) > microtime(true);
+}
+
 function sb_is_crashed(string $ip): bool
 {
-    if (sb_is_ignored($ip)) {
+    // CRASH_ENABLED first, so turning the feature off releases every address
+    // already flagged rather than stranding them for the identity's 7-day TTL.
+    if (!CRASH_ENABLED || sb_is_ignored($ip)) {
         return false;
     }
     $identity = get_or_create_identity($ip);
+    if (sb_crash_exempt($identity)) {
+        return false;
+    }
     return !empty($identity['crash_active']);
 }
 
 function sb_activate_crash(string $ip, string $reason = 'Threshold reached'): void
 {
-    update_identity($ip, ['crash_active' => true]);
+    // Ignored addresses are not data points, and a released one is not put back
+    // by the first request after the release -- the score is still over the
+    // threshold, which is the whole reason the exemption carries a deadline.
+    if (!CRASH_ENABLED || sb_is_ignored($ip)) {
+        return;
+    }
+    $identity = get_or_create_identity($ip);
+    if (!empty($identity['crash_active']) || sb_crash_exempt($identity)) {
+        return;
+    }
+    $identity = update_identity($ip, ['crash_active' => true]);
     sb_write_event([
         'timestamp' => gmdate('c'),
         'real_ip' => $ip,
         'service' => 'web',
         'event_type' => 'CRASH_ENGAGED',
         'reason' => $reason,
+        'cumulative_score' => (float)($identity['score'] ?? 0),
         'crash_active' => true,
+        'fake_hostname' => $identity['fake_hostname'] ?? '',
+    ]);
+}
+
+/** Counterpart to sb_activate_crash. See identity.release_crash. */
+function sb_release_crash(string $ip, string $reason = 'Operator release'): void
+{
+    $identity = update_identity($ip, [
+        'crash_active' => false,
+        'crash_exempt_until' => microtime(true) + TARPIT_RELEASE_SECONDS,
+    ]);
+    sb_write_event([
+        'timestamp' => gmdate('c'),
+        'real_ip' => $ip,
+        'service' => 'web',
+        'event_type' => 'CRASH_RELEASED',
+        'reason' => $reason,
+        'cumulative_score' => (float)($identity['score'] ?? 0),
+        'crash_active' => false,
     ]);
 }
 
@@ -945,6 +1002,7 @@ const TECHNIQUES = [
     'TOOL_METASPLOIT'     => ['T1588.002', 'Obtain Capabilities: Tool'],
     'TOOL_HYDRA'          => ['T1110', 'Brute Force'],
     'TOOL_MASSCAN'        => ['T1595.001', 'Scanning IP Blocks'],
+    'TOOL_NMAP'           => ['T1046', 'Network Service Discovery'],
 ];
 
 function sb_write_event(array $event): void

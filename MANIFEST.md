@@ -30,6 +30,8 @@ services were stubs.
 | `rickroll.py` | Loads `rickroll.txt` for the SSH and telnet ban paths, which drip it through `tarpit.drip`/`drip_sync` rather than sending it at once. `HONEYPOT_RICKROLL=0` restores the silent drop |
 | `rickroll.txt` | The art itself, read by all three tiers. LF in the repository; converted to CRLF for the terminal services because a socket has no line discipline. Bind-mounted into the web container at `/rickroll.txt` — `web/` is the only thing that container gets, so this one file is mounted explicitly, at the root rather than under the read-only `/var/www/html` mount. `deploy/preflight.sh` asserts it |
 | `llm.py` | Optional generated answers for commands `fakeshell.py` does not implement. Opens no socket: the honeypot containers have no egress, so a request is written to `storage/llm/requests/` and `llm-broker` answers it. Every failure path returns `None` and the shell prints `command not found` as before, including a fast-fail when no broker is publishing |
+| `crash.py` | Procedurally generated malformed responses for the tier between the tarpit and the ban. Sent before the handshake, so an address in crash mode stops producing credentials, transcripts and payloads — weigh that before raising `HONEYPOT_CRASH_THRESHOLD`. `HONEYPOT_CRASH=0` disables it and releases anyone already flagged |
+| `nmap.py` | Detection only: whether a banner or request path names nmap. Opens no socket and runs no process, deliberately — see the module docstring and `AUTHORIZATION.md` §7. Answering a probe is the caller's job, in the protocol it arrived on |
 | `__init__.py` | Re-exports the public surface |
 
 ## `web/` — public site, webshell, tarpit

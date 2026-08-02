@@ -21,9 +21,25 @@ import random
 import string
 from typing import Optional
 
-CRASHES_PER_CALL = int(os.getenv("HONEYPOT_CRASH_STRATEGIES", "8"))
+# Off switch. Crash mode answers before the handshake, so an address in it
+# stops producing credentials, transcripts and payloads for as long as it holds
+# -- the same trade shared/fakeshell.py weighs for SCANBACK, and one an operator
+# has to be able to decline without editing code.
+ENABLED = os.getenv("HONEYPOT_CRASH", "1").strip().lower() not in (
+    "0", "false", "no", "off", "")
+
 GARBAGE_SIZE_MIN = int(os.getenv("HONEYPOT_CRASH_GARBAGE_MIN", "512"))
 GARBAGE_SIZE_MAX = int(os.getenv("HONEYPOT_CRASH_GARBAGE_MAX", "8192"))
+
+
+def enabled() -> bool:
+    """Whether crash mode may engage.
+
+    Read by identity.is_crashed() as well as by activate_crash(), so turning
+    this off releases every address already flagged rather than stranding them
+    for the rest of the identity's 7-day TTL.
+    """
+    return ENABLED
 
 
 # Protocol-agnostic garbage generators. Each produces unparseable data
@@ -124,9 +140,7 @@ def for_protocol(protocol: str, valid_response: Optional[bytes] = None) -> bytes
     valid_response is a correct response for this protocol; we'll truncate it
     and append garbage.
     """
-    strategies = random.sample(GENERATORS, min(CRASHES_PER_CALL, len(GENERATORS)))
-
-    result = strategies[0]()
+    result = random.choice(GENERATORS)()
 
     # If we have a valid response for this protocol, truncate and append garbage
     if valid_response:

@@ -23,7 +23,6 @@ sys.path.insert(0, "/app")
 from shared import (alerting, crash, credentials, identity, loot, nmap, persona,  # noqa: E402
                     rickroll, scoring, tarpit)
 from shared.fakeshell import FakeShell  # noqa: E402
-from pathlib import Path  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "2222"))
@@ -606,19 +605,15 @@ def handle_client(sock: socket.socket, addr) -> None:
             # reaches the tarpit and ban thresholds on its own -- just later,
             # and with the evidence already collected.
 
-        # Check for nmap in remote version string
+        # nmap names itself in the SSH version string on a -sV probe. Scored and
+        # nothing more: the address is not scanned back (see shared/nmap.py), and
+        # the connection carries on so the probe that follows is still recorded.
         if nmap.is_nmap_useragent(transport.remote_version):
-            identity.score_named_event(
+            result = identity.score_named_event(
                 ip, "TOOL_NMAP", payload=transport.remote_version,
                 tool="nmap", service=SERVICE,
             )
-            # Scan the attacker back and store results
-            scan_result = nmap.scan_attacker(ip, timeout=5)
-            nmap.store_scan(Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage")), ip, scan_result)
-
-            # Check if this pushed them into crash mode
-            ident = identity.get_or_create_identity(ip)
-            if scoring.should_crash(float(ident.get("score") or 0)):
+            if crash.enabled() and scoring.should_crash(float(result.get("new_score") or 0)):
                 identity.activate_crash(ip, reason="nmap detected", service=SERVICE)
 
         channel = transport.accept(30)
