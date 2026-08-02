@@ -23,12 +23,14 @@ _EXPORTS = {
     "log_session_end": "alerting",
     "log_session_start": "alerting",
     "IdentityManager": "identity",
+    "activate_crash": "identity",
     "activate_tarpit": "identity",
     "ban": "identity",
     "detect_spray": "identity",
     "get_or_create_identity": "identity",
     "hash_ip": "identity",
     "is_banned": "identity",
+    "is_crashed": "identity",
     "is_tarpitted": "identity",
     "record_credential": "identity",
     "release_tarpit": "identity",
@@ -38,10 +40,12 @@ _EXPORTS = {
     "unban": "identity",
     "update_identity": "identity",
     "BAN_THRESHOLD": "scoring",
+    "CRASH_THRESHOLD": "scoring",
     "SCORES": "scoring",
     "TARPIT_THRESHOLD": "scoring",
     "get_score": "scoring",
     "is_bannable": "scoring",
+    "should_crash": "scoring",
     "should_tarpit": "scoring",
     "deadline": "tarpit",
     "drip": "tarpit",
@@ -49,8 +53,8 @@ _EXPORTS = {
     "stall": "tarpit",
 }
 
-_SUBMODULES = ("alerting", "identity", "ioc", "llm", "loot", "persona",
-               "rickroll", "scoring", "tarpit")
+_SUBMODULES = ("alerting", "crash", "identity", "ioc", "llm", "loot", "nmap",
+               "persona", "rickroll", "scoring", "tarpit")
 
 __all__ = list(_EXPORTS) + list(_SUBMODULES)
 

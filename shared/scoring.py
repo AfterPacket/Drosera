@@ -55,7 +55,9 @@ SCORES = {
     "TOOL_NIKTO": (3, "Nikto detected"),
     "TOOL_HYDRA": (4, "Hydra detected"),
     "TOOL_MASSCAN": (3, "Masscan detected"),
+    "TOOL_NMAP": (5, "Nmap detected"),
     "TOOL_OTHER": (2, "Automated scanner detected"),
+    "CRASH_ENGAGED": (0, "Crash mode activated for IP"),
 }
 
 # MITRE ATT&CK technique per event type, as (id, name).
@@ -103,6 +105,7 @@ TECHNIQUES = {
 
 BAN_THRESHOLD = int(os.getenv("HONEYPOT_BAN_THRESHOLD", "35"))
 TARPIT_THRESHOLD = int(os.getenv("HONEYPOT_TARPIT_THRESHOLD", "5"))
+CRASH_THRESHOLD = int(os.getenv("HONEYPOT_CRASH_THRESHOLD", "15"))
 RATE_LIMIT_RPM = int(os.getenv("RATE_LIMIT_RPM", "60"))
 
 
@@ -124,3 +127,8 @@ def is_bannable(total_score: float) -> bool:
 def should_tarpit(total_score: float) -> bool:
     """Check if IP should be tarpitted based on score."""
     return total_score >= TARPIT_THRESHOLD
+
+
+def should_crash(total_score: float) -> bool:
+    """Check if IP should be in crash mode based on score."""
+    return total_score >= CRASH_THRESHOLD

@@ -266,6 +266,8 @@ def _generate(ip: str) -> Dict[str, Any]:
         "score": 0.0,
         "tool_detected": None,
         "tarpit_active": False,
+        "tarpit_exempt_until": 0,
+        "crash_active": False,
         "services_touched": [],
         "session_history": [],
         "credentials": [],
@@ -568,6 +570,43 @@ def _exempt_until(identity: Dict[str, Any], field: str) -> bool:
         return float(identity.get(field) or 0) > time.time()
     except (TypeError, ValueError):
         return False
+
+
+def activate_crash(ip: str, reason: str = "Threshold reached",
+                   service: str = "") -> Dict[str, Any]:
+    """Flag an IP for crash mode -- send malformed responses to crash their tools.
+
+    Runs alongside the tarpit: they get both slow drain and parsing garbage.
+    Once triggered, stays active until ban or session end. Responses are
+    procedurally generated so no two are identical -- a scanner that adapts to
+    one crash gets a different one next time.
+    """
+    from . import alerting
+
+    identity = get_or_create_identity(ip)
+    if identity.get("crash_active"):
+        return identity
+
+    identity = update_identity(ip, {"crash_active": True})
+    alerting.alert_event(
+        ip=ip,
+        event_type="CRASH_ENGAGED",
+        reason=reason,
+        service=service,
+        cumulative_score=float(identity.get("score") or 0),
+        tool=identity.get("tool_detected") or "",
+        crash_active=True,
+        fake_hostname=identity.get("fake_hostname", ""),
+    )
+    return identity
+
+
+def is_crashed(ip: str) -> bool:
+    """Whether an IP is in crash mode."""
+    if is_ignored(ip):
+        return False
+    identity = get_or_create_identity(ip)
+    return bool(identity.get("crash_active"))
 
 
 def is_exempt(identity: Dict[str, Any]) -> bool:

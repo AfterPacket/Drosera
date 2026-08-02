@@ -25,6 +25,7 @@ define('CF_IP_HEADER', 'HTTP_CF_CONNECTING_IP');
 define('RATE_LIMIT_RPM', (int)(getenv('RATE_LIMIT_RPM') ?: 60));
 define('BAN_THRESHOLD', (int)(getenv('HONEYPOT_BAN_THRESHOLD') ?: 35));
 define('TARPIT_THRESHOLD', (int)(getenv('HONEYPOT_TARPIT_THRESHOLD') ?: 5));
+define('CRASH_THRESHOLD', (int)(getenv('HONEYPOT_CRASH_THRESHOLD') ?: 15));
 define('RICKROLL_URL', getenv('RICKROLL_URL') ?: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
 // Compared explicitly rather than with ?:, which would read '0' as falsy and
 // silently re-enable the thing the operator just turned off.
@@ -763,6 +764,28 @@ function ban_ip(string $ip, float $score, string $reason, string $tool = '', str
         'cumulative_score' => $score,
         'tool_detected' => $tool,
         'banned' => true,
+    ]);
+}
+
+function sb_is_crashed(string $ip): bool
+{
+    if (sb_is_ignored($ip)) {
+        return false;
+    }
+    $identity = get_or_create_identity($ip);
+    return !empty($identity['crash_active']);
+}
+
+function sb_activate_crash(string $ip, string $reason = 'Threshold reached'): void
+{
+    update_identity($ip, ['crash_active' => true]);
+    sb_write_event([
+        'timestamp' => gmdate('c'),
+        'real_ip' => $ip,
+        'service' => 'web',
+        'event_type' => 'CRASH_ENGAGED',
+        'reason' => $reason,
+        'crash_active' => true,
     ]);
 }
 

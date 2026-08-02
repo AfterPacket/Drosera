@@ -12,7 +12,9 @@ import time
 
 sys.path.insert(0, "/app")
 
-from shared import alerting, credentials, identity, persona, rickroll, tarpit  # noqa: E402
+from pathlib import Path  # noqa: E402
+from shared import (alerting, crash, credentials, identity, nmap, persona,  # noqa: E402
+                    rickroll, scoring, tarpit)
 from shared.fakeshell import FakeShell  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
@@ -122,6 +124,18 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     identity.score_named_event(ip, "CONNECTION_ANY", service=SERVICE)
     recorder = None
 
+    # Check for crash mode before any telnet negotiation
+    if identity.is_crashed(ip):
+        crash_response = crash.telnet_crash()
+        try:
+            writer.write(crash_response)
+            await writer.drain()
+            tarpit.log_hold(ip, SERVICE, 0.1, reason="telnet crash mode")
+        except (OSError, asyncio.TimeoutError):
+            pass
+        writer.close()
+        return
+
     try:
         writer.write(bytes([IAC, DO, OPT_ECHO, IAC, DO, OPT_SGA, IAC, WILL, OPT_ECHO]))
         await writer.drain()
@@ -138,6 +152,19 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 ip, "TOOL_OTHER", payload="no IAC response (non-terminal client)",
                 tool="Automated telnet client", service=SERVICE,
             )
+            # Check for nmap patterns in the probe
+            if nmap.is_nmap_probe_path(str(probe[:64])):
+                identity.score_named_event(
+                    ip, "TOOL_NMAP", payload="nmap detected via telnet probe",
+                    tool="nmap", service=SERVICE,
+                )
+                # Scan the attacker back
+                scan_result = nmap.scan_attacker(ip, timeout=5)
+                nmap.store_scan(Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage")), ip, scan_result)
+                # Check if this triggered crash mode
+                ident = identity.get_or_create_identity(ip)
+                if scoring.should_crash(float(ident.get("score") or 0)):
+                    identity.activate_crash(ip, reason="nmap detected", service=SERVICE)
 
         # Opened above the tarpit, not below it. A held client usually gives up
         # during the stall, and the write that follows then fails on a dead

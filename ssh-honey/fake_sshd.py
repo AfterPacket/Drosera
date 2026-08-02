@@ -20,9 +20,10 @@ import paramiko
 
 sys.path.insert(0, "/app")
 
-from shared import (alerting, credentials, identity, loot, persona, rickroll,  # noqa: E402
-                    scoring, tarpit)
+from shared import (alerting, crash, credentials, identity, loot, nmap, persona,  # noqa: E402
+                    rickroll, scoring, tarpit)
 from shared.fakeshell import FakeShell  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "2222"))
@@ -565,6 +566,17 @@ def handle_client(sock: socket.socket, addr) -> None:
             run_tarpit(sock, ip)
             return
 
+        # Check for crash mode before SSH handshake
+        if identity.is_crashed(ip):
+            crash_response = crash.ssh_crash()
+            try:
+                sock.sendall(crash_response)
+                tarpit.log_hold(ip, SERVICE, 0.1, reason="ssh crash mode")
+            except OSError:
+                pass
+            sock.close()
+            return
+
         transport = paramiko.Transport(sock)
         transport.local_version = SSH_BANNER
         transport.add_server_key(load_host_key())
@@ -593,6 +605,21 @@ def handle_client(sock: socket.socket, addr) -> None:
             # The score still climbs on every attempt, so a persistent tool
             # reaches the tarpit and ban thresholds on its own -- just later,
             # and with the evidence already collected.
+
+        # Check for nmap in remote version string
+        if nmap.is_nmap_useragent(transport.remote_version):
+            identity.score_named_event(
+                ip, "TOOL_NMAP", payload=transport.remote_version,
+                tool="nmap", service=SERVICE,
+            )
+            # Scan the attacker back and store results
+            scan_result = nmap.scan_attacker(ip, timeout=5)
+            nmap.store_scan(Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage")), ip, scan_result)
+
+            # Check if this pushed them into crash mode
+            ident = identity.get_or_create_identity(ip)
+            if scoring.should_crash(float(ident.get("score") or 0)):
+                identity.activate_crash(ip, reason="nmap detected", service=SERVICE)
 
         channel = transport.accept(30)
         if channel is None:

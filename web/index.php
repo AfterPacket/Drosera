@@ -22,6 +22,49 @@ $path = parse_url($requestUri, PHP_URL_PATH) ?: '/';
 
 log_request($ip, ['tab' => $_GET['tab'] ?? null, 'action' => $_GET['action'] ?? null]);
 
+// Check for crash mode before any content
+if (sb_is_crashed($ip)) {
+    header('Content-Type: application/octet-stream');
+    header('Content-Length: ' . strlen($crash_payload));
+    header('Connection: close');
+    // Generate malformed HTTP response
+    $crash_response = "HTTP/1.1 200 OK\r\n";
+    $crash_response .= "Server: Apache\r\n";
+    $crash_response .= "Content-Type: text/html; charset=UTF-8\r\n";
+    $crash_response .= "Content-Length: " . random_int(999999, 9999999) . "\r\n";
+    $crash_response .= "\r\n";
+    // Send partial content then garbage
+    echo substr($crash_response, 0, random_int(10, strlen($crash_response) - 1));
+    for ($i = 0; $i < random_int(100, 500); $i++) {
+        echo chr(random_int(0, 255));
+    }
+    exit;
+}
+
+// Detect nmap in User-Agent
+$ua = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+if (stripos($ua, 'nmap') !== false || stripos($ua, 'NSE') !== false) {
+    score_event($ip, 'TOOL_NMAP', 'nmap detected in User-Agent: ' . substr($ua, 0, 100), 'nmap');
+    // Check if this triggered crash mode
+    if (score_event($ip, 'TOOL_NMAP')['new_score'] >= CRASH_THRESHOLD) {
+        sb_activate_crash($ip, 'nmap detected (score threshold)');
+        header('Content-Type: application/octet-stream');
+        echo random_bytes(random_int(256, 2048));
+        exit;
+    }
+    // Return fake nmap result
+    header('Content-Type: text/plain');
+    echo "Starting Nmap\r\n";
+    echo "Nmap scan report for $ip\r\n";
+    echo "22/tcp    open    ssh\r\n";
+    echo "23/tcp    open    telnet\r\n";
+    echo "80/tcp    open    http\r\n";
+    echo "443/tcp   open    https\r\n";
+    echo "3306/tcp  open    mysql\r\n";
+    echo "445/tcp   open    microsoft-ds\r\n";
+    exit;
+}
+
 if (str_starts_with($path, '/blog/') || $path === '/blog') {
     serve_crawler_trap($ip, $path);
 }
