@@ -57,6 +57,13 @@ BAN_TTL = int(os.getenv("HONEYPOT_BAN_TTL", str(7 * 24 * 3600)))
 # never gets tarpitted again and nothing says why.
 TARPIT_RELEASE_SECONDS = int(os.getenv("HONEYPOT_TARPIT_RELEASE_SECONDS", "3600"))
 
+# Whether crash mode may engage, matching shared/crash.py. Read here so the
+# dashboard does not report CRASHED for addresses the honeypots are no longer
+# treating that way: HONEYPOT_CRASH=0 stops the flag being acted on, but the
+# stored identity keeps saying crash_active until something clears it.
+CRASH_ENABLED = os.getenv("HONEYPOT_CRASH", "1").strip().lower() not in (
+    "0", "false", "no", "off", "")
+
 # Kibana is reached by the operator's own browser over their SSH tunnel, not by
 # this container -- which is on neither elastic-internal nor any egress network.
 # So this is a link target, never something the dashboard connects to.
@@ -889,11 +896,35 @@ def country_flag(code) -> str:
 
 
 def status_of(identity: dict) -> str:
+    """The one word describing what this address is currently being given.
+
+    Ordered by severity, and crash mode outranks the tarpit because it is the
+    harsher tier: a tarpitted address is still being answered in protocol and
+    still handing over credentials, and a crashed one is not. Showing TARPITTED
+    for an address in crash mode -- both flags are set, the tarpit never lifts
+    -- would name the milder of the two and hide the reason the profile stopped
+    gaining evidence.
+
+    Mirrors identity.is_crashed(): the exemption written by a release, and the
+    global switch, both mean the honeypots are not crashing this address, so
+    neither should say so here.
+    """
     if identity.get("banned"):
         return "BANNED"
+    if (CRASH_ENABLED and identity.get("crash_active")
+            and not _exempt(identity, "crash_exempt_until")):
+        return "CRASHED"
     if identity.get("tarpit_active"):
         return "TARPITTED"
     return "ACTIVE"
+
+
+def _exempt(identity: dict, field: str) -> bool:
+    """Whether a dated operator release on `field` is still in force."""
+    try:
+        return float(identity.get(field) or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
 
 
 # ----------------------------------------------------------------- dashboard
@@ -1332,6 +1363,7 @@ def api_stats():
     seen_ips = set()
     banned_ips = set()
     tarpitted_ips = set()
+    crashed_ips = set()
     peak_score = {}
     tool_by_ip = {}
     services_by_ip = {}
@@ -1372,6 +1404,14 @@ def api_stats():
             banned_ips.add(address)
         elif kind == "TARPIT_ENGAGED" and address:
             tarpitted_ips.add(address)
+        # Both directions, unlike the two above. A ban and a tarpit are what the
+        # address earned that day and stay on the record; crash mode is a state
+        # an operator takes them back out of, and a day that shows someone
+        # crashed after the release that ended it describes the wrong day.
+        elif kind == "CRASH_ENGAGED" and address:
+            crashed_ips.add(address)
+        elif kind == "CRASH_RELEASED" and address:
+            crashed_ips.discard(address)
 
         if event.get("service"):
             by_service[event["service"]] += 1
@@ -1424,6 +1464,7 @@ def api_stats():
         "tool_detected": tool_by_ip.get(address),
         "banned": address in banned_ips,
         "tarpit_active": address in tarpitted_ips,
+        "crash_active": address in crashed_ips,
         "services_touched": sorted(services_by_ip.get(address, [])),
     } for address, score in top]
 
@@ -1438,7 +1479,8 @@ def api_stats():
         "flag": country_flag(country_of.get(address)),
         "score": round(peak_score.get(address, 0), 1),
         "status": status_of({"banned": address in banned_ips,
-                             "tarpit_active": address in tarpitted_ips}),
+                             "tarpit_active": address in tarpitted_ips,
+                             "crash_active": address in crashed_ips}),
     } for address, count in events_by_ip.most_common(10)]
 
     busiest_hour = max(hourly.items(), key=lambda kv: kv[1])[0] if hourly else None
@@ -1852,7 +1894,16 @@ def api_uncrash(ip):
     An exemption with a deadline rather than a flag flip, for the same reason
     _set_tarpit gives: the score is unchanged and still over CRASH_THRESHOLD, so
     clearing the flag alone lasts until their next scored event.
+
+    The release is recorded in the audit log and not in the event log, which is
+    a constraint rather than a choice: this container mounts storage/ read-only,
+    so it cannot write the event stream, and it is on no network with egress, so
+    it cannot alert either. Both are containment properties worth more than the
+    event -- do not relax the mount to emit one. identity.release_crash() writes
+    CRASH_RELEASED from the honeypot side, where the volume is writable, and the
+    audit log is the right home for an operator action regardless.
     """
+    require_csrf()
     ip = safe_ip(ip)
     digest = hashlib.md5(ip.encode()).hexdigest()
     try:
@@ -1862,14 +1913,21 @@ def api_uncrash(ip):
             return jsonify({"ok": False,
                             "error": "no identity recorded for that address"}), 404
         identity = json.loads(raw)
+        was_active = bool(identity.get("crash_active"))
+        score = float(identity.get("score") or 0)
         identity["crash_active"] = False
         identity["crash_exempt_until"] = time.time() + TARPIT_RELEASE_SECONDS
         client.set(f"hp:identity:{digest}", json.dumps(identity), ex=7 * 24 * 3600)
     except (redis.RedisError, json.JSONDecodeError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
-    audit("MANUAL_UNCRASH", target_ip=ip)
+    # was_active distinguishes a release from a click on an address that was
+    # never crashed. Both leave the same state behind, so without it the audit
+    # log cannot tell you afterwards which one you were looking at.
+    audit("MANUAL_UNCRASH", target_ip=ip, was_active=was_active,
+          cumulative_score=score, exempt_seconds=TARPIT_RELEASE_SECONDS)
     return jsonify({"ok": True, "ip": ip, "crash_active": False,
+                    "was_active": was_active,
                     "exempt_seconds": TARPIT_RELEASE_SECONDS})
 
 
@@ -2466,6 +2524,12 @@ def admin_settings():
     settings = {
         "ban_threshold": os.getenv("HONEYPOT_BAN_THRESHOLD", "35"),
         "tarpit_threshold": os.getenv("HONEYPOT_TARPIT_THRESHOLD", "5"),
+        # Shown as a tier that can be off, because it is the one of the three
+        # that costs intelligence rather than collecting it -- an operator
+        # reading this page should be able to see whether it is on without
+        # going to the .env to find out.
+        "crash_enabled": CRASH_ENABLED,
+        "crash_threshold": os.getenv("HONEYPOT_CRASH_THRESHOLD", "15"),
         "rate_limit_rpm": os.getenv("RATE_LIMIT_RPM", "60"),
         "ban_ttl_days": round(BAN_TTL / 86400, 1),
         "session_ttl_hours": round(SESSION_TTL / 3600, 1),

@@ -652,10 +652,25 @@ def is_crashed(ip: str) -> bool:
     """Whether an IP is in crash mode."""
     from . import crash
 
-    # Checked here rather than only at the call sites, so turning HONEYPOT_CRASH
-    # off releases every address already flagged instead of stranding them.
-    if not crash.enabled() or is_ignored(ip):
+    if is_ignored(ip):
         return False
+
+    # Turning HONEYPOT_CRASH off releases every address already flagged rather
+    # than stranding them -- and releases them in the stored record, not just in
+    # what this function answers. Returning False over a stale crash_active
+    # would leave the dashboard, the evidence bundle and this check disagreeing
+    # about the same address, which is exactly the shape of quiet wrongness
+    # FIXES.md keeps collecting.
+    #
+    # The write is self-limiting: release_crash() clears the flag, so the next
+    # call takes the cheap path. Only an address actually flagged pays for it,
+    # and only once.
+    if not crash.enabled():
+        identity = get_or_create_identity(ip)
+        if identity.get("crash_active"):
+            release_crash(ip, reason="Crash mode disabled (HONEYPOT_CRASH=0)")
+        return False
+
     identity = get_or_create_identity(ip)
     if is_crash_exempt(identity):
         return False
@@ -802,6 +817,9 @@ class IdentityManager:
     activate_tarpit = staticmethod(activate_tarpit)
     release_tarpit = staticmethod(release_tarpit)
     is_tarpitted = staticmethod(is_tarpitted)
+    activate_crash = staticmethod(activate_crash)
+    release_crash = staticmethod(release_crash)
+    is_crashed = staticmethod(is_crashed)
     is_banned = staticmethod(is_banned)
     ban = staticmethod(ban)
     unban = staticmethod(unban)

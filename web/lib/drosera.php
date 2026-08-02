@@ -791,9 +791,18 @@ function sb_crash_exempt(array $identity): bool
 
 function sb_is_crashed(string $ip): bool
 {
-    // CRASH_ENABLED first, so turning the feature off releases every address
-    // already flagged rather than stranding them for the identity's 7-day TTL.
-    if (!CRASH_ENABLED || sb_is_ignored($ip)) {
+    if (sb_is_ignored($ip)) {
+        return false;
+    }
+    // Turning the feature off releases every address already flagged, in the
+    // stored record rather than only in what this returns -- see
+    // identity.is_crashed(), which this must not drift from. The write happens
+    // once per flagged address, because the release clears the flag.
+    if (!CRASH_ENABLED) {
+        $identity = get_or_create_identity($ip);
+        if (!empty($identity['crash_active'])) {
+            sb_release_crash($ip, 'Crash mode disabled (HONEYPOT_CRASH=0)');
+        }
         return false;
     }
     $identity = get_or_create_identity($ip);

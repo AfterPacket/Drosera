@@ -133,11 +133,20 @@ HONEYPOT_CRASH_GARBAGE_MAX=8192
 The two size bounds are bandwidth. The upper one is roughly what a single
 crashed connection costs you, so raising it is a bill rather than a setting.
 
+You can see who is in it: crashed addresses carry their own **CRASHED** status
+pill on the dashboard and in the day-scoped tables, ranked above TARPITTED
+because it is the harsher tier — both flags are set at once, and naming the
+milder one would hide the reason a profile stopped gaining evidence. Settings
+shows whether the tier is on at all, since off is the interesting state.
+
 Nothing expires the flag on its own inside the identity's seven-day TTL, so
 there are two ways back out. `HONEYPOT_CRASH=0` releases *every* flagged address
-at once rather than stranding them — the switch is read on each check, not only
-when the flag is set. For one address, **Release crash mode** on the profile
-page clears it and holds it clear for `HONEYPOT_TARPIT_RELEASE_SECONDS`; the
+at once rather than stranding them — the switch is read on each check, and the
+release is written to the stored identity and logged as `CRASH_RELEASED` rather
+than merely being reported, so the dashboard, the evidence bundle and the
+honeypots cannot end up disagreeing about who is crashed. For one address,
+**Release crash mode** on the profile page clears it and holds it clear for
+`HONEYPOT_TARPIT_RELEASE_SECONDS`; the
 release carries a deadline rather than just flipping the flag, because the score
 is the record of what they did and is left alone, so a bare flag flip would
 last until their next scored event. Releasing an address from the tarpit, or

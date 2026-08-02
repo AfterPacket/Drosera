@@ -105,6 +105,15 @@
   <table>
     <tr><th>Ban threshold</th><td class="mono">{{ settings.ban_threshold }} points</td></tr>
     <tr><th>Tarpit threshold</th><td class="mono">{{ settings.tarpit_threshold }} points</td></tr>
+    {# Off is the interesting state here, so it is said in words rather than
+       left to be inferred from a number. Crash mode answers before the
+       handshake, so while it is on the addresses past this score stop
+       producing credentials, transcripts and payloads. #}
+    <tr><th>Crash mode</th><td class="mono">
+      {% if settings.crash_enabled %}
+      <span class="pill CRASHED">ON</span> past {{ settings.crash_threshold }} points
+      {% else %}<span class="pill off">OFF</span>{% endif %}
+    </td></tr>
     <tr><th>HTTP rate limit</th><td class="mono">{{ settings.rate_limit_rpm }} req/min per IP</td></tr>
     <tr><th>Ban duration</th><td class="mono">{{ settings.ban_ttl_days }} days</td></tr>
     <tr><th>Admin session lifetime</th><td class="mono">{{ settings.session_ttl_hours }} hours</td></tr>

@@ -40,8 +40,10 @@
   --ok:#3fb950; --warn:#d29922; --bad:#f85149;
   --ok-bg:rgba(63,185,80,.14); --warn-bg:rgba(210,153,34,.14);
   --bad-bg:rgba(248,81,73,.14); --off-bg:rgba(139,148,158,.14);
+  --violet-bg:rgba(188,140,255,.14);
   --ok-line:rgba(63,185,80,.3); --warn-line:rgba(210,153,34,.3);
   --bad-line:rgba(248,81,73,.3); --off-line:rgba(139,148,158,.28);
+  --violet-line:rgba(188,140,255,.3);
   --hover:rgba(255,255,255,.028);
   --shadow:0 1px 3px rgba(0,0,0,.35);
   --screen-bg:#0c0e12; --screen-ink:#d0d6de;
@@ -62,8 +64,10 @@
   --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e;
   --ok-bg:rgba(26,127,55,.1); --warn-bg:rgba(154,103,0,.1);
   --bad-bg:rgba(207,34,46,.1); --off-bg:rgba(89,99,110,.1);
+  --violet-bg:rgba(130,80,223,.1);
   --ok-line:rgba(26,127,55,.28); --warn-line:rgba(154,103,0,.28);
   --bad-line:rgba(207,34,46,.28); --off-line:rgba(89,99,110,.24);
+  --violet-line:rgba(130,80,223,.28);
   --hover:rgba(0,0,0,.028);
   --shadow:0 1px 3px rgba(31,35,40,.1);
   /* The replay stays dark in both themes: it is a terminal, and a terminal
@@ -239,6 +243,11 @@ td.mono,.mono{font-family:var(--mono);font-size:.82rem}
   border-color:var(--ok-line)}
 .pill.TARPITTED,.pill.rendered{background:var(--warn-bg);color:var(--warn);
   border-color:var(--warn-line)}
+/* Its own colour rather than a second amber: crash mode is a harsher tier than
+   the tarpit and reads as one, but it is not the ban -- the address is still
+   being answered, just with nothing parseable. */
+.pill.CRASHED{background:var(--violet-bg);color:var(--violet);
+  border-color:var(--violet-line)}
 .pill.BANNED,.pill.failed,.pill.error{background:var(--bad-bg);color:var(--bad);
   border-color:var(--bad-line)}
 .pill.off,.pill.pending,.pill.skipped,.pill.unknown{background:var(--off-bg);
