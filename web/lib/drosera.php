@@ -1430,7 +1430,8 @@ function sb_rickroll(string $ip): void
         usleep($delay);
     }
 
-    sb_log_tarpit($ip, 'banned rickroll', time() - $started, count($lines));
+    sb_log_tarpit($ip, 'banned rickroll', time() - $started, count($lines),
+                  'TARPIT_HELD', 'ban');
     exit;
 }
 
@@ -1554,7 +1555,13 @@ function run_tarpit(string $ip, string $reason): void
         $counter++;
 
         if ($counter % 200 === 0) {
-            sb_log_tarpit($ip, $reason, time() - $started, $counter, 'TARPIT_KEEPALIVE');
+            /* Keepalives report elapsed-since-start, so they are a progress
+               ping rather than a total -- summing them alongside TARPIT_HELD
+               would count the same hold once per ping. They keep hold_kind so
+               a live view can still split them, and the charts filter on
+               event_type: TARPIT_HELD to leave them out. */
+            sb_log_tarpit($ip, $reason, time() - $started, $counter,
+                          'TARPIT_KEEPALIVE');
             // Same cadence as the keepalive rather than per chunk: a frame
             // every few hundred milliseconds for fifteen minutes would be a
             // large file recording nothing but the passage of time.
@@ -1573,7 +1580,8 @@ function run_tarpit(string $ip, string $reason): void
 }
 
 function sb_log_tarpit(string $ip, string $reason, int $seconds, int $chunks,
-                       string $eventType = 'TARPIT_HELD'): void
+                       string $eventType = 'TARPIT_HELD',
+                       string $kind = 'tarpit'): void
 {
     sb_write_event([
         'timestamp' => gmdate('c'),
@@ -1582,6 +1590,12 @@ function sb_log_tarpit(string $ip, string $reason, int $seconds, int $chunks,
         'event_type' => $eventType,
         'reason' => $reason,
         'held_seconds' => $seconds,
+        /* Matches shared/tarpit.log_hold's keyword, and must not drift from it:
+           the web tarpit is the largest single contributor of held time, so a
+           chart split on hold_kind that omitted it would show the terminal
+           services as the whole picture while most of the minutes sat in an
+           "unlabelled" bucket. */
+        'hold_kind' => $kind,
         'chunks_sent' => $chunks,
         'tarpit_active' => true,
         'headers' => sb_request_headers(),
