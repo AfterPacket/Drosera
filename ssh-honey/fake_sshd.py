@@ -36,6 +36,11 @@ MAX_CONNECTIONS = int(os.getenv("SSH_MAX_CONNECTIONS", "200"))
 TARPIT_MAX_SECONDS = int(os.getenv("SSH_TARPIT_MAX_SECONDS", "1800"))
 TARPIT_BYTE_DELAY = float(os.getenv("SSH_TARPIT_BYTE_DELAY", "1.0"))
 
+# How long a session is held open after the bang. Shorter than a tarpit on
+# purpose: the value here is the broken ending, and the hold is what is left to
+# take from a client sloppy enough to keep reading after its stream corrupts.
+CRASH_HOLD_SECONDS = float(os.getenv("HONEYPOT_CRASH_HOLD_SECONDS", "60"))
+
 # Gap between the junk lines that hold a tarpitted client. Shorter than it was
 # (5-12s) because the interval is what a client's read deadline measures: every
 # line resets it, so lines that arrive comfortably inside that deadline keep the
@@ -317,6 +322,67 @@ class SFTPSink(paramiko.SFTPServerInterface):
         return paramiko.SFTP_PERMISSION_DENIED
 
 
+def bang(sock: socket.socket, ip: str, recorder=None) -> None:
+    """End a fully recorded session with corruption instead of a clean close.
+
+    The sundew does not release a live insect, and until this existed Drosera
+    did: every attacker who worked through a session got a clean exit status, a
+    clean SSH disconnect and a clean FIN, and walked away with working tooling
+    and an accurate account of what happened.
+
+    This runs *after* the engagement, which is the entire point and the thing
+    crash mode had wrong when it answered before the handshake. Nothing is lost
+    by it -- the credentials, the commands, the payload and the transcript are
+    already recorded -- so unlike the pre-handshake tier it costs no
+    intelligence at all. Hook first, then bang.
+
+    Raw bytes go onto the socket rather than through the transport, so they land
+    inside the encrypted stream and the peer reports a corrupted MAC. That
+    matters more than the hold: a disconnect is an ending a script handles, and
+    a corrupted stream is an error it has to decide about. Their automation does
+    not get to record this as a clean success.
+    """
+    # Slot-accounted like the tarpit. Without this a burst of short sessions
+    # could each hold a socket for CRASH_HOLD_SECONDS and starve the listener,
+    # which would make the bang cost us more than it costs them.
+    held = 0.0
+    if not _take_hold_slot(ip):
+        try:
+            sock.sendall(crash.ssh_crash())
+        except OSError:
+            pass
+        return
+
+    hold_key = tarpit.begin_hold(ip, SERVICE, CRASH_HOLD_SECONDS)
+    started = time.time()
+    try:
+        sock.sendall(crash.ssh_crash())
+        if recorder is not None:
+            recorder.write_output("\r\n[connection corrupted]\r\n")
+        # No close and no disconnect message. A strict client aborts on the MAC
+        # failure and is gone in milliseconds; a sloppy one sits here. Both get
+        # the broken ending, which is the part that always works.
+        deadline = time.time() + CRASH_HOLD_SECONDS
+        while time.time() < deadline:
+            time.sleep(min(2.0, max(0.1, deadline - time.time())))
+        held = time.time() - started
+    except OSError:
+        held = time.time() - started
+    finally:
+        _drop_hold_slot(ip)
+        tarpit.end_hold(hold_key)
+        tarpit.log_hold(ip, SERVICE, held, reason="ssh session bang")
+        alerting.alert_event(
+            ip=ip, event_type="SESSION_BANG", service=SERVICE,
+            reason=f"session ended with a corrupted stream after {held:.0f}s",
+            held_seconds=round(held, 1),
+        )
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
 def run_tarpit(sock: socket.socket, ip: str, reason: str = "ssh tarpit") -> None:
     """endlessh: trickle junk pre-banner lines so the client blocks on read.
 
@@ -566,23 +632,19 @@ def handle_client(sock: socket.socket, addr) -> None:
         ident = identity.get_or_create_identity(ip)
         identity.score_named_event(ip, "CONNECTION_ANY", service=SERVICE)
 
-        # Crash mode is checked first and does not close. Both orderings were
-        # wrong before: the tarpit branch returned, so every crashed address --
-        # necessarily also over the tarpit threshold, since 15 > 5 and
-        # activate_crash leaves tarpit_active alone -- took the hold and the
-        # block below never ran at all. Closing after the garbage would have
-        # been the other mistake: it makes the harsher tier the cheaper one, a
-        # tenth of a second against the tarpit's minutes, for an address that
-        # scored its way past 15 to get here.
+        # Crash mode used to answer here, before the handshake, and that was the
+        # wrong end of the engagement. A sundew does not repel anything: it
+        # looks like a drink, and what lands does not leave. Garbage on connect
+        # hooks nobody and forfeits the credentials, transcript and payload the
+        # session was about to produce. The bang moved to the exit, where it
+        # costs none of them -- see bang(), called once the session is recorded.
         #
-        # So: the garbage replaces the version string, and then the hold runs on
-        # the same socket. That is what activate_crash means by the two running
-        # alongside each other. crash.ssh_crash() withholds the banner for the
-        # same reason run_tarpit does -- see its docstring, which is where the
-        # version string used to be sent and where that cost forty seconds a
-        # connection. How much of the hold survives still depends on the client:
-        # OpenSSH rejects a banner line with non-printable bytes and leaves, a
-        # naive scanner keeps reading. Denial always, the long hold often.
+        # The flag still means something, just less often than it used to. Past
+        # HONEYPOT_CRASH_THRESHOLD there is genuinely nothing left to digest --
+        # that is what the threshold has always been documented as marking --
+        # so those addresses are stonewalled on arrival as well as on the way
+        # out. Every other tier below applies first, which is why this reads the
+        # flag but does not act on it here.
         crashed = identity.is_crashed(ip)
         if crashed:
             try:
@@ -669,6 +731,20 @@ def handle_client(sock: socket.socket, addr) -> None:
             channel.send_exit_status(0)
         else:
             interactive_session(channel, ip, ident, server.username, server.rec())
+
+        # The husk does not fly off. Everything above has already been recorded
+        # -- credentials, commands, uploads, the transcript -- so denying a
+        # clean ending here forfeits nothing, which is exactly what made the
+        # pre-handshake placement the wrong one. See bang().
+        #
+        # Not gated on is_crashed(). A flagged address is necessarily also
+        # tarpitted, since 15 > 5, and a tarpitted address never reaches this
+        # line -- so gating on the flag would put the bang somewhere it can
+        # never fire. This applies to any session that got as far as a shell,
+        # which is the same thing as "we have finished digesting it".
+        if crash.enabled():
+            bang(sock, ip, server.rec() if server is not None else None)
+            return
 
         try:
             channel.close()

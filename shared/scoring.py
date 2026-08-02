@@ -59,6 +59,10 @@ SCORES = {
     "TOOL_OTHER": (2, "Automated scanner detected"),
     "CRASH_ENGAGED": (0, "Crash mode activated for IP"),
     "CRASH_RELEASED": (0, "Crash mode released for IP"),
+    # Scored 0 deliberately. The bang happens after everything worth scoring
+    # has been scored -- it is a record of how the session ended, not of
+    # anything the attacker did to earn points.
+    "SESSION_BANG": (0, "Session denied a clean ending"),
 }
 
 # MITRE ATT&CK technique per event type, as (id, name).

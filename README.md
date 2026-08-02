@@ -104,9 +104,32 @@ input is processed in full — because passing that check is what convinces the
 worm to go on and drop its real payload, which is [the thing actually worth
 capturing](#how-loot-works).
 
+### Nothing leaves cleanly
+
+A sundew does not release a live insect. Until recently Drosera did: every
+attacker who worked through a session got a clean exit status, a clean protocol
+disconnect and a clean FIN, and walked away with working tooling and an accurate
+account of what had happened.
+
+So the end of a recorded session is now a broken one. On SSH the bytes go onto
+the socket rather than through the transport, so they land inside the encrypted
+stream and the peer reports a corrupted MAC; on telnet the session simply never
+terminates properly. Either way their automation does not get to file this as a
+clean success — a disconnect is an ending a script handles, and a corrupted
+stream is an error it has to make a decision about. The socket is then held for
+`HONEYPOT_CRASH_HOLD_SECONDS`, which a strict client abandons immediately and a
+sloppy one sits through.
+
+**This costs nothing.** It runs after the credentials, the commands, the
+uploads and the transcript are all recorded, which is the entire reason it lives
+at the exit. It applies to any session that reached a shell — that being the
+same thing as "we have finished digesting this one" — and switches off with
+`HONEYPOT_CRASH=0` along with everything below.
+
 ### Crash mode
 
-The tier between the tarpit and the ban. Past `HONEYPOT_CRASH_THRESHOLD` an
+The older, harsher tier, and the one to think about before enabling. Past
+`HONEYPOT_CRASH_THRESHOLD` an
 address is answered with procedurally generated malformed data instead of a
 protocol — truncated headers, unterminated frames, impossible lengths, raw
 bytes. No two responses are alike, so a scanner that adapts to one gets a
@@ -140,15 +163,20 @@ from the lenient scanners, which are a good share of what reaches this tier
 anyway. If holding matters more to you than denial for a given deployment,
 `HONEYPOT_CRASH=0` leaves the tarpit doing what it does best.
 
-**Know what it costs before you raise it.** The garbage is sent *before* the
-handshake, so an address in crash mode stops offering credentials, transcripts,
-uploaded payloads and commands — it never gets far enough to offer any. That is
-the same trade the SSH honeypot declines for Hydra, where recognising the tool
-and stonewalling it throws away the wordlist it was about to hand over. Crash
-mode buys their time and spends your intelligence. The default sits well above
-the tarpit (5) and below the ban (35) for that reason: it applies to addresses
-long past ordinary background noise, and everything worth collecting from them
-has already been collected.
+**Know what it costs before you raise it.** Unlike the exit bang above, this
+garbage goes out *before* the handshake, so an address in crash mode stops
+offering credentials, transcripts, uploaded payloads and commands — it never
+gets far enough to offer any. That is the same trade the SSH honeypot declines
+for Hydra, where recognising the tool and stonewalling it throws away the
+wordlist it was about to hand over. It buys their time and spends your
+intelligence, which is precisely why the *ending* is the better place for
+aggression and why the bang moved there.
+
+The threshold is what justifies keeping this at all: past 15 there is genuinely
+nothing left to digest, which is what that number has always marked. It sits
+well above the tarpit (5) and below the ban (35) for that reason. If you would
+rather never make the trade, `HONEYPOT_CRASH_THRESHOLD=999` leaves the exit bang
+running and switches only this off.
 
 ```
 HONEYPOT_CRASH=1               # 0 disables it, and releases anyone already flagged

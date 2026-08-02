@@ -21,6 +21,11 @@ LISTEN_PORT = int(os.getenv("LISTEN_PORT", "2323"))
 SERVICE = "telnet"
 
 TARPIT_LOGIN_DELAY = float(os.getenv("TELNET_TARPIT_DELAY", "30.0"))
+
+# How long a session is held after the bang. See fake_sshd.bang(): the value is
+# the denied ending, and the hold is what is left to take from a client sloppy
+# enough to keep reading once the stream stops making sense.
+CRASH_HOLD_SECONDS = float(os.getenv("HONEYPOT_CRASH_HOLD_SECONDS", "60"))
 IDLE_TIMEOUT = int(os.getenv("TELNET_IDLE_TIMEOUT", "300"))
 MAX_LINE = 512
 
@@ -122,6 +127,10 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     ident = identity.get_or_create_identity(ip)
     identity.score_named_event(ip, "CONNECTION_ANY", service=SERVICE)
     recorder = None
+    # Set before the try, not inside it: the finally below reads it, and an
+    # exception raised before the assignment would leave the name unbound on
+    # exactly the path that has to clean up. Same shape as the `probe` fix.
+    reached_shell = False
 
     # Crash mode, before any negotiation -- and it holds rather than closing.
     # Sending the garbage and hanging up made the harsher tier the cheaper one:
@@ -296,6 +305,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 session_banned = True
             return result
 
+        reached_shell = True
         shell = FakeShell(ip, ident, score=score,
                           service=SERVICE, username=username)
 
@@ -327,6 +337,32 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     except (OSError, asyncio.TimeoutError, ConnectionResetError, asyncio.IncompleteReadError):
         pass
     finally:
+        # The husk does not fly off -- see fake_sshd.bang() for the whole of
+        # why. Telnet has no encrypted stream to corrupt, so the bang is simply
+        # that the session never ends properly: garbage where the close should
+        # be, then the socket held open. Everything the session was worth is
+        # already recorded by this point, which is what makes it free.
+        if reached_shell and crash.enabled():
+            started = time.monotonic()
+            hold_key = tarpit.begin_hold(ip, SERVICE, CRASH_HOLD_SECONDS)
+            try:
+                writer.write(crash.telnet_crash())
+                await writer.drain()
+                if recorder is not None:
+                    recorder.write_output("\r\n[connection corrupted]\r\n")
+                await asyncio.sleep(CRASH_HOLD_SECONDS)
+            except (OSError, asyncio.TimeoutError, ConnectionResetError):
+                pass
+            finally:
+                tarpit.end_hold(hold_key)
+                held = time.monotonic() - started
+                tarpit.log_hold(ip, SERVICE, held, reason="telnet session bang")
+                alerting.alert_event(
+                    ip=ip, event_type="SESSION_BANG", service=SERVICE,
+                    reason=f"session ended with garbage after {held:.0f}s",
+                    held_seconds=round(held, 1),
+                )
+
         if recorder is not None:
             recorder.close()
         try:

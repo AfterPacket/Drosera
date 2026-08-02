@@ -145,6 +145,10 @@ const SCORES = [
     'TOOL_OTHER'          => [2,  'Automated scanner detected'],
     'CRASH_ENGAGED'       => [0,  'Crash mode activated for IP'],
     'CRASH_RELEASED'      => [0,  'Crash mode released for IP'],
+    /* Emitted only by the terminal services -- HTTP has no session to deny an
+       ending to -- but listed here so the web tier can render one it reads
+       back out of the shared event log. */
+    'SESSION_BANG'        => [0,  'Session denied a clean ending'],
 ];
 
 /* Cloudflare edge ranges. CF-Connecting-IP is honoured only from these peers. */
