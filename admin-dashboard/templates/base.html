@@ -18,6 +18,7 @@
     <a href="{{ url_for('dashboard') }}" {% if request.endpoint == 'dashboard' %}class="on"{% endif %}>Live feed</a>
     <a href="{{ url_for('sessions') }}" {% if request.endpoint == 'sessions' %}class="on"{% endif %}>Sessions</a>
     <a href="{{ url_for('evidence') }}" {% if request.endpoint == 'evidence' %}class="on"{% endif %}>Evidence</a>
+    <a href="{{ url_for('loot_page') }}" {% if request.endpoint == 'loot_page' %}class="on"{% endif %}>Loot</a>
     <a href="{{ url_for('stats') }}" {% if request.endpoint == 'stats' %}class="on"{% endif %}>Stats</a>
     {% if kibana_url %}
     <a href="{{ kibana_url }}" target="_blank" rel="noopener noreferrer">Kibana &#8599;</a>

@@ -25,7 +25,7 @@ services were stubs.
 | `alerting.py` | JSONL, fail2ban, webhook, Telegram, RFC 5424 syslog, and the asciinema v2 recorder. Bounded queue on a worker thread. Writes the `.meta.json` sidecar that tells `session-cam` a recording is finished |
 | `tarpit.py` | Slow-drain helpers for the asyncio services: byte-at-a-time PDU dripping and randomised per-response stalls, both deadline-bounded |
 | `fakeshell.py` | Simulated bash. Table-driven; executes nothing |
-| `loot.py` | Content-addressed quarantine for dropped payloads. Files land 0400 under `storage/loot/`, named by SHA-256 so an attacker never influences a path; per-file and total size caps; deduplicated by hash with a bounded sighting list. Nothing here opens or interprets a sample |
+| `loot.py` | Content-addressed quarantine for dropped payloads. Files land 0400 under `storage/loot/`, named by SHA-256 so an attacker never influences a path; per-file and total size caps; deduplicated by hash with a bounded sighting list. Nothing here opens or interprets a sample. `clear_scan()` drops a recorded verdict so the sample is offered to VirusTotal again — called by `intel`, never by a honeypot or the dashboard |
 | `persona.py` | Reads `/persona/persona.json`: the machine this deployment pretends to be. Banners, hostname/kernel/user pools, shell history, honeytoken credentials, fake-file sizes. Falls back to published defaults so a fresh clone runs |
 | `rickroll.py` | Loads `rickroll.txt` for the SSH and telnet ban paths, which drip it through `tarpit.drip`/`drip_sync` rather than sending it at once. `HONEYPOT_RICKROLL=0` restores the silent drop |
 | `rickroll.txt` | The art itself, read by all three tiers. LF in the repository; converted to CRLF for the terminal services because a socket has no line discipline. Bind-mounted into the web container at `/rickroll.txt` — `web/` is the only thing that container gets, so this one file is mounted explicitly, at the root rather than under the read-only `/var/www/html` mount. `deploy/preflight.sh` asserts it |
@@ -98,6 +98,7 @@ honeypot container is a member of.
 | File | Purpose |
 |---|---|
 | `app.py` | Flask app. Two-stage auth (session created only after TOTP), CSRF, login rate limiting, IP allowlist, all routes. `/api/stats?day=` recomputes any retained day from its own log file; `/api/stats/trend` returns per-day totals for the day picker's history chart |
+| `app.py` (loot) | `/loot` lists the quarantine with MD5 and SHA-1 derived on read and cached, since `loot.capture` stores only the SHA-256. `/api/loot/download` returns an AES zip — live samples, so encrypted against the operator's own AV rather than for secrecy. `/api/loot/rescan` writes a marker to `storage/requests/`, the only path on the volume this container mounts read-write, because it cannot clear a verdict itself and must not be able to |
 | `setup.py` | First-run: bcrypt hash, TOTP secret, terminal QR code. Writes config mode 0600 |
 | `templates/` | Jinja templates, autoescaped |
 | `static/` | CSS and JS. Scripts are external files because the CSP forbids inline |

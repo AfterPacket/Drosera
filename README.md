@@ -604,6 +604,45 @@ label; **top commands** counted by executable rather than by command line, so
 `cat /etc/passwd` and `cat /etc/shadow` read as one behaviour; and
 **indicators**, the distinct usernames and passwords tried.
 
+### Loot
+
+Every quarantined payload, one row per sample: verdict, SHA-256, MD5, size, how
+many times it was dropped and by which addresses. Search matches any of the
+three hashes as well as source address, claimed filename and service, so a hash
+from someone else's report resolves against your own capture in one paste. MD5
+and SHA-1 are computed by the dashboard and cached — `loot.capture()` records
+only the SHA-256, so deriving them here means they exist for samples captured
+long before this page did.
+
+`unknown` is amber rather than grey, because nobody having seen a live payload
+before is the interesting result rather than the boring one.
+
+**Re-scan** clears the stored verdict so `intel` asks VirusTotal again on its
+next poll. A *first* scan needs no button — that already happens on its own
+within `VT_POLL_SECONDS`. This is for the sample VirusTotal did not recognise
+the first time, which is often known a fortnight later and which nothing would
+otherwise re-ask. Lookups stay hash-only; submitting the file would publish
+someone else's breach.
+
+The dashboard cannot do that itself. It mounts `storage/` read-only and shares
+no network with `intel`, so it drops a marker in `storage/requests/` — the one
+writable sliver of the volume, a sibling mount rather than a hole in the
+read-only one — and `intel` collects it, revalidating the digest before acting
+on a filename another container chose. That keeps evidence read-only to the
+operator UI and keeps the container with internet access off the honeypot
+network.
+
+**Download** hands you an AES-encrypted zip of the selected samples. The
+password is `infected`, the convention among analysts, and it is printed on the
+page — the point is not secrecy but stopping desktop AV from unpacking the
+archive and quarantining a sample mid-transfer. Which also means your AV will
+not warn you, so the page says that too, in red, above everything else. Samples
+are named by SHA-256 with no attacker-chosen filename and no executable
+extension, and each carries its metadata sidecar. Capped at `LOOT_ZIP_MAX_MB`.
+
+This is the one place the appliance hands captured data to the machine you are
+sitting at, deliberately. Use a VM you are willing to throw away.
+
 ### Light and dark
 
 A floating control in the bottom-left corner toggles the theme, and Settings

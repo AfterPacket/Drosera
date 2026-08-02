@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Loot{% endblock %}
+{% block heading %}Captured payloads{% endblock %}
+
+{% block content %}
+{# The banner is not decoration. Every row below is a working payload somebody
+   wrote to make money, and the download button puts it on the operator's own
+   machine -- the one place in this appliance where captured data leaves
+   containment on purpose. #}
+<div class="danger-banner">
+  <strong>These are live malware samples.</strong>
+  Anything you download here is a real, working payload captured from a real
+  attack. Downloads are AES-encrypted with the password
+  <span class="mono">{{ zip_password }}</span> so your antivirus cannot unpack
+  and quarantine them mid-transfer &mdash; which also means your antivirus will
+  not warn you. Open them only in a disposable VM, on a network you do not mind
+  them reaching.
+</div>
+
+<div class="card">
+  <div class="loot-toolbar">
+    <input type="search" id="f-loot" autocomplete="off"
+           placeholder="Search MD5, SHA-1, SHA-256, IP, filename&hellip;"
+           aria-label="Search loot">
+    <select id="f-verdict" aria-label="Filter by verdict">
+      <option value="">All verdicts</option>
+      <option value="malicious">Malicious</option>
+      <option value="unknown">Unknown to VT</option>
+      <option value="clean">Clean</option>
+      <option value="pending">Pending</option>
+    </select>
+    <span class="grow"></span>
+    <span id="loot-count" class="muted"></span>
+  </div>
+
+  <div class="loot-actions">
+    <button class="act" id="loot-all" type="button">Select all shown</button>
+    <button class="act" id="loot-none" type="button">Clear</button>
+    <button class="act" id="loot-rescan" type="button">Re-scan on VirusTotal</button>
+    <button class="act danger" id="loot-download" type="button">
+      Download selected (encrypted)</button>
+    <span id="loot-status" class="muted"></span>
+  </div>
+  {# Three states, and the third is not "false". An absent status file means
+     intel has not published since this was added, which is a different thing
+     from scanning being switched off, and claiming either would be a guess. #}
+  {% if vt_configured is false %}
+  <p class="hint subtle">
+    <span class="mono">VT_API_KEY</span> is not set, so nothing is being scanned.
+    Samples are still quarantined and hashed &mdash; re-scan requests are held
+    and run once a key is configured.
+  </p>
+  {% elif vt_configured and not intel.running %}
+  <p class="hint subtle">
+    Scanning is configured, but <span class="mono">intel</span> has not reported
+    in for several polls &mdash; check <span class="mono">docker compose logs
+    intel</span>. Re-scan requests will queue until it returns.
+  </p>
+  {% endif %}
+
+  {% if rows %}
+  <table id="loot-table">
+    <thead>
+      <tr>
+        <th class="tick"><input type="checkbox" id="loot-head-tick"
+                                aria-label="Select all shown"></th>
+        <th>Verdict</th>
+        <th>SHA-256</th>
+        <th>MD5</th>
+        <th>Size</th>
+        <th>Seen</th>
+        <th>Sources</th>
+        <th>Last sighting</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {# data-search carries every field the box should match, lowercased once
+         here rather than per keystroke in the browser. #}
+      <tr data-verdict="{{ row.verdict }}"
+          data-search="{{ (row.sha256 ~ ' ' ~ row.md5 ~ ' ' ~ row.sha1 ~ ' '
+                           ~ row.sources|join(' ') ~ ' '
+                           ~ row.filenames|join(' ') ~ ' '
+                           ~ row.services|join(' '))|lower }}">
+        <td class="tick">
+          <input type="checkbox" class="loot-tick" value="{{ row.sha256 }}"
+                 {% if not row.present %}disabled{% endif %}
+                 aria-label="Select {{ row.sha256[:16] }}">
+        </td>
+        <td><span class="pill {{ row.verdict }}">{{ row.verdict }}</span>
+          <div class="muted tiny">{{ row.verdict_detail }}</div></td>
+        <td>
+          <span class="mono hash" title="{{ row.sha256 }}">{{ row.sha256[:20] }}&hellip;</span>
+          <button class="copy" type="button" data-copy="{{ row.sha256 }}"
+                  title="Copy SHA-256">copy</button>
+          {% if not row.present %}<div class="muted tiny">blob missing</div>{% endif %}
+        </td>
+        <td>
+          {# A literal em dash, not the entity: this is an autoescaped
+             template, so "&mdash;" would render as those eight characters. #}
+          <span class="mono hash">{{ row.md5 or '—' }}</span>
+          {% if row.md5 %}
+          <button class="copy" type="button" data-copy="{{ row.md5 }}"
+                  title="Copy MD5">copy</button>
+          {# Opened by hash, never by upload. Searching VT for a digest asks
+             whether anyone has seen it; submitting the file publishes it, and
+             that is a decision with consequences for whoever was breached. #}
+          <a class="copy" target="_blank" rel="noopener noreferrer"
+             href="https://www.virustotal.com/gui/file/{{ row.sha256 }}"
+             title="Look up on VirusTotal (hash only)">vt</a>
+          {% endif %}
+        </td>
+        <td class="mono">{{ '{:,}'.format(row.size) }}</td>
+        <td class="mono">{{ row.sightings }}</td>
+        <td>
+          {% for source in row.sources[:3] %}
+          <a class="mono tiny" href="{{ url_for('ip_detail', ip=source) }}">{{ source }}</a>{% if not loop.last %}, {% endif %}
+          {% endfor %}
+          {% if row.sources|length > 3 %}
+          <span class="muted tiny">+{{ row.sources|length - 3 }}</span>
+          {% endif %}
+        </td>
+        <td class="mono tiny">{{ row.last_seen or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">Nothing quarantined yet.</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>What is here</h2>
+  <p class="hint">
+    A sample is stored once, by SHA-256, however many times it arrives &mdash;
+    the sightings count is how often it was dropped and by how many addresses,
+    which is the more interesting number. MD5 and SHA-1 are computed here for
+    looking up in tools that still want them; the quarantine itself records only
+    the SHA-256.
+  </p>
+  <p class="hint subtle">
+    Re-scanning clears the stored verdict and lets <span class="mono">intel</span>
+    ask VirusTotal again on its next poll. A first scan needs no button &mdash;
+    that happens on its own. This is for the sample VirusTotal did not recognise
+    the first time, which is the one worth asking about twice. Nothing is ever
+    uploaded: lookups are by hash, and submitting a file would publish someone
+    else's breach.
+  </p>
+  <p class="hint subtle">
+    Downloads are capped at {{ zip_max_mb }}MB per archive.
+  </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='loot.js') }}"></script>
+{% endblock %}

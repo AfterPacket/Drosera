@@ -40,10 +40,18 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 sys.path.insert(0, "/app")
 
 from shared import alerting, loot  # noqa: E402
+
+# Where the dashboard leaves rescan markers. It mounts storage/ read-only and
+# shares no network with this container, so a file on the volume is the whole
+# channel -- the same shape as llm-broker's request directory, and for the same
+# reason: the component that can reach the internet must not be reachable from
+# the one an operator points a browser at.
+REQUEST_DIR = Path(os.getenv("REQUEST_DIR", "/var/honeypot/storage/requests"))
 
 API_KEY = os.getenv("VT_API_KEY", "").strip()
 UPLOAD_SAMPLES = os.getenv("VT_UPLOAD_SAMPLES", "0") == "1"
@@ -59,6 +67,35 @@ API = "https://www.virustotal.com/api/v3/files/"
 
 def log(message: str) -> None:
     print(f"[vt] {message}", flush=True)
+
+
+STATUS_PATH = Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage")) / "intel" / "status.json"
+
+
+def publish_status(**extra) -> None:
+    """Say on the volume whether scanning is configured and running.
+
+    The dashboard needs to tell "pending" from "nothing is scanning at all",
+    and the difference is invisible in the loot sidecars -- both look like an
+    absent verdict. It is answered here rather than by handing the dashboard
+    VT_API_KEY, which it has no egress to use and no business holding, the same
+    position docker-compose.yml takes on the SMTP credentials. llm-broker
+    publishes its own status the same way.
+
+    Never fatal: a status file that cannot be written is a cosmetic loss, and
+    this runs inside the loop that does the actual work.
+    """
+    try:
+        STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "vt_configured": bool(API_KEY),
+            "poll_seconds": POLL_SECONDS,
+            "updated": time.time(),
+        }
+        payload.update(extra)
+        STATUS_PATH.write_text(json.dumps(payload), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def lookup(digest: str):
@@ -99,7 +136,46 @@ def lookup(digest: str):
     }
 
 
+def take_rescan_requests() -> int:
+    """Honour any rescan markers the dashboard has left, then delete them.
+
+    A marker is a file named <sha256>.rescan. The name carries the whole
+    request, so nothing here parses attacker-influenced content -- and the
+    digest is validated by loot.clear_scan() before it is used, which is the
+    only reason a filename from another container is safe to act on.
+
+    Clearing the verdict is all this does. The sample then reappears in
+    pending_scan() and takes its turn in the ordinary rate-limited loop below,
+    so a fistful of rescan clicks cannot burst past the VT quota.
+    """
+    if not REQUEST_DIR.is_dir():
+        return 0
+
+    taken = 0
+    try:
+        markers = sorted(REQUEST_DIR.glob("*.rescan"))
+    except OSError:
+        return 0
+
+    for marker in markers:
+        digest = marker.stem
+        if loot.clear_scan(digest):
+            taken += 1
+            log(f"{digest[:16]} queued for rescan by operator")
+        else:
+            log(f"ignoring rescan marker {marker.name!r}: unknown or bad digest")
+        # Removed either way. A marker naming a sample that is gone would
+        # otherwise be retried every poll for as long as the volume lives.
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+    return taken
+
+
 def run_once() -> None:
+    take_rescan_requests()
+
     pending = loot.pending_scan()
     if not pending:
         return
@@ -149,8 +225,22 @@ def main() -> None:
     if not API_KEY:
         log("VT_API_KEY not set; samples will be quarantined but not scanned.")
         log("Quarantine still works: storage/loot/ holds the payloads and hashes.")
+        # Still drained, on the ordinary poll rather than hourly. Nothing can be
+        # scanned without a key, but the dashboard's rescan button writes a
+        # marker regardless, and markers nobody collects accumulate on the
+        # volume forever -- a slow leak in the one directory the operator UI can
+        # write to. Clearing the verdict is also still the right thing to do:
+        # the sample goes back to pending, so it is picked up the moment a key
+        # is added rather than staying stuck on a stale answer.
         while True:
-            time.sleep(3600)
+            publish_status()
+            try:
+                if take_rescan_requests():
+                    log("rescans queued, but VT_API_KEY is unset -- "
+                        "they stay pending until one is configured")
+            except Exception as error:
+                log(f"rescan sweep failed: {error}")
+            time.sleep(POLL_SECONDS)
 
     if UPLOAD_SAMPLES:
         log("VT_UPLOAD_SAMPLES=1 is set but uploading is not implemented here.")
@@ -159,6 +249,7 @@ def main() -> None:
 
     log(f"watching {loot.LOOT_DIR} every {POLL_SECONDS}s (hash lookups only)")
     while True:
+        publish_status(pending=len(loot.pending_scan()))
         try:
             run_once()
         except Exception as error:          # never let the loop die

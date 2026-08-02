@@ -5,5 +5,9 @@ bcrypt==4.1.2
 redis==5.0.1
 itsdangerous==2.1.2
 qrcode==7.4.2
+# AES zips for the loot download. stdlib zipfile reads encrypted archives but
+# cannot write them, and an unencrypted archive of live samples is one desktop
+# AV scan away from being quarantined halfway through the download.
+pyzipper==0.3.6
 # Optional at runtime: only used when a GeoLite2 database is mounted.
 maxminddb==2.6.2

@@ -442,6 +442,10 @@ services:
       LOOT_DIR: /var/honeypot/storage/loot
       STORAGE_DIR: /var/honeypot/storage
       IOC_DIR: /var/honeypot/storage/ioc
+      # Where the dashboard leaves rescan markers. Already inside the storage
+      # mount this container has read-write, so it needs no extra volume --
+      # only the path, and it must agree with the dashboard's REQUEST_DIR.
+      REQUEST_DIR: /var/honeypot/storage/requests
       # Second-stage payload retrieval. OFF unless explicitly enabled: this is
       # the one component that connects out to infrastructure an attacker
       # chose. It runs here because this container already has egress and the
@@ -734,6 +738,18 @@ services:
       REDIS_HONEYPOT_HOST: redis-honeypot
       REDIS_HONEYPOT_PORT: "6379"
       STORAGE_DIR: /var/honeypot/storage
+      REQUEST_DIR: /var/honeypot/requests
+      # Password on the loot download. The convention among analysts is
+      # "infected", and the point is not secrecy -- it stops desktop AV
+      # unpacking the archive and quarantining a sample mid-download.
+      LOOT_ZIP_PASSWORD: ${LOOT_ZIP_PASSWORD:-infected}
+      LOOT_ZIP_MAX_MB: ${LOOT_ZIP_MAX_MB:-128}
+      # Not VT_API_KEY. The loot page needs to know only *whether* scanning is
+      # configured, and intel publishes that to storage/intel/status.json the
+      # way llm-broker publishes its own -- the same reason the SMTP
+      # credentials below are withheld. This container has no egress and could
+      # not use the key, so holding it would be pure exposure.
+      VT_POLL_SECONDS: ${VT_POLL_SECONDS:-300}
       ADMIN_CONFIG: /app/config/admin-config.json
       AUDIT_LOG: /app/admin-logs/audit.jsonl
       ADMIN_SESSION_TTL: ${ADMIN_SESSION_TTL:-28800}
@@ -779,6 +795,15 @@ services:
       - ./admin-dashboard/config:/app/config
       - ./admin-dashboard/admin-logs:/app/admin-logs
       - ./storage:/var/honeypot/storage:ro
+      # The one writable sliver of the storage volume, and deliberately a
+      # sibling of the read-only mount rather than a hole in it: the dashboard
+      # drops rescan markers here and intel picks them up. Evidence stays
+      # read-only to the operator UI, and the two containers still share no
+      # network -- intel is on cam-egress alone, and putting them together
+      # would hand the container with internet access a route to the honeypots.
+      # bootstrap.sh creates it owned by the honeypot UID; without that Docker
+      # makes it root-owned and the dashboard cannot write.
+      - ./storage/requests:/var/honeypot/requests
       # Same database the elastic shipper uses. Optional; the dashboard shows
       # a note explaining how to add it when absent.
       - ./elastic/geoip:/geoip:ro

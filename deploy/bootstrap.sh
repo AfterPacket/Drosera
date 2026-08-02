@@ -32,6 +32,12 @@ fi
 # ------------------------------------------------------------- storage layout
 
 info "Creating storage layout"
+# storage/requests is the one path on this volume the dashboard mounts
+# read-write: it drops rescan markers there for intel to pick up, because the
+# rest of storage/ is read-only to it and the two containers share no network.
+# It must exist and be owned by the honeypot UID before first start, or Docker
+# creates the bind mount root-owned and nothing running as 1000 can write it --
+# the same reason elastic/geoip is created below.
 install -d -o "$UID_HP" -g "$GID_HP" -m 0750 \
     "${REPO_DIR}/storage" \
     "${REPO_DIR}/storage/logs" \
@@ -39,7 +45,8 @@ install -d -o "$UID_HP" -g "$GID_HP" -m 0750 \
     "${REPO_DIR}/storage/clips" \
     "${REPO_DIR}/storage/evidence" \
     "${REPO_DIR}/storage/ioc" \
-    "${REPO_DIR}/storage/upload-tmp"
+    "${REPO_DIR}/storage/upload-tmp" \
+    "${REPO_DIR}/storage/requests"
 
 # Read-only mount into elastic-shipper; present so the bind mount does not get
 # created root-owned by Docker on first start.

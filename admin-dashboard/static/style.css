@@ -250,8 +250,35 @@ td.mono,.mono{font-family:var(--mono);font-size:.82rem}
   border-color:var(--violet-line)}
 .pill.BANNED,.pill.failed,.pill.error{background:var(--bad-bg);color:var(--bad);
   border-color:var(--bad-line)}
-.pill.off,.pill.pending,.pill.skipped,.pill.unknown{background:var(--off-bg);
+.pill.off,.pill.pending,.pill.skipped{background:var(--off-bg);
   color:var(--muted);border-color:var(--off-line)}
+/* Loot verdicts. "unknown" is amber rather than grey on purpose: nobody having
+   seen a live payload before is the interesting result, not the boring one. */
+.pill.malicious{background:var(--bad-bg);color:var(--bad);border-color:var(--bad-line)}
+.pill.unknown{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
+.pill.clean{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+
+/* ---- loot ---- */
+.danger-banner{background:var(--bad-bg);border:1px solid var(--bad);
+  border-left-width:4px;border-radius:var(--radius-sm);color:var(--text);
+  padding:.8rem 1rem;margin-bottom:var(--s4);font-size:.86rem;line-height:1.5}
+.danger-banner strong{color:var(--bad)}
+.loot-toolbar{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;
+  margin-bottom:var(--s3)}
+.loot-toolbar #f-loot{flex:1 1 22rem;min-width:14rem}
+.loot-toolbar .grow{flex:1 1 auto}
+.loot-actions{display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;
+  margin-bottom:var(--s3)}
+#loot-table td.tick,#loot-table th.tick{width:1.6rem;text-align:center}
+#loot-table .hash{font-size:.74rem}
+#loot-table .tiny{font-size:.72rem}
+/* Sits on the baseline of the hash it belongs to rather than becoming another
+   column, so the table still reads as hashes with affordances attached. */
+.copy{background:none;border:1px solid var(--line);color:var(--muted);
+  border-radius:var(--radius-sm);font-size:.64rem;padding:.02rem .3rem;
+  margin-left:.25rem;cursor:pointer;text-transform:uppercase;
+  letter-spacing:.4px;text-decoration:none;display:inline-block}
+.copy:hover{border-color:var(--accent);color:var(--accent)}
 
 /* ---- controls ---- */
 .daybar{display:flex;align-items:center;gap:var(--s2);margin-bottom:var(--s4);flex-wrap:wrap}

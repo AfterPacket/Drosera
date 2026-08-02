@@ -42,6 +42,17 @@ STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/var/honeypot/storage"))
 CLIP_DIR = STORAGE_DIR / "clips"
 AUDIT_LOG = Path(os.getenv("AUDIT_LOG", "/app/admin-logs/audit.jsonl"))
 
+# The only path on the storage volume this container may write to, and a
+# separate mount rather than a hole in the read-only one. Everything the
+# dashboard wants done to the evidence store is asked for by leaving a marker
+# here; intel does the writing. See docker-compose.yml for why the two cannot
+# simply talk to each other.
+REQUEST_DIR = Path(os.getenv("REQUEST_DIR", "/var/honeypot/requests"))
+
+# Not secrecy -- the password is conventional and printed on the page. It stops
+# desktop AV opening the archive and quarantining a sample mid-download.
+LOOT_ZIP_PASSWORD = os.getenv("LOOT_ZIP_PASSWORD", "infected")
+
 SESSION_COOKIE = "sb_session"
 SESSION_TTL = int(os.getenv("ADMIN_SESSION_TTL", str(8 * 3600)))
 LOGIN_WINDOW = int(os.getenv("ADMIN_LOGIN_WINDOW", "900"))
@@ -1931,6 +1942,194 @@ def api_uncrash(ip):
                     "exempt_seconds": TARPIT_RELEASE_SECONDS})
 
 
+# A download is built in memory rather than streamed. The evidence export
+# streams because it is unbounded -- every session, every event, every day --
+# whereas this is a hand-picked set of samples, each already capped by
+# HONEYPOT_LOOT_MAX_FILE_MB. The cap below is what keeps "select all" on a
+# months-old quarantine from being an OOM in a container sized for reading JSON.
+LOOT_ZIP_MAX_MB = int(os.getenv("LOOT_ZIP_MAX_MB", "128"))
+
+
+def _requested_digests():
+    """Validated SHA-256s from a JSON body, and nothing else.
+
+    Anything malformed is dropped rather than erroring the whole request: a
+    stale page listing a sample that has since been pruned should not make the
+    other nine fail.
+    """
+    body = request.get_json(silent=True) or {}
+    wanted = body.get("digests")
+    if not isinstance(wanted, list):
+        return []
+    return [d for d in wanted if is_digest(d)][:500]
+
+
+def intel_status():
+    """What the intel sidecar last published about itself.
+
+    Read off the volume rather than inferred from the environment: this
+    container is deliberately not given VT_API_KEY, having no egress to use it
+    with. Same arrangement as llm-broker's status.json, read the same way.
+
+    Absent means intel has not run since this was added, which is not the same
+    as unconfigured -- so the page says nothing rather than something wrong.
+    """
+    try:
+        status = json.loads((STORAGE_DIR / "intel" / "status.json")
+                            .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(status, dict):
+        return {}
+    # It republishes every poll. Silence well past one interval means the
+    # container is gone, not that it is idle.
+    interval = float(status.get("poll_seconds") or 300)
+    status["running"] = (time.time() - float(status.get("updated") or 0)) < interval * 3
+    return status
+
+
+@app.route("/loot")
+@require_auth
+def loot_page():
+    status = intel_status()
+    return render_template("loot.html", rows=loot_rows(),
+                           zip_password=LOOT_ZIP_PASSWORD,
+                           zip_max_mb=LOOT_ZIP_MAX_MB,
+                           intel=status,
+                           # None, not False, when intel has never published:
+                           # the template must be able to tell "scanning is off"
+                           # from "nothing has said yet".
+                           vt_configured=status.get("vt_configured"),
+                           csrf_token=g.csrf_token)
+
+
+@app.route("/api/loot/rescan", methods=["POST"])
+@require_auth
+def api_loot_rescan():
+    """Ask intel to re-check selected samples against VirusTotal.
+
+    Writes a marker per sample and nothing else. This container mounts the
+    evidence store read-only and shares no network with intel, so it cannot
+    clear the verdict itself and must not be given the means to -- the marker
+    directory is the entire channel, and intel validates the digest again on
+    its side before acting on a filename another container chose.
+
+    A first scan needs no button: intel already scans anything without a
+    verdict on its own poll. What this buys is a *second* look at a sample VT
+    did not recognise the first time, which is the case worth revisiting.
+    """
+    require_csrf()
+    digests = _requested_digests()
+    if not digests:
+        return jsonify({"ok": False, "error": "no valid sha256 supplied"}), 400
+
+    try:
+        REQUEST_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return jsonify({"ok": False,
+                        "error": f"request directory unwritable: {exc}"}), 500
+
+    queued, failed = [], []
+    for digest in digests:
+        try:
+            # Written empty and replaced rather than appended: the same sample
+            # asked for twice is one request, not two, and re-touching an
+            # existing marker costs nothing.
+            (REQUEST_DIR / f"{digest}.rescan").write_bytes(b"")
+            queued.append(digest)
+        except OSError:
+            failed.append(digest)
+
+    audit("LOOT_RESCAN", count=len(queued), digests=queued[:20],
+          failed=len(failed))
+    return jsonify({"ok": bool(queued), "queued": len(queued),
+                    "failed": len(failed),
+                    "poll_seconds": int(os.getenv("VT_POLL_SECONDS", "300"))})
+
+
+@app.route("/api/loot/download", methods=["POST"])
+@require_auth
+def api_loot_download():
+    """An encrypted zip of selected samples.
+
+    AES with a conventional password, because these are live payloads landing
+    in a downloads folder: the password is not secrecy -- it is printed on the
+    page that offers the button -- it is what stops desktop AV unpacking the
+    archive and quarantining a sample halfway through the transfer.
+    """
+    require_csrf()
+    digests = _requested_digests()
+    if not digests:
+        return jsonify({"ok": False, "error": "no valid sha256 supplied"}), 400
+
+    selected, total = [], 0
+    for digest in digests:
+        blob = STORAGE_DIR / "loot" / f"{digest}.bin"
+        try:
+            size = blob.stat().st_size
+        except OSError:
+            continue                      # pruned since the page was rendered
+        total += size
+        if total > LOOT_ZIP_MAX_MB * 1024 * 1024:
+            return jsonify({
+                "ok": False,
+                "error": (f"selection exceeds {LOOT_ZIP_MAX_MB}MB; "
+                          "select fewer samples"),
+            }), 413
+        selected.append((digest, blob))
+
+    if not selected:
+        return jsonify({"ok": False, "error": "none of those samples are on disk"}), 404
+
+    try:
+        import pyzipper
+    except ImportError:
+        return jsonify({"ok": False,
+                        "error": "pyzipper is not installed in this image"}), 500
+
+    buffer = io.BytesIO()
+    with pyzipper.AESZipFile(buffer, "w", compression=pyzipper.ZIP_DEFLATED,
+                             encryption=pyzipper.WZ_AES) as archive:
+        archive.setpassword(LOOT_ZIP_PASSWORD.encode())
+        archive.writestr("READ-ME-FIRST.txt", LOOT_README.format(
+            count=len(selected), password=LOOT_ZIP_PASSWORD))
+        for digest, blob in selected:
+            # Extensionless inside the archive. The original filename is
+            # attacker-chosen and is metadata, never a name on your filesystem
+            # -- loot.capture() takes the same position on the way in.
+            archive.write(blob, f"samples/{digest}.bin")
+            meta_path = STORAGE_DIR / "loot" / f"{digest}.json"
+            try:
+                archive.writestr(f"samples/{digest}.json",
+                                 meta_path.read_text(encoding="utf-8"))
+            except OSError:
+                pass
+
+    audit("LOOT_DOWNLOAD", count=len(selected), bytes=total,
+          digests=[d for d, _ in selected][:20])
+    buffer.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return send_file(buffer, mimetype="application/zip", as_attachment=True,
+                     download_name=f"drosera-loot-{stamp}.zip")
+
+
+LOOT_README = """\
+These {count} file(s) are live malware samples captured by a honeypot.
+
+The archive is AES-encrypted with the password: {password}
+
+They are named by SHA-256 with a .bin extension and carry no attacker-chosen
+filename, so nothing here executes by being double-clicked -- but they are
+real, and they are someone's working payload. Open them in a VM you are willing
+to throw away, on a network you do not mind them seeing, and not on the machine
+you read your mail on.
+
+Each sample has a .json sidecar recording where it came from: every IP that
+dropped it, the service and method it arrived by, the filename it claimed, and
+the VirusTotal verdict if one has been fetched.
+"""
+
+
 EXPORT_CHUNK = 256 * 1024
 
 
@@ -2034,6 +2233,99 @@ def loot_index():
         addresses = {s.get("ip") for s in (meta.get("sightings") or []) if s.get("ip")}
         index[digest] = (meta, addresses)
     return index
+
+
+def is_digest(value: str) -> bool:
+    """A syntactically valid SHA-256, which is the only thing naming a sample.
+
+    Mirrors loot._is_digest. Every path built from a client-supplied digest goes
+    through here first, so nothing an operator can type in a URL becomes a
+    traversal -- the check is what makes `LOOT_DIR / f"{digest}.bin"` safe.
+    """
+    return (isinstance(value, str) and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value))
+
+
+# sha256 -> (md5, sha1). Unbounded on purpose: it is two hex strings per sample
+# against a quarantine already capped by HONEYPOT_LOOT_MAX_TOTAL_MB, and the
+# content behind a SHA-256 cannot change, so an entry can never go stale.
+_HASH_CACHE = {}
+
+
+def other_hashes(digest: str):
+    """MD5 and SHA-1 for a sample, computed once and remembered.
+
+    Not stored by loot.capture(), which records only the SHA-256 -- so these are
+    derived here rather than added to the sidecar, which would leave every
+    sample captured before today without them. Read in chunks because the cap
+    on a single sample is HONEYPOT_LOOT_MAX_FILE_MB, not something this
+    container's 384MB wants to hold whole.
+    """
+    if digest in _HASH_CACHE:
+        return _HASH_CACHE[digest]
+
+    blob = STORAGE_DIR / "loot" / f"{digest}.bin"
+    md5 = hashlib.md5()
+    sha1 = hashlib.sha1()
+    try:
+        with open(blob, "rb") as handle:
+            for chunk in iter(lambda: handle.read(256 * 1024), b""):
+                md5.update(chunk)
+                sha1.update(chunk)
+    except OSError:
+        # Sidecar without a blob: pruned, or capture failed after writing meta.
+        return ("", "")
+
+    pair = (md5.hexdigest(), sha1.hexdigest())
+    _HASH_CACHE[digest] = pair
+    return pair
+
+
+def loot_rows():
+    """The quarantine as rows for the loot page, newest sighting first."""
+    rows = []
+    for digest, (meta, addresses) in loot_index().items():
+        if not is_digest(digest):
+            continue
+        scan = meta.get("scan") or {}
+        sightings = meta.get("sightings") or []
+        md5, sha1 = other_hashes(digest)
+        blob = STORAGE_DIR / "loot" / f"{digest}.bin"
+
+        # Three states, not two. "Pending" and "clean" look identical if you
+        # only check the detection count, and they mean opposite things: one is
+        # a verdict, the other is the absence of one.
+        if not meta.get("scan"):
+            verdict, detail = "pending", "awaiting a verdict"
+        elif not scan.get("known"):
+            verdict, detail = "unknown", "not known to VirusTotal"
+        elif scan.get("malicious", 0) > 0:
+            verdict = "malicious"
+            detail = f"{scan['malicious']} engines: {scan.get('label') or 'unlabelled'}"
+        else:
+            verdict, detail = "clean", "known, 0 detections"
+
+        rows.append({
+            "sha256": digest,
+            "md5": md5,
+            "sha1": sha1,
+            "size": int(meta.get("size") or 0),
+            "first_seen": str(meta.get("first_seen") or "")[:19],
+            "last_seen": str(meta.get("last_seen") or "")[:19],
+            "sightings": len(sightings),
+            "sources": sorted(a for a in addresses if a),
+            "filenames": sorted({s.get("filename") for s in sightings
+                                 if s.get("filename")})[:5],
+            "origins": sorted({s.get("origin") for s in sightings if s.get("origin")}),
+            "services": sorted({s.get("service") for s in sightings if s.get("service")}),
+            "verdict": verdict,
+            "verdict_detail": detail,
+            "scan_at": str(scan.get("checked_at") or "")[:19],
+            "present": blob.exists(),
+        })
+
+    rows.sort(key=lambda r: r["last_seen"], reverse=True)
+    return rows
 
 
 BULK_EVENT_BUDGET = 150000

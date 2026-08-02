@@ -188,6 +188,35 @@ def record_scan(digest: str, scan: Dict[str, Any]) -> bool:
     return True
 
 
+def clear_scan(digest: str) -> bool:
+    """Drop a recorded verdict so pending_scan() offers the sample again.
+
+    The operator's re-scan, and the only kind worth having: a first scan already
+    happens on its own within one VT_POLL_SECONDS. What moves is the verdict --
+    a sample unknown to VirusTotal today is the interesting case precisely
+    because it is often known a fortnight later, and nothing re-asks.
+
+    Called by the intel sidecar, never by a honeypot and never by the dashboard,
+    which mounts storage/ read-only and asks for this through a marker file.
+    """
+    if not _is_digest(digest):
+        return False
+    with _lock:
+        meta = _read_meta(digest)
+        if meta is None:
+            return False
+        if meta.get("scan") is None:
+            # Already queued. Not a failure -- two clicks on the same row
+            # should be one rescan, not an error.
+            return True
+        meta["scan"] = None
+        try:
+            _write_meta(digest, meta)
+        except OSError:
+            return False
+    return True
+
+
 def _is_digest(value: str) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and all(c in "0123456789abcdef" for c in value))
