@@ -123,16 +123,32 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     identity.score_named_event(ip, "CONNECTION_ANY", service=SERVICE)
     recorder = None
 
-    # Check for crash mode before any telnet negotiation
+    # Crash mode, before any negotiation -- and it holds rather than closing.
+    # Sending the garbage and hanging up made the harsher tier the cheaper one:
+    # a tenth of a second, against the thirty the tarpit costs them, for an
+    # address that scored past 15 to get here. The recorder is opened for the
+    # same reason it is opened above the tarpit below -- a held client usually
+    # gives up mid-hold, and without this the addresses that reach the highest
+    # tier are exactly the ones that leave no transcript.
     if identity.is_crashed(ip):
-        crash_response = crash.telnet_crash()
+        recorder = alerting.SessionRecorder(ip, SERVICE,
+                                            title=f"telnet crash mode from {ip}")
+        recorder.write_output("telnet crash mode engaged\r\n")
+        started = time.monotonic()
+        hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_LOGIN_DELAY)
         try:
-            writer.write(crash_response)
+            writer.write(crash.telnet_crash())
             await writer.drain()
-            tarpit.log_hold(ip, SERVICE, 0.1, reason="telnet crash mode")
-        except (OSError, asyncio.TimeoutError):
+            await asyncio.sleep(TARPIT_LOGIN_DELAY)
+        except (OSError, asyncio.TimeoutError, ConnectionResetError):
             pass
-        writer.close()
+        finally:
+            tarpit.end_hold(hold_key)
+            held = time.monotonic() - started
+            recorder.write_output(f"held {held:.0f}s\r\n")
+            recorder.close()
+            tarpit.log_hold(ip, SERVICE, held, reason="telnet crash mode")
+            writer.close()
         return
 
     try:

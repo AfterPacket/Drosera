@@ -317,11 +317,16 @@ class SFTPSink(paramiko.SFTPServerInterface):
         return paramiko.SFTP_PERMISSION_DENIED
 
 
-def run_tarpit(sock: socket.socket, ip: str) -> None:
+def run_tarpit(sock: socket.socket, ip: str, reason: str = "ssh tarpit") -> None:
     """endlessh: trickle junk pre-banner lines so the client blocks on read.
 
     RFC 4253 lets a server send arbitrary lines before its version string, so a
     conforming client keeps waiting. Capped so our own socket table stays bounded.
+
+    `reason` distinguishes a plain hold from one that follows crash mode's
+    garbage, because both end up here and the evidence should say which was
+    which -- it is also the only way to confirm from the logs that crash mode
+    fired at all.
     """
     if not _take_hold_slot(ip):
         # Already holding as many of this address as we are willing to. Closing
@@ -333,7 +338,7 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
             pass
         return
 
-    identity.score_named_event(ip, "TARPIT_ENGAGED", payload="ssh tarpit", service=SERVICE)
+    identity.score_named_event(ip, "TARPIT_ENGAGED", payload=reason, service=SERVICE)
     deadline = time.time() + TARPIT_MAX_SECONDS
     held = 0.0
     started = time.time()
@@ -345,8 +350,8 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
     # became interesting. The transcript is thin by nature -- nobody reaches a
     # shell through a tarpit -- but "held 412s, client gave up" is a fact worth
     # having in the evidence bundle.
-    recorder = alerting.SessionRecorder(ip, SERVICE, title=f"ssh tarpit from {ip}")
-    recorder.write_output(f"SSH tarpit engaged for {ip}\r\n")
+    recorder = alerting.SessionRecorder(ip, SERVICE, title=f"{reason} from {ip}")
+    recorder.write_output(f"{reason} engaged for {ip}\r\n")
     # Registered for the duration so the dashboard can show this connection
     # being drained while it is happening, not only after it ends.
     hold_key = tarpit.begin_hold(ip, SERVICE, TARPIT_MAX_SECONDS)
@@ -391,7 +396,7 @@ def run_tarpit(sock: socket.socket, ip: str) -> None:
         recorder.close()
         alerting.alert_event(
             ip=ip, event_type="TARPIT_HELD", service=SERVICE,
-            reason=f"SSH tarpit held connection {held:.0f}s",
+            reason=f"{reason} held connection {held:.0f}s",
             tarpit_active=True, held_seconds=round(held, 1),
         )
         try:
@@ -561,19 +566,33 @@ def handle_client(sock: socket.socket, addr) -> None:
         ident = identity.get_or_create_identity(ip)
         identity.score_named_event(ip, "CONNECTION_ANY", service=SERVICE)
 
-        if identity.is_tarpitted(ip):
-            run_tarpit(sock, ip)
-            return
-
-        # Check for crash mode before SSH handshake
-        if identity.is_crashed(ip):
-            crash_response = crash.ssh_crash()
+        # Crash mode is checked first and does not close. Both orderings were
+        # wrong before: the tarpit branch returned, so every crashed address --
+        # necessarily also over the tarpit threshold, since 15 > 5 and
+        # activate_crash leaves tarpit_active alone -- took the hold and the
+        # block below never ran at all. Closing after the garbage would have
+        # been the other mistake: it makes the harsher tier the cheaper one, a
+        # tenth of a second against the tarpit's minutes, for an address that
+        # scored its way past 15 to get here.
+        #
+        # So: the garbage replaces the version string, and then the hold runs on
+        # the same socket. That is what activate_crash means by the two running
+        # alongside each other, and both are unparseable, so nothing the client
+        # receives ever becomes a protocol error it can act on.
+        crashed = identity.is_crashed(ip)
+        if crashed:
             try:
-                sock.sendall(crash_response)
-                tarpit.log_hold(ip, SERVICE, 0.1, reason="ssh crash mode")
+                sock.sendall(crash.ssh_crash())
             except OSError:
-                pass
-            sock.close()
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                return
+
+        if crashed or identity.is_tarpitted(ip):
+            run_tarpit(sock, ip,
+                       reason="ssh crash mode" if crashed else "ssh tarpit")
             return
 
         transport = paramiko.Transport(sock)

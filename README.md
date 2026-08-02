@@ -109,9 +109,24 @@ capturing](#how-loot-works).
 The tier between the tarpit and the ban. Past `HONEYPOT_CRASH_THRESHOLD` an
 address is answered with procedurally generated malformed data instead of a
 protocol — truncated headers, unterminated frames, impossible lengths, raw
-bytes — which is meant to hang or break the tool doing the scanning. No two
-responses are alike, so a scanner that adapts to one gets a different one next
-time, and there is nothing static to write a signature against.
+bytes. No two responses are alike, so a scanner that adapts to one gets a
+different one next time, and there is nothing static to write a signature
+against.
+
+Expect information denial rather than a crash — the name oversells it. Against
+current tooling the garbage produces a clean error and a move on: an
+RFC-compliant SSH client reports a protocol mismatch, paramiko raises, nmap's
+`ssh2-enum-algos` fails to fingerprint. What it reliably does is make the
+service unidentifiable and useless to whoever is cataloguing it. The tools it
+may genuinely hang are the sloppy ones doing an unbounded read while waiting
+for a prompt, which is a real slice of botnet traffic but not the majority.
+
+On SSH and telnet the garbage goes out **and then the connection is held**,
+rather than being closed. That ordering matters: closing after the garbage
+would have made the harsher tier the cheaper one — a tenth of a second against
+the tarpit's minutes — for exactly the addresses that scored their way past 15.
+Both the tarpit's junk and crash mode's are unparseable, so nothing the client
+receives becomes a protocol error it can act on and disconnect over.
 
 **Know what it costs before you raise it.** The garbage is sent *before* the
 handshake, so an address in crash mode stops offering credentials, transcripts,
