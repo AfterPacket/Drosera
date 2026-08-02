@@ -90,7 +90,12 @@ if have python3 && python3 -c "import pyflakes" 2>/dev/null; then
     fi
 else
     warn "pyflakes not installed; undefined names will not be caught"
-    warn "  pip3 install --user pyflakes"
+    # apt, not pip: the check runs `python3 -m pyflakes`, so it needs the module
+    # importable by the system interpreter -- and on any PEP 668 distribution
+    # (Ubuntu 24.04 and later) `pip3 install --user` refuses outright with
+    # "externally-managed-environment", so the old hint here sent people down a
+    # path that could not work.
+    warn "  sudo apt install python3-pyflakes"
 fi
 
 # -------------------------------------------------------- stdlib-only imports
