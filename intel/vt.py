@@ -196,7 +196,14 @@ def run_once() -> None:
             meta = loot.read_meta(digest) or {}
             sightings = meta.get("sightings") or []
             source = sightings[-1].get("ip", "") if sightings else ""
-            label = verdict.get("label") or verdict.get("type") or "unknown"
+            # "unlabelled", not "unknown". VirusTotal populates
+            # suggested_threat_label only when a popular classification exists,
+            # and type_description can be empty too -- so a flagged sample can
+            # arrive with no name at all. Calling that "unknown" collided with
+            # the LOOT_UNKNOWN path below, where the word means the opposite
+            # thing: nobody has ever seen it. Same string, two meanings, one
+            # bucket in every aggregation.
+            label = verdict.get("label") or verdict.get("type") or "unlabelled"
             log(f"{digest[:16]} MALICIOUS {verdict['malicious']} engines: {label}")
             alerting.alert_event(
                 source or "0.0.0.0", "LOOT_MALICIOUS", service="intel",
@@ -244,7 +251,10 @@ def run_once() -> None:
                 loot_sha256=digest,
                 loot_size=int(meta.get("size") or 0),
                 vt_malicious=0,
-                vt_label="unknown",
+                # Distinct from "unlabelled" above, which is a flagged sample
+                # nobody named. This one is a sample nobody has submitted --
+                # for a live drop, the more interesting of the two.
+                vt_label="not-in-vt",
             )
 
         time.sleep(REQUEST_INTERVAL)
