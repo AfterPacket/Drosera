@@ -64,6 +64,11 @@ MAX_PER_RUN = int(os.getenv("VT_MAX_PER_RUN", "20"))
 
 API = "https://www.virustotal.com/api/v3/files/"
 
+# Distinct from None. None means "this one failed, try the next"; this means
+# "stop asking" -- and conflating them is how one exhausted quota turned into
+# twenty more requests against it, every five minutes, for the rest of the day.
+RATE_LIMITED = object()
+
 
 def log(message: str) -> None:
     print(f"[vt] {message}", flush=True)
@@ -99,7 +104,11 @@ def publish_status(**extra) -> None:
 
 
 def lookup(digest: str):
-    """Ask VirusTotal about a hash. Returns the verdict dict, or None."""
+    """Ask VirusTotal about a hash.
+
+    Returns the verdict dict, None for a retryable failure, or RATE_LIMITED --
+    which the caller must treat as "stop", not as "try the next one".
+    """
     request = urllib.request.Request(
         API + urllib.parse.quote(digest, safe=""),
         headers={"x-apikey": API_KEY, "Accept": "application/json"},
@@ -111,6 +120,20 @@ def lookup(digest: str):
         if error.code == 404:
             return {"known": False, "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                                 time.gmtime())}
+        if error.code == 429:
+            # The body is the only thing that distinguishes the per-minute rate
+            # from the daily 500 and the monthly cap, and those want completely
+            # different responses -- wait a minute, wait for midnight UTC, or
+            # wait for next month. Logging the code alone left an operator
+            # unable to tell which, staring at twenty identical lines.
+            detail = ""
+            try:
+                detail = json.loads(error.read().decode("utf-8", "replace")) \
+                    .get("error", {}).get("message", "")
+            except Exception:                                   # noqa: BLE001
+                pass
+            log(f"VirusTotal refused: HTTP 429 {detail or '(no detail given)'}")
+            return RATE_LIMITED
         log(f"lookup {digest[:16]} failed: HTTP {error.code}")
         return None
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as error:
@@ -184,6 +207,13 @@ def run_once() -> None:
 
     for digest in pending[:MAX_PER_RUN]:
         verdict = lookup(digest)
+        if verdict is RATE_LIMITED:
+            # Abandon the whole run, not just this sample. Everything stays
+            # pending and the next poll retries -- costing one request to find
+            # out we are still blocked, rather than the twenty it used to spend
+            # discovering the same thing nineteen more times.
+            log(f"{len(pending)} sample(s) still pending; retrying next poll")
+            return
         if verdict is None:
             # Leave it pending; a transient API failure should be retried, not
             # recorded as "clean".
