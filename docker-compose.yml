@@ -465,7 +465,10 @@ services:
       VT_API_KEY: ${VT_API_KEY:-}
       VT_POLL_SECONDS: ${VT_POLL_SECONDS:-300}
       VT_REQUEST_INTERVAL: ${VT_REQUEST_INTERVAL:-20}
-      VT_MAX_PER_RUN: ${VT_MAX_PER_RUN:-20}
+      # 1, not 20. Multiplied by 86400/VT_POLL_SECONDS this is the daily
+      # request count: 1 per 300s is 288/day against a free-tier allowance of
+      # 500, where 20 was 5,760 and exhausted the key every morning.
+      VT_MAX_PER_RUN: ${VT_MAX_PER_RUN:-1}
       ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
       ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}

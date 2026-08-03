@@ -57,10 +57,22 @@ API_KEY = os.getenv("VT_API_KEY", "").strip()
 UPLOAD_SAMPLES = os.getenv("VT_UPLOAD_SAMPLES", "0") == "1"
 POLL_SECONDS = int(os.getenv("VT_POLL_SECONDS", "300"))
 
-# The free tier is 4 requests/minute and 500/day. Going over gets the key
-# throttled, so pace well inside it rather than discovering the limit live.
+# The free tier is 4 requests/minute and 500/day. REQUEST_INTERVAL handles the
+# per-minute half; MAX_PER_RUN has to handle the daily half, and it did not.
+#
+# Do the arithmetic, because the old default failed it: 20 per run at one run
+# every 300s is 5,760 lookups a day against an allowance of 500 -- eleven times
+# over, so the key was exhausted within a couple of hours of any backlog
+# appearing and stayed exhausted until midnight UTC. The comment here claimed to
+# pace well inside the limit while the numbers guaranteed breaching it.
+#
+# 1 per run at 300s is 288/day, comfortably under, and still scans anything
+# newly captured within one poll. A backlog drains at roughly twelve an hour,
+# which is slower than it was and faster than nothing, which is what a
+# throttled key delivers. Raise it only if you hold a paid key -- and multiply
+# by 86400/VT_POLL_SECONDS first to see what you are asking for.
 REQUEST_INTERVAL = float(os.getenv("VT_REQUEST_INTERVAL", "20"))
-MAX_PER_RUN = int(os.getenv("VT_MAX_PER_RUN", "20"))
+MAX_PER_RUN = int(os.getenv("VT_MAX_PER_RUN", "1"))
 
 API = "https://www.virustotal.com/api/v3/files/"
 
