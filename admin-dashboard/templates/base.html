@@ -41,6 +41,10 @@
       <a href="https://digitalsystems.cc" target="_blank" rel="noopener noreferrer">Digital Systems LLC</a>
       /
       <a href="https://github.com/afterpacket" target="_blank" rel="noopener noreferrer">Afterpacket</a>
+      {% if sister_url %}
+      <span class="sep">&middot;</span>
+      <a href="{{ sister_url }}">{{ sister_name }}</a>
+      {% endif %}
     </footer>
   </main>
 </div>

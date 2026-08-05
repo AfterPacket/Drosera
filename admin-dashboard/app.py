@@ -80,6 +80,19 @@ CRASH_ENABLED = os.getenv("HONEYPOT_CRASH", "1").strip().lower() not in (
 # So this is a link target, never something the dashboard connects to.
 KIBANA_URL = os.getenv("KIBANA_PUBLIC_URL", "").strip()
 
+# A link to the sister appliance's dashboard, for an operator running both.
+#
+# Empty by default and rendered only when set. It is a link target for the
+# operator's own browser and never something this container connects to -- the
+# two appliances share no network, no volume and no host, and a footer link
+# does not change that. Typically the other tunnel's local address:
+#
+#     SISTER_DASHBOARD_URL=http://127.0.0.1:8444
+#
+# Which is the whole reason this one stayed on 8443.
+SISTER_URL = os.getenv("SISTER_DASHBOARD_URL", "").strip()
+SISTER_NAME = os.getenv("SISTER_DASHBOARD_NAME", "Utricularia").strip()
+
 # Event types whose payload is something the attacker ran or wrote, rather than
 # a status change. These are what "Commands issued" should show.
 COMMAND_EVENTS = {
@@ -95,7 +108,9 @@ COMMAND_EVENTS = {
 
 @app.context_processor
 def inject_nav():
-    return {"kibana_url": KIBANA_URL}
+    return {"kibana_url": KIBANA_URL,
+            "sister_url": SISTER_URL,
+            "sister_name": SISTER_NAME}
 
 
 def _redis_admin() -> redis.Redis:
