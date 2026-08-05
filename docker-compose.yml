@@ -792,6 +792,10 @@ services:
       # on elastic-internal and never connects to Kibana itself. Empty by
       # default, so no dead link appears unless the elastic profile is in use.
       KIBANA_PUBLIC_URL: ${KIBANA_PUBLIC_URL:-}
+      # Sister appliance dashboard link. Reaches it over the operator's SSH tunnel
+      # on 127.0.0.1, not over the container network. Empty by default.
+      SISTER_DASHBOARD_URL: ${SISTER_DASHBOARD_URL:-}
+      SISTER_DASHBOARD_NAME: ${SISTER_DASHBOARD_NAME:-}
     ports:
       # Loopback only. Reach it with:
       #   ssh -N -L 8443:127.0.0.1:8443 -p 2222 you@vps
