@@ -67,6 +67,10 @@ SCORES = {
     # the payload landed, and scoring them again for what VirusTotal later says
     # would let an external service move a local score.
     "LOOT_CLEAN": (0, "Quarantined sample known to VirusTotal, no detections"),
+    # Also 0, for the opposite reason: the command that carried the payload
+    # already scored as a command, and billing the same act twice would make
+    # every dropper look worse than the one before it.
+    "LOOT_CAPTURED": (0, "Payload quarantined"),
 }
 
 # MITRE ATT&CK technique per event type, as (id, name).

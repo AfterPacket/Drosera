@@ -350,6 +350,21 @@ def _expand_escapes(text: str) -> str:
             out.append(chr(int(digits, 8) & 0xFF) if digits else "\0")
             index = cursor
             continue
+        elif following in "1234567":
+            # Octal without the leading zero. bash's echo -e does not accept
+            # this; busybox ash does, and these payloads are handed to
+            # `/bin/busybox echo -ne` by name. A real dropper in the wild sent
+            # `\\x2A\3B` -- a typo'd `\\x3B` -- and left as literal backslash-3-B
+            # it put three bytes where busybox would have put two, so the file
+            # we stored was not the file the attacker built.
+            digits = ""
+            cursor = index + 1
+            while cursor < len(text) and len(digits) < 3 and text[cursor] in "01234567":
+                digits += text[cursor]
+                cursor += 1
+            out.append(chr(int(digits, 8) & 0xFF))
+            index = cursor
+            continue
         elif following == "c":
             # Suppress the rest of the output, trailing newline included.
             return "".join(out)
@@ -387,6 +402,15 @@ class FakeShell:
         # Contents of files they have written this session, so that running one
         # back can produce what it would actually have printed.
         self.written: Dict[str, str] = {}
+        # Paths written but not yet quarantined, and the digest last quarantined
+        # for each. A dropper is assembled over many appends and only the
+        # finished article is a sample; see flush_loot().
+        self._loot_pending: set = set()
+        self._loot_captured: Dict[str, str] = {}
+        # Set per stage by handlers whose real stdout differs from what belongs
+        # on a terminal -- echo, whose trailing newline the transport supplies.
+        # Consumed by _finish() when the stage is redirected into a file.
+        self._stage_bytes: Optional[str] = None
         # Bounds nested `bash -c` and self-invoking scripts. See _run_script.
         self._script_depth = 0
         # Whether this session is one worth holding. Only consulted when the
@@ -671,20 +695,11 @@ class FakeShell:
         previous = self.written.get(resolved, "") if append else ""
         self.written[resolved] = (previous + content)[:8192]
 
-        # Quarantine it too. A dropper delivered as a heredoc or a base64 blob
-        # piped through `base64 -d` never touches SFTP, so this is often the
-        # only copy of the payload we get. loot.capture filters out the
-        # sub-24-byte capability probes and deduplicates the rest.
-        try:
-            loot.capture(
-                self.written[resolved].encode("utf-8", "replace"),
-                ip=self.ip, service=self.service,
-                origin="shell-write", filename=resolved,
-            )
-        except Exception:
-            # Capture is a bonus. It must never break the illusion by turning
-            # a redirection into a traceback in the attacker's session.
-            pass
+        # Quarantine it too -- but not yet. A dropper delivered as a heredoc or
+        # a base64 blob piped through `base64 -d` never touches SFTP, so this is
+        # often the only copy of the payload we get, and it arrives one append
+        # at a time. Marked here, captured once by flush_loot().
+        self._loot_pending.add(resolved)
 
         lowered = resolved.lower()
         if "authorized_keys" in lowered:
@@ -720,6 +735,54 @@ class FakeShell:
             "size": size + len(content) + 1,
         }
 
+    def flush_loot(self) -> None:
+        """Quarantine the files written this session. Idempotent, never raises.
+
+        Capture used to happen inside _write_file, on every redirection, which
+        is one capture per append rather than one per file. The shape every
+        busybox dropper arrives in --
+
+            echo -ne "\\x23\\x21..." > .k
+            echo -ne "..." >> .k          (x10)
+            chmod +x .k; sh .k
+
+        -- therefore produced eleven samples, ten of them prefixes of a file
+        that has never existed anywhere else. Each took a VirusTotal lookup
+        from a budget of a few hundred a day; each came back unknown, because a
+        dropper truncated mid-word is unknown by construction; and on the loot
+        page the finished article was indistinguishable from its own offcuts.
+
+        So capture is deferred to the two moments the content is settled: the
+        attacker running the file, and the session ending. Both are called, not
+        one -- a session killed after `sh .k` still yields the sample, and a
+        file written but never run still yields it at the end.
+        """
+        while self._loot_pending:
+            path = self._loot_pending.pop()
+            content = self.written.get(path)
+            if not content:
+                continue
+            try:
+                digest = loot.capture(
+                    content.encode("utf-8", "replace"),
+                    ip=self.ip, service=self.service,
+                    origin="shell-write", filename=path,
+                )
+            except Exception:
+                # Capture is a bonus. It must never break the illusion by
+                # turning a redirection into a traceback in their session.
+                continue
+            if not digest or self._loot_captured.get(path) == digest:
+                continue
+            self._loot_captured[path] = digest
+            # Scored 0: the redirection that carried it already scored as a
+            # command, and charging twice for one act would inflate every
+            # dropper. This exists so the profile can say a sample was taken --
+            # a quarantine nothing records is a quarantine nobody looks in.
+            self._score_always(
+                "LOOT_CAPTURED",
+                payload=f"{digest} {len(content)}B via shell-write {path}"[:200])
+
     def _run_script(self, script: str) -> str:
         """Run a script the attacker wrote, one line at a time.
 
@@ -735,6 +798,10 @@ class FakeShell:
         # attacker input.
         if self._script_depth >= 4:
             return ""
+        # They are running what they assembled, so it is finished. Take it now
+        # rather than at the end: `sh .k` is frequently the last thing a loader
+        # does before dropping the connection.
+        self.flush_loot()
         self._script_depth += 1
         try:
             return self._run_script_inner(script)
@@ -804,6 +871,10 @@ class FakeShell:
         stage, redirect_op, redirect_target = scan_redirects(stage)
         if not stage:
             return ""
+
+        # Per stage, so one echo's trailing newline cannot follow the next
+        # command into a file it never wrote.
+        self._stage_bytes = None
 
         # `VAR=$(probe)` -- store it and stay silent, exactly as a shell does.
         assignment = self._ASSIGNMENT_RE.match(stage)
@@ -907,7 +978,11 @@ class FakeShell:
         """Apply a stdout redirection, if the stage had one."""
         if not target:
             return result
-        self._write_file(self._expand(target, depth), result or "",
+        # What the handler would really have written, where that differs from
+        # what belongs on a terminal. Only echo sets it, and only over the
+        # trailing newline -- see _cmd_echo.
+        content = self._stage_bytes if self._stage_bytes is not None else (result or "")
+        self._write_file(self._expand(target, depth), content,
                          append=(operator == ">>"))
         return ""          # a redirected command prints nothing
 
@@ -1410,6 +1485,7 @@ class FakeShell:
         downstream of answering this correctly.
         """
         interpret = False
+        newline = True
         index = 0
         # Flags are only flags if every letter is one; `echo -xyz` prints, as
         # real echo does.
@@ -1421,13 +1497,25 @@ class FakeShell:
                     interpret = True
                 elif flag == "E":
                     interpret = False
+                elif flag == "n":
+                    newline = False
             index += 1
 
         text = " ".join(args[index:])
         if interpret:
             text = _expand_escapes(text)
-        # The transport adds the line ending, so a trailing newline in the
-        # payload would otherwise produce a blank line the bot did not ask for.
+
+        # What a real echo writes: the text, plus the newline it adds unless -n
+        # says otherwise. -n was parsed and then ignored, so every `echo x > f`
+        # stored a file one byte short, and `echo -ne "...\\x0A"` -- the last
+        # line of every dropper assembled this way -- lost the newline it had
+        # gone to the trouble of encoding. A sample one byte off the original
+        # hashes to something no other sensor has ever seen, which quietly
+        # defeats the entire point of hashing it.
+        self._stage_bytes = text + ("\n" if newline else "")
+
+        # The transport adds the line ending, so a trailing newline on the way
+        # to a terminal would produce a blank line the bot did not ask for.
         return text[:-1] if text.endswith("\n") else text
 
     def _cmd_find(self, args: List[str], _line: str) -> str:

@@ -605,6 +605,12 @@ def interactive_session(channel, ip: str, ident: dict, username: str,
                 return
     except (OSError, socket.timeout, EOFError):
         pass
+    finally:
+        # Every exit from this loop is a session ending: the ban above, the
+        # peer hanging up, an idle timeout. Whatever they assembled in the fake
+        # tree is finished by definition, so quarantine it once, here, rather
+        # than once per append on the way in.
+        shell.flush_loot()
 
 
 def handle_client(sock: socket.socket, addr) -> None:
@@ -750,6 +756,9 @@ def handle_client(sock: socket.socket, addr) -> None:
             recorder = server.rec()
             recorder.write_output(shell.prompt() + command + "\r\n")
             output = shell.run(command)
+            # One command and out, so this is the whole session: anything it
+            # redirected into the fake tree is complete the moment it returns.
+            shell.flush_loot()
             if output:
                 channel.sendall((output + "\n").encode())
                 recorder.write_output(output.replace("\n", "\r\n") + "\r\n")

@@ -102,7 +102,6 @@ COMMAND_EVENTS = {
     "REVERSE_SHELL",
     "FILE_UPLOAD",
     "PHP_EVAL_ATTEMPT",
-    "LOOT_CAPTURED",
 }
 
 
@@ -1156,10 +1155,15 @@ def ip_detail(ip):
         persistence=sum(1 for e in history
                         if e.get("event_type") == "PERSISTENCE_ATTEMPT"),
         wasted_minutes=round(wasted / 60, 1),
+        # LOOT_CAPTURED belongs here and not under "Commands issued", where it
+        # used to sit: a quarantine record is not something the attacker typed.
+        # Its absence from this list was why an address that dropped a busybox
+        # loader, had it quarantined and had it scanned still read "No payloads
+        # recorded" on the one page an operator opens to ask what it left.
         payloads=[e for e in history
                   if e.get("event_type") in ("SQLI_BASIC", "SQLI_UNION_BLIND", "SQLI_OOB",
                                              "PHP_EVAL_ATTEMPT", "FILE_UPLOAD",
-                                             "REVERSE_SHELL")][-100:],
+                                             "REVERSE_SHELL", "LOOT_CAPTURED")][-100:],
         loaders=loader_iocs(ip),
         timeline=service_timeline(history),
         events=events[start:start + per_page],

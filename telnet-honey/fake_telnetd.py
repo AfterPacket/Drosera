@@ -132,6 +132,9 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     # exception raised before the assignment would leave the name unbound on
     # exactly the path that has to clean up. Same shape as the `probe` fix.
     reached_shell = False
+    # Same reason: the finally quarantines whatever the shell was handed, and
+    # the session that dies before the shell exists must not die again here.
+    shell = None
 
     # Crash mode, before any negotiation -- and it holds rather than closing.
     # Sending the garbage and hanging up made the harsher tier the cheaper one:
@@ -339,6 +342,12 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
     except (OSError, asyncio.TimeoutError, ConnectionResetError, asyncio.IncompleteReadError):
         pass
     finally:
+        # Before the hold, not after: a dropper written but never run is still
+        # a sample, and burying its capture behind a sixty-second bang means
+        # losing it outright whenever this task is cancelled mid-hold.
+        if shell is not None:
+            shell.flush_loot()
+
         # The husk does not fly off -- see fake_sshd.bang() for the whole of
         # why. Telnet has no encrypted stream to corrupt, so the bang is simply
         # that the session never ends properly: garbage where the close should
