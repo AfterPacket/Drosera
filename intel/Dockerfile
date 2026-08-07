@@ -12,7 +12,7 @@ FROM python:3.11-slim
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin honeypot
 
 WORKDIR /app
-COPY vt.py fetcher.py entrypoint.sh /app/
+COPY vt.py fetcher.py chain.py entrypoint.sh /app/
 RUN chmod 0755 /app/entrypoint.sh
 
 USER honeypot

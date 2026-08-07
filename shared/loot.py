@@ -70,11 +70,20 @@ def _ensure_dir() -> bool:
 
 
 def capture(data: bytes, *, ip: str, service: str, origin: str,
-            filename: str = "") -> Optional[str]:
+            filename: str = "",
+            lineage: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Quarantine a captured payload. Returns its SHA-256, or None.
 
     `filename` is recorded as metadata only. It is attacker-controlled and is
     never used to build a path.
+
+    `lineage` says which artifact named this one, at what depth, and from which
+    line -- see intel/chain.py. It rides on the sighting rather than the sample
+    because provenance belongs to an arrival, not to the bytes: the same ELF
+    can be stage 2 of one dropper and stage 1 of another, and a per-sample
+    field would have to pick one and be wrong about the rest. Optional and
+    additive; sidecars written before it existed stay valid and readers that do
+    not know the key are unaffected.
     """
     if not isinstance(data, (bytes, bytearray)):
         return None
@@ -98,6 +107,8 @@ def capture(data: bytes, *, ip: str, service: str, origin: str,
         "origin": origin,
         "filename": filename[:200],
     }
+    if lineage:
+        sighting["lineage"] = lineage
 
     with _lock:
         try:

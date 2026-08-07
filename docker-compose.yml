@@ -462,6 +462,17 @@ services:
       FETCH_HOST_COOLDOWN: ${FETCH_HOST_COOLDOWN:-3600}
       FETCH_TIMEOUT: ${FETCH_TIMEOUT:-8}
       FETCH_POLL_SECONDS: ${FETCH_POLL_SECONDS:-60}
+      # Levels of recursion to follow. 0 fetches what the attacker's command
+      # named and stops, which is the pre-recursion behaviour exactly. 1 also
+      # fetches what that artifact names, which is where the bot arrives. 2 is
+      # the default and covers loaders that stage through an intermediate; it
+      # costs nothing otherwise, since a chain ends at the first binary.
+      FETCH_MAX_DEPTH: ${FETCH_MAX_DEPTH:-2}
+      # Total artifacts one chain may retrieve. A multi-architecture dropper
+      # names 11-13; this clears a real one and bounds a hostile one. Note that
+      # FETCH_MAX_PER_HOUR is a separate, unexempted ceiling -- if it is lower
+      # than this, chains get truncated and the fetcher says so at startup.
+      FETCH_MAX_PER_CHAIN: ${FETCH_MAX_PER_CHAIN:-16}
       VT_API_KEY: ${VT_API_KEY:-}
       VT_POLL_SECONDS: ${VT_POLL_SECONDS:-300}
       VT_REQUEST_INTERVAL: ${VT_REQUEST_INTERVAL:-20}

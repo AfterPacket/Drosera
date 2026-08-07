@@ -47,10 +47,23 @@ TFTP_C_RE = re.compile(
     r"\btftp\s+(?:-[a-z]\s+\S+\s+)*?([\w.:\-\[\]]+)\s+-c\s+get\s+(\S+)", re.IGNORECASE)
 TFTP_R_RE = re.compile(
     r"\btftp\s+-r\s+(\S+)\s+-g\s+([\w.:\-\[\]]+)", re.IGNORECASE)
+# And busybox's own documented order, `tftp -g -r <file> <host>`, where the
+# host is the trailing argument rather than the operand of -g. The two -g forms
+# cannot both match one invocation, so nothing is recorded twice.
+TFTP_G_RE = re.compile(
+    r"\btftp\s+-g\s+(?:-l\s+\S+\s+)?-r\s+(\S+)\s+([\w.:\-\[\]]+)", re.IGNORECASE)
 
-# busybox ftpget: `ftpget -v -u user -p pass -P 21 <host> <local> <remote>`
+# busybox ftpget: `ftpget [-cv] [-u user] [-p pass] [-P port] <host> [local] <remote>`
+#
+# The options are consumed explicitly rather than skipped with a lazy run.
+# `[^\n;|&]*?\s(\S+)\s+(\S+)` reaches its first match immediately after the
+# command name, so the documented invocation above recorded a host of `-v` and
+# a path of `/anonymous`: a well-formed, confident, entirely fictional IOC that
+# nothing flagged, because there is no error state for parsing the wrong thing
+# successfully.
 FTPGET_RE = re.compile(
-    r"\bftpget\b[^\n;|&]*?\s([\w.:\-\[\]]+)\s+(\S+)(?:\s+(\S+))?", re.IGNORECASE)
+    r"\bftpget\b((?:\s+(?:-[cv]|-[upP]\s+\S+))*)"
+    r"\s+([\w.:\-\[\]]+)(?:\s+(\S+))?(?:\s+(\S+))?", re.IGNORECASE)
 
 
 def _now() -> str:
@@ -134,13 +147,23 @@ def extract(command: str) -> List[Dict[str, Any]]:
                 path="/" + filename.lstrip("/"), method="tftp",
                 raw=f"tftp -r {filename} -g {host}")
 
+    for filename, host in TFTP_G_RE.findall(command):
+        _record(found, scheme="tftp", host=host, port=None,
+                path="/" + filename.lstrip("/"), method="tftp",
+                raw=f"tftp -g -r {filename} {host}")
+
     for match in FTPGET_RE.finditer(command):
-        host = match.group(1)
+        host = match.group(2)
         # ftpget takes <local> then <remote>; the remote name is what to ask
-        # for, and loaders usually pass the same string twice.
-        remote = match.group(3) or match.group(2)
+        # for, and loaders usually pass the same string twice. With only one
+        # filename given, busybox uses it for both.
+        remote = match.group(4) or match.group(3)
+        if not remote:
+            continue
         port = None
-        port_match = re.search(r"-P\s+(\d+)", match.group(0))
+        # Searched in the options group only, and case-sensitively: -P is the
+        # port, -p is the password, and a numeric password is not a port.
+        port_match = re.search(r"-P\s+(\d+)", match.group(1) or "")
         if port_match:
             port = int(port_match.group(1))
         _record(found, scheme="ftp", host=host, port=port,
@@ -157,6 +180,16 @@ def extract(command: str) -> List[Dict[str, Any]]:
 def _key(entry: Dict[str, Any]) -> str:
     canonical = f"{entry['scheme']}://{entry['host']}:{entry['port']}{entry['path']}"
     return hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
+
+def key_for(entry: Dict[str, Any]) -> str:
+    """The sidecar filename stem for a target, without the leading underscore.
+
+    The fetcher needs to find the record it just wrote in order to note the
+    outcome on it, and reaching into a private for that made the two modules
+    look more entangled than they are.
+    """
+    return _key(entry)
 
 
 def record(command: str, *, ip: str, service: str) -> List[Dict[str, Any]]:
@@ -192,7 +225,34 @@ def _too_many() -> bool:
     return _count_cache["n"] >= MAX_IOC_FILES
 
 
-def _persist(entry: Dict[str, Any], *, ip: str, service: str) -> None:
+def record_derived(entries: List[Dict[str, Any]], *, ip: str, service: str,
+                   lineage: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Persist targets found inside a fetched artifact. Returns their keys.
+
+    The honeypot path (record()) turns a command line into records. This turns
+    the *body of a stage-1 dropper* into the same records, so the eleven
+    architecture URLs a loader names show up on the dashboard's loader list
+    exactly like any other IOC, and are retryable on a later pass if the
+    fetcher's chain budget ran out before reaching them.
+
+    Called only by intel/fetcher.py. Nothing in a honeypot container fetches
+    anything, so nothing in a honeypot container has a body to derive from.
+    """
+    keys = []
+    try:
+        IOC_DIR.mkdir(parents=True, exist_ok=True)
+        if _too_many():
+            return keys
+        for entry in entries[:MAX_PER_COMMAND * 4]:
+            _persist(entry, ip=ip, service=service, lineage=lineage)
+            keys.append(_key(entry))
+    except Exception:                                           # noqa: BLE001
+        return keys
+    return keys
+
+
+def _persist(entry: Dict[str, Any], *, ip: str, service: str,
+             lineage: Optional[Dict[str, Any]] = None) -> None:
     path = IOC_DIR / f"{_key(entry)}.json"
     sighting = {"at": _now(), "ip": ip, "service": service}
 
@@ -218,6 +278,13 @@ def _persist(entry: Dict[str, Any], *, ip: str, service: str) -> None:
             # Set by the fetcher, when it is enabled and gets that far.
             "fetch": None,
         })
+
+    # Additive, and only on first sight. A target named by a dropper and later
+    # typed directly by an attacker keeps the provenance of how we first came
+    # to know about it -- overwriting it on every re-sighting would mean the
+    # field says whichever thing happened most recently, which is not lineage.
+    if lineage and not existing.get("lineage"):
+        existing["lineage"] = lineage
 
     tmp = path.with_suffix(".tmp")
     try:
