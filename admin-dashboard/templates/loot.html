@@ -167,7 +167,12 @@
       <span id="viewer-title" class="mono"></span>
       <span class="grow"></span>
       <span id="viewer-meta" class="muted tiny"></span>
-      <button class="act" id="viewer-hex" type="button">Hex</button>
+      {# Strings sits between the two for a reason: for a captured ELF it is
+         the view that answers the question, and Hex only identifies the file.
+         Both are inert -- neither parses the sample. #}
+      <button class="act mode" id="viewer-text" type="button">Text</button>
+      <button class="act mode" id="viewer-strings" type="button">Strings</button>
+      <button class="act mode" id="viewer-hex" type="button">Hex</button>
       <button class="act" id="viewer-close" type="button">Close</button>
     </header>
     <pre id="viewer-body" class="viewer-body" tabindex="0"></pre>

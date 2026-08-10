@@ -2089,19 +2089,25 @@ def api_loot_view(digest: str):
     """
     if not is_digest(digest):
         abort(404)
+
+    mode = request.args.get("mode", "auto")
+    if mode not in ("auto", "text", "hex", "strings"):
+        mode = "auto"
+
+    # Strings reads the whole sample, the other modes read what fits on a
+    # screen. Scanning only the first 256KB of a 672KB ELF would miss .rodata
+    # entirely and report "no C2 addresses" about a file that has them.
+    budget = safeview.MAX_STRINGS_SCAN if mode == "strings" else safeview.MAX_VIEW_BYTES
+
     blob = STORAGE_DIR / "loot" / f"{digest}.bin"
     try:
         size = blob.stat().st_size
         with open(blob, "rb") as handle:
-            data = handle.read(safeview.MAX_VIEW_BYTES)
+            data = handle.read(budget)
     except OSError:
         return jsonify({"ok": False, "error": "sample not present"}), 404
 
-    result = safeview.view(
-        data,
-        force_hex=request.args.get("hex") in ("1", "true", "yes"),
-        total_size=size,
-    )
+    result = safeview.view(data, mode=mode, total_size=size)
     result["ok"] = True
     result["sha256"] = digest
     # Viewing is reading evidence, so it is an operator action like any other.

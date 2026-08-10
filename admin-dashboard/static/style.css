@@ -278,6 +278,10 @@ td.mono,.mono{font-family:var(--mono);font-size:.82rem}
   white-space:pre-wrap;word-break:break-word;tab-size:4}
 .viewer-foot{padding:.6rem .9rem;border-top:1px solid var(--line)}
 .copy.view{border-color:var(--line)}
+/* Which of the three views is on screen. Without this the operator cannot
+   tell an empty strings list from a failed load. */
+.viewer-head .act.mode.on{background:var(--accent-bg,var(--ok-bg));
+  color:var(--accent,var(--ok));border-color:var(--accent,var(--ok))}
 
 /* ---- loot ---- */
 .danger-banner{background:var(--bad-bg);border:1px solid var(--bad);

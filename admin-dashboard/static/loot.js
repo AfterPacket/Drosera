@@ -200,8 +200,10 @@
   var viewerTitle = document.getElementById("viewer-title");
   var viewerMeta = document.getElementById("viewer-meta");
   var viewerHex = document.getElementById("viewer-hex");
+  var viewerText = document.getElementById("viewer-text");
+  var viewerStrings = document.getElementById("viewer-strings");
   var current = null;
-  var currentHex = false;
+  var currentMode = "auto";
 
   // Everything below is one IIFE with the select, re-scan and download
   // handlers, so an addEventListener on a missing element does not fail
@@ -209,7 +211,7 @@
   // a far worse outcome than the viewer being absent, and it is exactly what a
   // stale template served from a partly-rebuilt image would cause. Bail
   // instead, leaving the rest of the page intact.
-  if (!viewer || !viewerBody || !viewerHex) {
+  if (!viewer || !viewerBody || !viewerHex || !viewerText || !viewerStrings) {
     apply();
     return;
   }
@@ -222,25 +224,41 @@
     current = null;
   }
 
-  function load(digest, hex) {
+  function load(digest, mode) {
     current = digest;
-    currentHex = hex;
+    currentMode = mode;
     viewer.hidden = false;
     viewerTitle.textContent = digest;
     viewerMeta.textContent = "loading…";
     viewerBody.textContent = "";
-    viewerHex.textContent = hex ? "Text" : "Hex";
 
-    fetch("/api/loot/" + encodeURIComponent(digest) + "/view" + (hex ? "?hex=1" : ""), {
+    fetch("/api/loot/" + encodeURIComponent(digest) + "/view?mode=" + encodeURIComponent(mode), {
       credentials: "same-origin"
     })
       .then(function (response) { return response.json(); })
       .then(function (body) {
         if (!body.ok) { throw new Error(body.error || "unavailable"); }
         viewerBody.textContent = body.content;
-        var meta = body.kind + " · " + body.size.toLocaleString() + " B";
+
+        // Which button is lit has to come from what the server actually did,
+        // not from what was asked for: "auto" resolves to text or hex here,
+        // and lighting neither leaves the operator unable to tell which view
+        // they are reading.
+        var resolved = mode === "auto" ? (body.binary ? "hex" : "text") : mode;
+        viewerText.classList.toggle("on", resolved === "text");
+        viewerStrings.classList.toggle("on", resolved === "strings");
+        viewerHex.classList.toggle("on", resolved === "hex");
+
+        // The format label is the useful half of this line. Eleven samples
+        // from one dropper differ only by architecture, and "binary" said
+        // nothing about which.
+        var meta = (body.format || body.kind) + " · " + body.size.toLocaleString() + " B";
         if (body.truncated) {
-          meta += " · showing first " + body.bytes_shown.toLocaleString() + " B";
+          meta += (resolved === "strings" ? " · scanned first " : " · showing first ")
+                + body.bytes_shown.toLocaleString() + " B";
+        }
+        if (resolved === "strings" && !body.content) {
+          meta += " · no printable runs found";
         }
         viewerMeta.textContent = meta;
       })
@@ -252,14 +270,20 @@
 
   document.addEventListener("click", function (event) {
     var button = event.target.closest("[data-view]");
-    if (button) { load(button.getAttribute("data-view"), false); return; }
+    if (button) { load(button.getAttribute("data-view"), "auto"); return; }
     if (event.target.id === "viewer-close") { closeViewer(); return; }
     // Clicking the backdrop, but not the panel itself.
     if (event.target === viewer) { closeViewer(); }
   });
 
+  viewerText.addEventListener("click", function () {
+    if (current) { load(current, "text"); }
+  });
+  viewerStrings.addEventListener("click", function () {
+    if (current) { load(current, "strings"); }
+  });
   viewerHex.addEventListener("click", function () {
-    if (current) { load(current, !currentHex); }
+    if (current) { load(current, "hex"); }
   });
 
   document.addEventListener("keydown", function (event) {
