@@ -32,6 +32,7 @@ import pyotp
 import redis
 
 import geoip
+import safeview
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
                    request, send_file, stream_with_context, url_for)
 
@@ -2064,6 +2065,48 @@ def api_loot_rescan():
     return jsonify({"ok": bool(queued), "queued": len(queued),
                     "failed": len(failed),
                     "poll_seconds": int(os.getenv("VT_POLL_SECONDS", "300"))})
+
+
+@app.route("/api/loot/<digest>/view")
+@require_auth
+def api_loot_view(digest: str):
+    """A sample rendered for reading, without anything having parsed it.
+
+    The alternative this replaces is an operator running `less` or `nano`
+    against the quarantine over SSH -- which needs sudo, because samples are
+    0400 inside a 0700 directory, so it means parsing attacker-controlled bytes
+    as root on the production box. `less` also hands the file to lesspipe,
+    which picks a decoder by type. This route exists to make that unnecessary
+    for triage.
+
+    Returns JSON rather than the bytes. A route that served the raw content
+    would be one Content-Type mistake away from the browser rendering an
+    attacker's HTML on the dashboard's own origin; JSON plus textContent on the
+    page means the content is never in a position to be parsed as anything.
+    See safeview.py for the rest of the reasoning.
+
+    Read-only, like every other path this container has into storage/.
+    """
+    if not is_digest(digest):
+        abort(404)
+    blob = STORAGE_DIR / "loot" / f"{digest}.bin"
+    try:
+        size = blob.stat().st_size
+        with open(blob, "rb") as handle:
+            data = handle.read(safeview.MAX_VIEW_BYTES)
+    except OSError:
+        return jsonify({"ok": False, "error": "sample not present"}), 404
+
+    result = safeview.view(
+        data,
+        force_hex=request.args.get("hex") in ("1", "true", "yes"),
+        total_size=size,
+    )
+    result["ok"] = True
+    result["sha256"] = digest
+    # Viewing is reading evidence, so it is an operator action like any other.
+    audit("LOOT_VIEW", digest=digest, kind=result["kind"], size=size)
+    return jsonify(result)
 
 
 @app.route("/api/loot/download", methods=["POST"])

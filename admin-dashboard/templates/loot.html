@@ -93,7 +93,12 @@
           <span class="mono hash" title="{{ row.sha256 }}">{{ row.sha256[:20] }}&hellip;</span>
           <button class="copy" type="button" data-copy="{{ row.sha256 }}"
                   title="Copy SHA-256">copy</button>
-          {% if not row.present %}<div class="muted tiny">blob missing</div>{% endif %}
+          {% if row.present %}
+          {# Reading it here means not reading it over SSH with sudo and less,
+             which is the thing this is actually competing with. #}
+          <button class="copy view" type="button" data-view="{{ row.sha256 }}"
+                  title="View contents (nothing is parsed or executed)">view</button>
+          {% else %}<div class="muted tiny">blob missing</div>{% endif %}
         </td>
         <td>
           {# A literal em dash, not the entity: this is an autoescaped
@@ -150,6 +155,29 @@
   <p class="hint subtle">
     Downloads are capped at {{ zip_max_mb }}MB per archive.
   </p>
+</div>
+{# Hidden until asked for. The body is filled with textContent and never with
+   innerHTML -- see loot.js. That, the control-character rewrite in
+   safeview.py and the page's own CSP are three separate reasons a sample
+   cannot act on the operator, which is about the right number. #}
+<div class="viewer" id="loot-viewer" hidden>
+  <div class="viewer-box" role="dialog" aria-modal="true"
+       aria-labelledby="viewer-title">
+    <header class="viewer-head">
+      <span id="viewer-title" class="mono"></span>
+      <span class="grow"></span>
+      <span id="viewer-meta" class="muted tiny"></span>
+      <button class="act" id="viewer-hex" type="button">Hex</button>
+      <button class="act" id="viewer-close" type="button">Close</button>
+    </header>
+    <pre id="viewer-body" class="viewer-body" tabindex="0"></pre>
+    <footer class="viewer-foot muted tiny">
+      Control characters are shown as <span class="mono">^X</span> rather than
+      sent to your screen. Nothing here has been parsed, unpacked or executed —
+      this is the raw quarantined file. Analysis still belongs in a VM you do
+      not mind losing.
+    </footer>
+  </div>
 </div>
 {% endblock %}
 

@@ -185,5 +185,75 @@
       .catch(function (error) { say("Failed: " + error.message); });
   });
 
+  // ------------------------------------------------------------- the viewer
+  //
+  // Every write into the panel below uses textContent. Never innerHTML, and
+  // never insertAdjacentHTML: the string being rendered is a live payload, and
+  // the one thing that must not happen is the browser deciding some of it is
+  // markup. The server has already rewritten control characters (safeview.py)
+  // and the page's CSP forbids inline script, so this is the third of three
+  // independent reasons a sample cannot act on the operator -- but it is the
+  // one that would be silently undone by a "small" refactor, so it is the one
+  // worth a comment.
+  var viewer = document.getElementById("loot-viewer");
+  var viewerBody = document.getElementById("viewer-body");
+  var viewerTitle = document.getElementById("viewer-title");
+  var viewerMeta = document.getElementById("viewer-meta");
+  var viewerHex = document.getElementById("viewer-hex");
+  var current = null;
+  var currentHex = false;
+
+  function closeViewer() {
+    viewer.hidden = true;
+    // Not left in the DOM: a rendered payload sitting in a hidden node is
+    // still a rendered payload, and this page stays open for hours.
+    viewerBody.textContent = "";
+    current = null;
+  }
+
+  function load(digest, hex) {
+    current = digest;
+    currentHex = hex;
+    viewer.hidden = false;
+    viewerTitle.textContent = digest;
+    viewerMeta.textContent = "loading…";
+    viewerBody.textContent = "";
+    viewerHex.textContent = hex ? "Text" : "Hex";
+
+    fetch("/api/loot/" + encodeURIComponent(digest) + "/view" + (hex ? "?hex=1" : ""), {
+      credentials: "same-origin"
+    })
+      .then(function (response) { return response.json(); })
+      .then(function (body) {
+        if (!body.ok) { throw new Error(body.error || "unavailable"); }
+        viewerBody.textContent = body.content;
+        var meta = body.kind + " · " + body.size.toLocaleString() + " B";
+        if (body.truncated) {
+          meta += " · showing first " + body.bytes_shown.toLocaleString() + " B";
+        }
+        viewerMeta.textContent = meta;
+      })
+      .catch(function (error) {
+        viewerMeta.textContent = "";
+        viewerBody.textContent = "Could not read this sample: " + error.message;
+      });
+  }
+
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest("[data-view]");
+    if (button) { load(button.getAttribute("data-view"), false); return; }
+    if (event.target.id === "viewer-close") { closeViewer(); return; }
+    // Clicking the backdrop, but not the panel itself.
+    if (event.target === viewer) { closeViewer(); }
+  });
+
+  viewerHex.addEventListener("click", function () {
+    if (current) { load(current, !currentHex); }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !viewer.hidden) { closeViewer(); }
+  });
+
   apply();
 })();

@@ -258,6 +258,27 @@ td.mono,.mono{font-family:var(--mono);font-size:.82rem}
 .pill.unknown{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
 .pill.clean{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
 
+/* ---- loot viewer ----
+   The body is a <pre> with pre-wrap rather than pre: a hex dump has its own
+   line lengths, but a minified dropper is one 40KB line, and letting that
+   scroll sideways forever means the operator reads the first 200 characters
+   and assumes that is the file. */
+.viewer{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.62);
+  display:flex;align-items:center;justify-content:center;padding:var(--s4)}
+.viewer[hidden]{display:none}
+.viewer-box{background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--radius-sm);width:min(96rem,100%);max-height:88vh;
+  display:flex;flex-direction:column;box-shadow:0 18px 48px rgba(0,0,0,.45)}
+.viewer-head{display:flex;gap:var(--s2);align-items:center;padding:.7rem .9rem;
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.viewer-head .grow{flex:1 1 auto}
+.viewer-head .mono{font-size:.78rem;word-break:break-all}
+.viewer-body{margin:0;padding:var(--s3) .9rem;overflow:auto;flex:1 1 auto;
+  font-family:var(--mono);font-size:.78rem;line-height:1.45;
+  white-space:pre-wrap;word-break:break-word;tab-size:4}
+.viewer-foot{padding:.6rem .9rem;border-top:1px solid var(--line)}
+.copy.view{border-color:var(--line)}
+
 /* ---- loot ---- */
 .danger-banner{background:var(--bad-bg);border:1px solid var(--bad);
   border-left-width:4px;border-radius:var(--radius-sm);color:var(--text);
