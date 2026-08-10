@@ -906,10 +906,27 @@ networks:
       config:
         - subnet: 172.28.0.0/16
 
+  # Exists for exactly the reason honeypot-internal is not `internal: true`:
+  # Docker installs no DNAT for a published port on an internal network, and
+  # Kibana publishes 127.0.0.1:5601. elastic-internal cannot carry that, so
+  # this does.
+  #
+  # The subnet is declared, and that is not cosmetic. Without it Docker picks
+  # one from its default pool, which put Kibana outside the range DOCKER-USER
+  # drops -- so the one container here that renders attacker-controlled strings
+  # into a browser, and has the CVE history of a large Node application, was
+  # the only member of the appliance with unrestricted egress. It is blocked by
+  # deploy/drosera-firewall.sh alongside the honeypot subnet.
+  #
+  # Kibana still reaches Elasticsearch: that traffic is elastic-internal to
+  # elastic-internal and never sources from here.
   kibana-access:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.enable_icc: "true"
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
 
   # llm-broker and ollama. No honeypot container is a member, so the fake shell
   # has no route to either -- it reaches the broker by writing a file, the same

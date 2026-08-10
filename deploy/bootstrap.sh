@@ -244,6 +244,7 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 Environment=HP_SUBNET=172.25.0.0/16
+Environment=KIBANA_SUBNET=172.30.0.0/16
 ExecStart=/usr/local/bin/drosera-firewall
 
 [Install]

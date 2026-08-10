@@ -28,6 +28,19 @@ set -uo pipefail
 
 HP_SUBNET="${HP_SUBNET:-172.25.0.0/16}"
 
+# Kibana's access network. It is not internal -- it cannot be, because Docker
+# installs no DNAT for a published port on an internal network and Kibana
+# publishes 127.0.0.1:5601 -- so like the honeypot subnet it is blocked here
+# instead. It was previously left to Docker's default pool, which put it
+# outside the one rule that mattered: the container rendering attacker strings
+# into a browser was the only one in the appliance that could reach the
+# internet, and nothing said so.
+KIBANA_SUBNET="${KIBANA_SUBNET:-172.30.0.0/16}"
+
+# Everything denied egress. Space-separated; add to it rather than adding
+# another near-identical block below.
+BLOCKED="${BLOCKED_SUBNETS:-$HP_SUBNET $KIBANA_SUBNET}"
+
 command -v iptables >/dev/null 2>&1 || { echo "iptables not found" >&2; exit 0; }
 
 # DOCKER-USER is created by Docker. If the daemon has not finished starting,
@@ -37,11 +50,15 @@ iptables -nL DOCKER-USER >/dev/null 2>&1 || iptables -N DOCKER-USER 2>/dev/null
 # Remove any previous copies first, so re-running cannot stack duplicates and
 # cannot leave the order wrong. Order is the whole point: the RETURNs have to
 # sit above the DROP.
-while iptables -C DOCKER-USER -s "$HP_SUBNET" -j DROP 2>/dev/null; do
-    iptables -D DOCKER-USER -s "$HP_SUBNET" -j DROP
-done
-while iptables -C DOCKER-USER -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN 2>/dev/null; do
-    iptables -D DOCKER-USER -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN
+for net in $BLOCKED; do
+    while iptables -C DOCKER-USER -s "$net" -j DROP 2>/dev/null; do
+        iptables -D DOCKER-USER -s "$net" -j DROP
+    done
+    for peer in $BLOCKED; do
+        while iptables -C DOCKER-USER -s "$net" -d "$peer" -j RETURN 2>/dev/null; do
+            iptables -D DOCKER-USER -s "$net" -d "$peer" -j RETURN
+        done
+    done
 done
 while iptables -C DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null; do
     iptables -D DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
@@ -49,10 +66,16 @@ done
 
 # Inserted at position 1 in reverse order, so they end up as:
 #   1. established/related  -> RETURN   (replies to inbound connections)
-#   2. honeypot -> honeypot -> RETURN   (our own services talking to Redis)
-#   3. honeypot -> anywhere -> DROP     (no egress)
-iptables -I DOCKER-USER 1 -s "$HP_SUBNET" -j DROP
-iptables -I DOCKER-USER 1 -s "$HP_SUBNET" -d "$HP_SUBNET" -j RETURN
+#   2. blocked -> blocked   -> RETURN   (our own services talking to each other)
+#   3. blocked -> anywhere  -> DROP     (no egress)
+for net in $BLOCKED; do
+    iptables -I DOCKER-USER 1 -s "$net" -j DROP
+done
+for net in $BLOCKED; do
+    for peer in $BLOCKED; do
+        iptables -I DOCKER-USER 1 -s "$net" -d "$peer" -j RETURN
+    done
+done
 iptables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
-echo "drosera-firewall: egress rules installed for ${HP_SUBNET}"
+echo "drosera-firewall: egress denied for ${BLOCKED}"

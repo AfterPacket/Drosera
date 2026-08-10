@@ -273,6 +273,23 @@ else
     warn "session-cam has no egress; clip delivery will fail"
 fi
 
+# Kibana renders attacker-controlled strings -- usernames, commands, payload
+# excerpts -- in a browser, and is a large Node application with the CVE
+# history to match. It sits on kibana-access rather than elastic-internal
+# because a published port needs DNAT, and for a long time that network had no
+# declared subnet, so it fell outside the DOCKER-USER drop and was the only
+# container in the appliance that could reach the internet. Nothing said so,
+# which is why this now asks rather than assumes.
+if docker ps --format '{{.Names}}' | grep -q '^hp-kibana$'; then
+    if docker exec hp-kibana timeout 8 bash -c \
+            'timeout 5 bash -c "cat </dev/null >/dev/tcp/1.1.1.1/53"' \
+            >/dev/null 2>&1; then
+        fail "kibana REACHED THE INTERNET -- recreate the network so it lands in 172.30.0.0/16, then re-run deploy/drosera-firewall.sh"
+    else
+        pass "kibana has no egress"
+    fi
+fi
+
 # Containment is only half the model. The other half is that the containers
 # which are SUPPOSED to talk to each other still can -- and that half had no
 # test, which is how a deployment reached production where no honeypot could
