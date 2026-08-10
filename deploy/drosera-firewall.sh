@@ -54,7 +54,15 @@ for net in $BLOCKED; do
     while iptables -C DOCKER-USER -s "$net" -j DROP 2>/dev/null; do
         iptables -D DOCKER-USER -s "$net" -j DROP
     done
+    while iptables -C DOCKER-USER -s "$net" -d "$net" -j RETURN 2>/dev/null; do
+        iptables -D DOCKER-USER -s "$net" -d "$net" -j RETURN
+    done
+    # Cross-subnet RETURNs from an earlier revision of this script, which
+    # allowed the honeypot subnet to reach Kibana. Removed explicitly rather
+    # than left to the loop above, because a host that ran that version keeps
+    # the rule until something deletes it by name.
     for peer in $BLOCKED; do
+        [ "$net" = "$peer" ] && continue
         while iptables -C DOCKER-USER -s "$net" -d "$peer" -j RETURN 2>/dev/null; do
             iptables -D DOCKER-USER -s "$net" -d "$peer" -j RETURN
         done
@@ -66,15 +74,20 @@ done
 
 # Inserted at position 1 in reverse order, so they end up as:
 #   1. established/related  -> RETURN   (replies to inbound connections)
-#   2. blocked -> blocked   -> RETURN   (our own services talking to each other)
-#   3. blocked -> anywhere  -> DROP     (no egress)
+#   2. net -> same net      -> RETURN   (our own services talking to Redis)
+#   3. net -> anywhere      -> DROP     (no egress)
+#
+# Same subnet only. A blocked subnet reaching a *different* blocked subnet is
+# not something any of these containers needs: the honeypots talk to Redis on
+# their own network, and Kibana reaches Elasticsearch over elastic-internal,
+# which sources from 172.28 and never matches these rules at all. Allowing the
+# cross product would hand a compromised honeypot a route to Kibana, which is
+# the opposite of why Kibana was put behind a rule in the first place.
 for net in $BLOCKED; do
     iptables -I DOCKER-USER 1 -s "$net" -j DROP
 done
 for net in $BLOCKED; do
-    for peer in $BLOCKED; do
-        iptables -I DOCKER-USER 1 -s "$net" -d "$peer" -j RETURN
-    done
+    iptables -I DOCKER-USER 1 -s "$net" -d "$net" -j RETURN
 done
 iptables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
