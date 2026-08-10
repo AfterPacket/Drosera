@@ -203,6 +203,17 @@
   var current = null;
   var currentHex = false;
 
+  // Everything below is one IIFE with the select, re-scan and download
+  // handlers, so an addEventListener on a missing element does not fail
+  // quietly -- it throws, and every button on the page stops working. That is
+  // a far worse outcome than the viewer being absent, and it is exactly what a
+  // stale template served from a partly-rebuilt image would cause. Bail
+  // instead, leaving the rest of the page intact.
+  if (!viewer || !viewerBody || !viewerHex) {
+    apply();
+    return;
+  }
+
   function closeViewer() {
     viewer.hidden = true;
     // Not left in the DOM: a rendered payload sitting in a hidden node is
